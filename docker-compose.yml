@@ -1,0 +1,100 @@
+## TravelScope - 智能旅游助手 Docker Compose
+## 拉取 Redis、MinIO、Elasticsearch（PostgreSQL 本地已有，不需要额外安装）
+##
+## 启动方式：
+##   docker-compose up -d
+## 停止方式：
+##   docker-compose down
+## 清除数据（重新初始化）：
+##   docker-compose down -v
+
+services:
+  # ======================== Redis ========================
+  # 用于缓存、会话管理、AgentScope 分布式状态存储
+  redis:
+    image: redis:7-alpine
+    container_name: travelscope-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --requirepass root123456
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "root123456", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ======================== MinIO ========================
+  # 用于文档存储（PDF、Word、图片等旅游文档）
+  minio:
+    image: minio/minio:latest
+    container_name: travelscope-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    environment:
+      MINIO_ROOT_USER: root
+      MINIO_ROOT_PASSWORD: root123456
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ======================== Elasticsearch ========================
+  # 用于 RAG 双路检索：
+  #   1. 向量检索（kNN search） - 语义相似度匹配
+  #   2. 全文检索（BM25）      - 关键词精确匹配
+  # AgentScope 的 ElasticsearchStore 使用 ES 9.x Rest5Client
+  #
+  # 端口说明：
+  #   9200 - HTTP API 端口（客户端连接）
+  #   9300 - 节点间通信端口（集群使用，单机可忽略）
+  #
+  # 安全说明：
+  #   ES 9.x 默认开启安全认证，此处为开发环境简化配置
+  #   生产环境请启用 HTTPS 和更复杂的密码
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.2
+    container_name: travelscope-elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+      - ./elasticsearch/config/analysis-ik:/usr/share/elasticsearch/config/analysis-ik
+    environment:
+      # 集群名称
+      - cluster.name=travelscope-es-cluster
+      # 节点名称
+      - node.name=travelscope-es-node-1
+      # 单节点模式（开发环境）
+      - discovery.type=single-node
+      # 关闭安全认证（开发环境简化，生产环境务必开启）
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      # JVM 堆内存配置（建议为系统内存的50%）
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # 允许跨域请求（开发环境方便调试）
+      - http.cors.enabled=true
+      - http.cors.allow-origin="*"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  redis-data:
+  minio-data:
+  es-data:

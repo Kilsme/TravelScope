@@ -1,0 +1,51 @@
+## ============================================================================
+## TravelScope - 测试环境配置
+## ============================================================================
+## 测试时禁用数据库、Redis 等外部依赖，只测试工具类逻辑
+spring:
+  application:
+    name: TravelScope-Test
+
+  # 禁用数据源自动配置（工具类测试不需要数据库）
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisRepositoriesAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchClientAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.elasticsearch.ElasticsearchRepositoriesAutoConfiguration
+
+# ======================== 应用配置（测试用） ========================
+travelscope:
+  amap:
+    web-api-key: ${AMAP_WEB_API_KEY:}
+    base-url: https://restapi.amap.com/v3
+
+  weather:
+    api-host: ${WEATHER_API_HOST:}
+    api-key: ${WEATHER_API_KEY:}
+
+  minio:
+    endpoint: http://localhost:9000
+    access-key: root
+    secret-key: root123456
+    bucket-name: travelscope-docs
+
+  agentscope:
+    workspace-path: .agentscope/workspace
+    vector-store-table: document_chunks
+    embedding-dimensions: 1024
+
+  elasticsearch:
+    url: http://localhost:9200
+    index-name: document_chunks_fulltext
+    dimensions: 1024
+
+  rag:
+    mode: dual
+    vector-weight: 0.7
+    fulltext-weight: 0.3
+    top-k: 5
+    fusion: rrf
+    rrf-k: 60
