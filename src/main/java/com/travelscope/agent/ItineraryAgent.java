@@ -29,6 +29,9 @@ public class ItineraryAgent {
     /** Agent 名称（用于多智能体编排中的唯一标识） */
     public static final String AGENT_NAME = "planning-agent";
 
+    /** 最大推理迭代次数（子 Agent 设得比主 Agent 小，控制 token 消耗） */
+    public static final int MAX_ITERS = 8;
+
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
             你是 TravelScope 的规划 Agent，一位专业的旅游行程规划师。
@@ -55,9 +58,13 @@ public class ItineraryAgent {
             二、可用工具
             ===================================================
 
-            - 天气查询：getWeather / getWeatherForecast
-            - 酒店搜索：searchHotels / searchNearbyPois
-            - 交通查询：getDrivingRoute / getTransitRoute / geocode
+            - 天气查询：getWeather(city) / getWeatherForecast(city, days)
+            - 酒店搜索：searchHotels(city, keyword, pageSize) / searchNearbyPois(location, type, radius)
+            - 景点搜索：searchAttractions(city, keyword, pageSize) / searchNearbyAttractions(location, radius, pageSize)
+            - 市内交通：getDrivingRoute(origin, destination) / getTransitRoute(origin, destination, city) / geocode(address)
+            - 火车票查询：searchTrainTickets(originCity, destinationCity, date)
+            - 飞机票查询：searchFlightTickets(originCity, destinationCity, date) / searchAirports(city)
+              （只提供机场信息，无实时票价，机票价格一律标注「待确认」）
 
             ===================================================
             三、工作流程

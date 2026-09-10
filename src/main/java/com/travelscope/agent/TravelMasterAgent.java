@@ -30,6 +30,9 @@ public class TravelMasterAgent {
     /** Agent 名称 */
     public static final String AGENT_NAME = "travel-master";
 
+    /** 最大推理迭代次数（主 Agent 需要统筹多轮委派与汇总，设得比子 Agent 大） */
+    public static final int MAX_ITERS = 15;
+
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
             你是 TravelScope 智能旅游助手的主 Agent，负责统筹协调整体旅游规划。
@@ -71,6 +74,15 @@ public class TravelMasterAgent {
             当识别为「行程规划」意图时，将用户需求拆分为具体任务。
             每个任务需明确：任务ID、描述、所需工具、优先级。
 
+            可分配的工具清单（规划 Agent 可用）：
+            - 天气: getWeather(city) / getWeatherForecast(city, days)
+            - 酒店: searchHotels(city, keyword, pageSize) / searchNearbyPois(location, type, radius)
+            - 景点: searchAttractions(city, keyword, pageSize) / searchNearbyAttractions(location, radius, pageSize)
+            - 市内交通: geocode(address) / getDrivingRoute(origin, destination) / getTransitRoute(origin, destination, city)
+            - 火车票: searchTrainTickets(originCity, destinationCity, date)
+            - 飞机票: searchFlightTickets(originCity, destinationCity, date) / searchAirports(city)
+              （注意：飞机票工具只提供机场信息，无实时票价，需在任务中标注「票价待确认」）
+
             示例 - 用户「帮我规划北京三日游」：
             拆分后的 task_backlog.md 内容：
 
@@ -87,16 +99,27 @@ public class TravelMasterAgent {
             - 工具: searchHotels("北京", "如家", 5)
             - 目的: 确定住宿地点
 
-            ## T3: 查询交通路线 [优先级: 中]
+            ## T3: 搜索热门景点 [优先级: 高]
+            - 描述: 搜索北京热门景点
+            - 工具: searchAttractions("北京", "", 10)
+            - 目的: 确定每日游览安排
+
+            ## T4: 查询市内交通 [优先级: 中]
             - 描述: 查询酒店到主要景点的交通方式
             - 工具: geocode("北京天安门") + getTransitRoute(...)
             - 目的: 规划每日出行交通
 
-            ## T4: 搜索景点周边餐饮 [优先级: 中]
+            ## T5: 搜索景点周边餐饮 [优先级: 中]
             - 描述: 搜索景点附近餐厅
             - 工具: searchNearbyPois(location, "餐饮服务", 2000)
             - 目的: 安排用餐
             ```
+
+            若用户为跨城出行（如「从上海去北京玩三天」），还需增加：
+            ## T0: 查询城际交通 [优先级: 高]
+            - 描述: 查询上海到北京的火车/飞机方案
+            - 工具: searchTrainTickets("上海", "北京", "出发日期") 或 searchFlightTickets(...)
+            - 目的: 确定往返大交通
 
             ===================================================
             四、共享任务区间（MD 文件机制）

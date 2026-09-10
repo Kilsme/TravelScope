@@ -2,9 +2,13 @@ package com.travelscope.config;
 
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.TravelMasterAgent;
+import com.travelscope.agent.tools.AttractionTool;
+import com.travelscope.agent.tools.FlightTicketTool;
 import com.travelscope.agent.tools.HotelTool;
+import com.travelscope.agent.tools.TrainTicketTool;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
+import io.agentscope.core.skill.repository.ClasspathSkillRepository;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -23,6 +27,7 @@ import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * AgentScope 多智能体配置类
@@ -54,22 +59,32 @@ public class AgentConfig {
     private final AppProperties appProperties;
     private final WeatherTool weatherTool;
     private final HotelTool hotelTool;
+    private final AttractionTool attractionTool;
     private final TransportTool transportTool;
+    private final TrainTicketTool trainTicketTool;
+    private final FlightTicketTool flightTicketTool;
 
     public AgentConfig(AppProperties appProperties,
                        WeatherTool weatherTool,
                        HotelTool hotelTool,
-                       TransportTool transportTool) {
+                       AttractionTool attractionTool,
+                       TransportTool transportTool,
+                       TrainTicketTool trainTicketTool,
+                       FlightTicketTool flightTicketTool) {
         this.appProperties = appProperties;
         this.weatherTool = weatherTool;
         this.hotelTool = hotelTool;
+        this.attractionTool = attractionTool;
         this.transportTool = transportTool;
+        this.trainTicketTool = trainTicketTool;
+        this.flightTicketTool = flightTicketTool;
     }
 
     /**
      * 创建 Toolkit（工具集）
      * <p>
-     * 注册天气查询、酒店搜索、交通查询工具，供主 Agent 和规划 Agent 共同使用。
+     * 注册天气查询、酒店搜索、景点搜索、市内交通、火车票、飞机票工具，
+     * 供主 Agent 和规划 Agent 共同使用。
      * </p>
      */
     @Bean
@@ -77,8 +92,11 @@ public class AgentConfig {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(weatherTool);
         toolkit.registerTool(hotelTool);
+        toolkit.registerTool(attractionTool);
         toolkit.registerTool(transportTool);
-        log.info("Toolkit 注册完成: 天气查询、酒店搜索、交通查询");
+        toolkit.registerTool(trainTicketTool);
+        toolkit.registerTool(flightTicketTool);
+        log.info("Toolkit 注册完成: 天气查询、酒店搜索、景点搜索、市内交通、火车票、飞机票");
         return toolkit;
     }
 
@@ -94,12 +112,22 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public HarnessAgent travelMasterAgent(Toolkit toolkit) {
+    public HarnessAgent travelMasterAgent(Toolkit toolkit) throws IOException {
+        // 规划子 Agent（行程规划师）：inline 模式声明，注册到主 Agent 的 HarnessAgent 中
+        // maxIters 设得比主 Agent 小，控制 token 消耗；skills 限定其可用的技能集
         SubagentDeclaration planningSubAgent = SubagentDeclaration.builder()
                 .name(ItineraryAgent.AGENT_NAME)
-                .description("规划 Agent，负责执行主 Agent 分配的任务清单，调用工具获取实时数据，生成行程方案")
+                .description("规划 Agent（行程规划师），负责执行主 Agent 分配的任务清单，"
+                        + "调用天气/酒店/景点/火车票/飞机票工具获取实时数据，生成行程方案")
                 .inlineAgentsBody(ItineraryAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
+                .maxIters(ItineraryAgent.MAX_ITERS)
+                .skills(List.of(
+                        "weather-query",
+                        "hotel-search",
+                        "attraction-search",
+                        "train-ticket-query",
+                        "flight-ticket-query"))
                 .build();
 
         HarnessAgent agent = HarnessAgent.builder()
@@ -107,12 +135,17 @@ public class AgentConfig {
                 .sysPrompt(TravelMasterAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
                 .toolkit(toolkit)
+                .maxIters(TravelMasterAgent.MAX_ITERS)
+                .workspace(appProperties.getAgentscope().getWorkspacePath())
+                .skillRepository(new ClasspathSkillRepository("skills"))
                 .stateStore(new InMemoryAgentStateStore())
                 .subagent(planningSubAgent)
                 .build();
 
-        log.info("主 Agent 构建完成: {} (含 1 个规划子 Agent: {})",
-                TravelMasterAgent.AGENT_NAME, ItineraryAgent.AGENT_NAME);
+        log.info("主 Agent 构建完成: {} (workspace={}, 含 1 个规划子 Agent: {})",
+                TravelMasterAgent.AGENT_NAME,
+                appProperties.getAgentscope().getWorkspacePath(),
+                ItineraryAgent.AGENT_NAME);
         return agent;
     }
 

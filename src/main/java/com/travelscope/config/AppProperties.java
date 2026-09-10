@@ -19,6 +19,7 @@ public class AppProperties {
     /** 通义千问（DashScope）配置 */
     private DashScopeConfig dashscope = new DashScopeConfig();
 
+
     /** 高德地图配置 */
     private AmapConfig amap = new AmapConfig();
 
