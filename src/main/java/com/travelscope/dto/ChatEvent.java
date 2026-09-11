@@ -1,0 +1,43 @@
+package com.travelscope.dto;
+
+import lombok.Getter;
+import lombok.Setter;
+
+/**
+ * SSE 对话事件载荷
+ * <p>
+ * 事件类型（SSE event name 与 type 一致）：
+ * <ul>
+ *   <li>intent - 意图分类结果，payload 为 JSON（intent/reason）</li>
+ *   <li>delta  - 助手回复增量文本，payload 为文本片段</li>
+ *   <li>tool   - 工具调用状态，payload 为工具名（或 工具名:结果状态）</li>
+ *   <li>done   - 回复结束，payload 为完整回复文本</li>
+ *   <li>error  - 错误，payload 为错误信息</li>
+ * </ul>
+ * </p>
+ */
+@Getter
+@Setter
+public class ChatEvent {
+
+    public static final String TYPE_INTENT = "intent";
+    public static final String TYPE_DELTA = "delta";
+    public static final String TYPE_TOOL = "tool";
+    public static final String TYPE_DONE = "done";
+    public static final String TYPE_ERROR = "error";
+
+    private String type;
+    private String payload;
+
+    public ChatEvent() {
+    }
+
+    public ChatEvent(String type, String payload) {
+        this.type = type;
+        this.payload = payload;
+    }
+
+    public static ChatEvent of(String type, String payload) {
+        return new ChatEvent(type, payload);
+    }
+}

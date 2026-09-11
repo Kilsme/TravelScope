@@ -1,16 +1,21 @@
 package com.travelscope.config;
 
+import com.travelscope.agent.IntentClassifier;
+import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.TravelMasterAgent;
 import com.travelscope.agent.tools.AttractionTool;
-import com.travelscope.agent.tools.FlightTicketTool;
 import com.travelscope.agent.tools.HotelTool;
-import com.travelscope.agent.tools.TrainTicketTool;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
 import io.agentscope.core.skill.repository.ClasspathSkillRepository;
+import io.agentscope.core.permission.PermissionContextState;
+import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.core.tool.mcp.McpClientBuilder;
+import io.agentscope.core.tool.mcp.McpClientWrapper;
+import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import org.slf4j.Logger;
@@ -25,9 +30,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * AgentScope 多智能体配置类
@@ -36,6 +44,7 @@ import java.util.List;
  * <pre>
  * 主 Agent（TravelMasterAgent）
  *  ├── 工具：WeatherTool / HotelTool / TransportTool
+ *  ├── MCP 工具：12306（火车票实时查询）/ 飞常准（机票实时查询）
  *  └── 子 Agent → 规划 Agent（ItineraryAgent / planning-agent）
  * </pre>
  * </p>
@@ -61,29 +70,24 @@ public class AgentConfig {
     private final HotelTool hotelTool;
     private final AttractionTool attractionTool;
     private final TransportTool transportTool;
-    private final TrainTicketTool trainTicketTool;
-    private final FlightTicketTool flightTicketTool;
 
     public AgentConfig(AppProperties appProperties,
                        WeatherTool weatherTool,
                        HotelTool hotelTool,
                        AttractionTool attractionTool,
-                       TransportTool transportTool,
-                       TrainTicketTool trainTicketTool,
-                       FlightTicketTool flightTicketTool) {
+                       TransportTool transportTool) {
         this.appProperties = appProperties;
         this.weatherTool = weatherTool;
         this.hotelTool = hotelTool;
         this.attractionTool = attractionTool;
         this.transportTool = transportTool;
-        this.trainTicketTool = trainTicketTool;
-        this.flightTicketTool = flightTicketTool;
     }
 
     /**
      * 创建 Toolkit（工具集）
      * <p>
-     * 注册天气查询、酒店搜索、景点搜索、市内交通、火车票、飞机票工具，
+     * 注册天气查询、酒店搜索、景点搜索、市内交通等本地工具，
+     * 并通过 MCP 客户端接入火车票（12306）与飞机票（飞常准）实时查询工具，
      * 供主 Agent 和规划 Agent 共同使用。
      * </p>
      */
@@ -94,10 +98,85 @@ public class AgentConfig {
         toolkit.registerTool(hotelTool);
         toolkit.registerTool(attractionTool);
         toolkit.registerTool(transportTool);
-        toolkit.registerTool(trainTicketTool);
-        toolkit.registerTool(flightTicketTool);
-        log.info("Toolkit 注册完成: 天气查询、酒店搜索、景点搜索、市内交通、火车票、飞机票");
+        registerMcpClients(toolkit);
+        log.info("Toolkit 注册完成: 天气查询、酒店搜索、景点搜索、市内交通 + MCP(12306 火车票、飞常准飞机票)");
         return toolkit;
+    }
+
+    /**
+     * 注册 MCP 客户端（stdio 模式拉起 npx 子进程）
+     * <p>
+     * - 12306（{@code npx -y 12306-mcp}）：实时火车票余票查询，无需鉴权
+     * - 飞常准（{@code npx -y @variflight-ai/variflight-mcp}）：实时机票/航班查询，
+     *   API Key 从环境变量 {@code VARIFLIGHT_API_KEY} 读取
+     * </p>
+     * 注册失败不阻断应用启动，仅告警并跳过对应工具。
+     */
+    private void registerMcpClients(Toolkit toolkit) {
+        try {
+            McpClientWrapper c12306 = McpClientBuilder.create("c12306")
+                    .stdioTransport(npxCommand(), npxArgs("-y", "12306-mcp"), Map.of())
+                    .buildSync();
+            toolkit.registerMcpClient(c12306).block(Duration.ofSeconds(60));
+            log.info("MCP 客户端注册成功: 12306-mcp (火车票实时查询)");
+        } catch (Exception e) {
+            log.warn("12306 MCP 客户端注册失败，火车票实时查询工具不可用: {}", e.getMessage());
+        }
+
+        String variflightKey = System.getenv("VARIFLIGHT_API_KEY");
+        if (variflightKey == null || variflightKey.isBlank()) {
+            log.warn("环境变量 VARIFLIGHT_API_KEY 未配置，跳过飞常准 MCP 注册，机票实时查询工具不可用");
+            return;
+        }
+        try {
+            McpClientWrapper variflight = McpClientBuilder.create("variflight")
+                    .stdioTransport(npxCommand(), npxArgs("-y", "@variflight-ai/variflight-mcp"),
+                            Map.of("VARIFLIGHT_API_KEY", variflightKey))
+                    .buildSync();
+            toolkit.registerMcpClient(variflight).block(Duration.ofSeconds(60));
+            log.info("MCP 客户端注册成功: variflight (机票实时查询)");
+        } catch (Exception e) {
+            log.warn("飞常准 MCP 客户端注册失败，机票实时查询工具不可用: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Windows 下 ProcessBuilder 无法直接启动 npx（批处理脚本），
+     * 统一经 {@code cmd /c npx ...} 拉起；非 Windows 直接用 npx。
+     */
+    private String npxCommand() {
+        return isWindows() ? "cmd" : "npx";
+    }
+
+    private List<String> npxArgs(String... npxArgs) {
+        List<String> args = new java.util.ArrayList<>();
+        if (isWindows()) {
+            args.add("/c");
+            args.add("npx");
+        }
+        args.addAll(List.of(npxArgs));
+        return args;
+    }
+
+    private boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
+    }
+
+    /**
+     * 创建 DashScope 聊天模型 Bean
+     * <p>
+     * 显式构建（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY），
+     * 供主 Agent 与意图分类器共用；子代理的字符串模型 ID 通过 modelResolver 解析到同一实例，
+     * 避免依赖 DASHSCOPE_API_KEY 环境变量的字符串模型自动解析路径。
+     * </p>
+     */
+    @Bean
+    public DashScopeChatModel dashscopeChatModel() {
+        return DashScopeChatModel.builder()
+                .apiKey(appProperties.getDashscope().getApiKey())
+                .modelName(appProperties.getDashscope().getModel())
+                .stream(true)
+                .build();
     }
 
     /**
@@ -112,7 +191,7 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public HarnessAgent travelMasterAgent(Toolkit toolkit) throws IOException {
+    public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel) throws IOException {
         // 规划子 Agent（行程规划师）：inline 模式声明，注册到主 Agent 的 HarnessAgent 中
         // maxIters 设得比主 Agent 小，控制 token 消耗；skills 限定其可用的技能集
         SubagentDeclaration planningSubAgent = SubagentDeclaration.builder()
@@ -133,9 +212,17 @@ public class AgentConfig {
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
                 .sysPrompt(TravelMasterAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getModel())
+                .model(dashscopeChatModel)
+                // 子代理声明的字符串模型 ID 统一解析到同一模型实例
+                .modelResolver(name -> dashscopeChatModel)
                 .toolkit(toolkit)
                 .maxIters(TravelMasterAgent.MAX_ITERS)
+                .middleware(new IntentRouterMiddleware())
+                // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
+                // 否则工具调用会挂起等待用户确认导致对话提前结束
+                .permissionContext(PermissionContextState.builder()
+                        .mode(PermissionMode.BYPASS)
+                        .build())
                 .workspace(appProperties.getAgentscope().getWorkspacePath())
                 .skillRepository(new ClasspathSkillRepository("skills"))
                 .stateStore(new InMemoryAgentStateStore())
@@ -147,6 +234,18 @@ public class AgentConfig {
                 appProperties.getAgentscope().getWorkspacePath(),
                 ItineraryAgent.AGENT_NAME);
         return agent;
+    }
+
+    /**
+     * 创建意图分类器 Bean
+     * <p>
+     * 轻量 ReActAgent（无工具无子代理），对用户消息做结构化意图分类，
+     * ChatService 据此在应用层路由（避免闲聊/单点查询触发规划子 Agent）。
+     * </p>
+     */
+    @Bean
+    public IntentClassifier intentClassifier(DashScopeChatModel dashscopeChatModel) {
+        return new IntentClassifier(dashscopeChatModel);
     }
 
     /**
