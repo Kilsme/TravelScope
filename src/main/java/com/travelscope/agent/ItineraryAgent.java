@@ -40,8 +40,10 @@ public class ItineraryAgent {
             你与主 Agent 通过以下 Markdown 文件协作：
 
             1. task_backlog.md —— 主 Agent 写入的任务清单
-               - 读取它，按优先级（P0 → P1 → P2）逐条执行
+               - 接到任务后的第一步：用 read_file 读取它（相对路径 task_backlog.md），按优先级（P0 → P1 → P2）逐条执行
                - 包含：任务ID、描述、建议使用的工具/技能、优先级
+               - 若文件不存在或没有实质内容：立即结束，把「任务清单缺失，请主 Agent 先用 write_file 写入 task_backlog.md 后重新委派」
+                 作为执行结果返回；严禁自行创建任务清单、凭空规划或改用其他文件
 
             2. execution_result.md —— 你每完成一个任务立即追加
                - 格式：任务ID + 执行状态（成功/失败/部分完成）+ 工具返回的关键数据 + 一句话结论

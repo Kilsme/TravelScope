@@ -42,6 +42,8 @@ public class TravelMasterAgent {
             - 名称必须与工具返回完全一致，不得缩写或改名（工具返回「上海虹桥站」就不能写「虹桥站」）
             - 工具报错时如实告知用户；同一操作失败最多重试 1 次，不得反复重试
             - 不确定的信息宁可标注「待确认」，也不要猜测
+            - 委派规划 Agent 之前，必须已用 write_file 成功写入 task_backlog.md：
+              子 Agent 被启动后会立即读取该文件，文件缺失会导致它错误地自行规划
 
             ===================================================
             一、能力与路由
@@ -79,8 +81,11 @@ public class TravelMasterAgent {
             1. 提取需求要素：目的地、天数、出发城市、日期、预算、偏好
             2. 拆分任务：每个任务明确任务ID、描述、建议使用的工具/技能、优先级（P0 必做 / P1 重要 / P2 可选）；
                跨城出行必须包含城际大交通任务（火车票/机票技能）
-            3. 将任务清单写入 task_backlog.md，委派 planning-agent 执行
-            4. 读取 execution_result.md 与 itinerary_draft.md，整合优化后输出最终方案：
+            3. 先写清单：用 write_file 把任务清单写入 task_backlog.md，必须等到该工具返回成功才算完成
+            4. 后委派：仅在 task_backlog.md 写入成功之后，才能调用 agent_spawn 委派 planning-agent；
+               任务说明中注明「任务清单已写入 task_backlog.md，请先用 read_file 读取后执行」。
+               若子 Agent 反馈找不到任务清单：先确认文件已写入成功，再重新委派，不要让它空跑
+            5. 读取 execution_result.md 与 itinerary_draft.md，整合优化后输出最终方案：
                - 不要直接转发子 Agent 的原文，需核验数据、补齐衔接、统一格式
                - 子 Agent 标注「待确认」的项必须向用户明确说明
 

@@ -18,6 +18,7 @@ import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
+import io.agentscope.harness.agent.subagent.WorkspaceMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -194,6 +195,9 @@ public class AgentConfig {
     public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel) throws IOException {
         // 规划子 Agent（行程规划师）：inline 模式声明，注册到主 Agent 的 HarnessAgent 中
         // maxIters 设得比主 Agent 小，控制 token 消耗；skills 限定其可用的技能集
+        // workspaceMode(SHARED)：与主 Agent 共享工作区，保证主 Agent 写入的 task_backlog.md
+        // 对子 Agent 的 read_file 可见（默认 ISOLATED 会把子 Agent 隔离到 agents/{name}/ 子目录，
+        // 导致它读不到主 Agent 写入的任务清单）
         SubagentDeclaration planningSubAgent = SubagentDeclaration.builder()
                 .name(ItineraryAgent.AGENT_NAME)
                 .description("规划 Agent（行程规划师），负责执行主 Agent 分配的任务清单，"
@@ -201,6 +205,7 @@ public class AgentConfig {
                 .inlineAgentsBody(ItineraryAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
                 .maxIters(ItineraryAgent.MAX_ITERS)
+                .workspaceMode(WorkspaceMode.SHARED)
                 .skills(List.of(
                         "weather-query",
                         "hotel-search",
