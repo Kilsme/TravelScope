@@ -16,7 +16,7 @@ import java.util.List;
  * </p>
  */
 @Service
-public class RagServiceStub implements RagService {
+public class RagServiceStub implements  RagService {
 
     private static final Logger log = LoggerFactory.getLogger(RagServiceStub.class);
 

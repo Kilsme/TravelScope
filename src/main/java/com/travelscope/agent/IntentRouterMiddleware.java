@@ -28,14 +28,20 @@ public class IntentRouterMiddleware implements MiddlewareBase {
     /** RuntimeContext 中意图类别的属性键（值为 IntentType.name()） */
     public static final String CTX_INTENT_KEY = "travelscope.intent";
 
+    /**
+     * RuntimeContext 中本轮会话协作目录的属性键（值为相对路径，如 "tasks/conv-13"）。
+     * 由 ChatService 按会话写入，用于把用户+会话隔离的具体路径注入路由指令（需求 1）。
+     */
+    public static final String CTX_COLLAB_DIR_KEY = "travelscope.collab.dir";
+
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String sysPrompt) {
         Object intent = ctx.get(CTX_INTENT_KEY);
-        String directive = directiveFor(intent);
+        String directive = directiveFor(intent, ctx);
         return Mono.just(directive.isEmpty() ? sysPrompt : sysPrompt + "\n\n" + directive);
     }
 
-    private String directiveFor(Object intent) {
+    private String directiveFor(Object intent, RuntimeContext ctx) {
         if (intent == null) {
             return "";
         }
@@ -50,11 +56,37 @@ public class IntentRouterMiddleware implements MiddlewareBase {
                     【本轮路由指令】系统已判定本轮为知识型问题：知识库暂未接入，请基于你自己的知识直接回答；\
                     涉及实时信息（票价/余票/天气等）时说明你无法提供实时数据并建议查询渠道，\
                     禁止编造数据，禁止委派规划子 Agent。""";
-            case "PLANNING" -> """
-                    【本轮路由指令】系统已判定本轮为完整行程规划意图：请按任务拆分流程处理，\
-                    将任务清单写入 task_backlog.md 并委派规划子 Agent 执行，最后整合结果返回用户。""";
+            case "PLANNING" -> planningDirective(ctx);
             default -> "";
         };
+    }
+
+    /**
+     * PLANNING 意图的路由指令：注入本会话隔离的协作路径与「登记 → 委派」的工具调用顺序
+     * （委派门禁 PlanningGateMiddleware 会在代码层校验，未登记清单直接委派会被拦截）
+     */
+    private String planningDirective(RuntimeContext ctx) {
+        String collabDir = ctx.get(CTX_COLLAB_DIR_KEY) != null
+                ? String.valueOf(ctx.get(CTX_COLLAB_DIR_KEY)) : null;
+        String sessionId = ctx.getSessionId();
+        if (collabDir == null) {
+            return """
+                    【本轮路由指令】系统已判定本轮为完整行程规划意图：请按任务拆分流程处理，\
+                    先用 create_task_backlog 工具把任务清单登记进任务容器，再委派规划子 Agent，\
+                    最后整合结果返回用户。""";
+        }
+        return """
+                【本轮路由指令】系统已判定本轮为完整行程规划意图。本轮会话: %s，协作目录: %s（相对工作区根）。
+
+                委派流程（系统在代码层强制校验，跳步会被拦截）：
+                1. 按你的规划流程拆分任务（每项含 taskId/描述/建议工具/优先级）
+                2. 调用 create_task_backlog 工具登记清单：sessionId 填 "%s"，tasksJson 填任务 JSON 数组。
+                   禁止用 write_file 代替本工具——容器以本工具为准
+                3. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
+                   「用 read_file 读取 %s/task_backlog.md 执行；每完成一项任务调用 update_task_status 工具回报状态」
+                4. 需要时调用 get_task_progress 查询未完成任务数；完成后读取 %s/ 下的 execution_result.md \
+                与 itinerary_draft.md 整合输出
+                """.formatted(sessionId, collabDir, sessionId, collabDir, collabDir);
     }
 
     // ==================== 其余阶段透传 ====================

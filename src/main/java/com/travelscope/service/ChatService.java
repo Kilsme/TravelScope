@@ -27,7 +27,8 @@ import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
 import java.util.List;
-import java.util.Objects;
+
+import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
 
 /**
  * 对话编排服务
@@ -55,15 +56,18 @@ public class ChatService {
     private final IntentClassifier intentClassifier;
     private final RagService ragService;
     private final ConversationService conversationService;
+    private final TaskWorkspaceService taskWorkspaceService;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentClassifier intentClassifier,
                        RagService ragService,
-                       ConversationService conversationService) {
+                       ConversationService conversationService,
+                       TaskWorkspaceService taskWorkspaceService) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentClassifier = intentClassifier;
         this.ragService = ragService;
         this.conversationService = conversationService;
+        this.taskWorkspaceService = taskWorkspaceService;
     }
 
     /**
@@ -124,6 +128,11 @@ public class ChatService {
         if (type != null) {
             ctx.put(IntentRouterMiddleware.CTX_INTENT_KEY, type.name());
         }
+        // 需求 1：把本会话的隔离协作目录（相对路径 tasks/{sessionId}）注入上下文，
+        // 供 IntentRouterMiddleware 在 PLANNING 指令中给出具体路径，并供委派门禁按会话校验
+        String agentSessionId = SESSION_PREFIX + conversation.getId();
+        ctx.put(IntentRouterMiddleware.CTX_COLLAB_DIR_KEY,
+                taskWorkspaceService.collabDirRelativePath(agentSessionId));
 
         String outgoing = userMessage;
         if (type == IntentType.RAG && ragService.isAvailable()) {

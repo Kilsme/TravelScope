@@ -3,9 +3,11 @@ package com.travelscope.config;
 import com.travelscope.agent.IntentClassifier;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.ItineraryAgent;
+import com.travelscope.agent.PlanningGateMiddleware;
 import com.travelscope.agent.TravelMasterAgent;
 import com.travelscope.agent.tools.AttractionTool;
 import com.travelscope.agent.tools.HotelTool;
+import com.travelscope.agent.tools.TaskTools;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
 import io.agentscope.core.skill.repository.ClasspathSkillRepository;
@@ -19,11 +21,11 @@ import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
+import com.travelscope.service.TaskRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -93,15 +95,26 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public Toolkit travelToolkit() {
+    public Toolkit travelToolkit(TaskRegistry taskRegistry) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(weatherTool);
         toolkit.registerTool(hotelTool);
         toolkit.registerTool(attractionTool);
         toolkit.registerTool(transportTool);
+        // 任务容器工具：create_task_backlog / get_task_progress / update_task_status
+        // 主 Agent 与规划子 Agent（SHARED 工作区、共享 Toolkit）均可调用
+        toolkit.registerTool(new TaskTools(taskRegistry));
         registerMcpClients(toolkit);
-        log.info("Toolkit 注册完成: 天气查询、酒店搜索、景点搜索、市内交通 + MCP(12306 火车票、飞常准飞机票)");
+        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器工具 + MCP(12306、飞常准)");
         return toolkit;
+    }
+
+    /**
+     * 任务容器注册表（用户+会话双级隔离，见 TaskRegistry）
+     */
+    @Bean
+    public TaskRegistry taskRegistry(TaskWorkspaceService taskWorkspaceService) {
+        return new TaskRegistry(taskWorkspaceService);
     }
 
     /**
@@ -192,7 +205,8 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel) throws IOException {
+    public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel,
+                                          TaskRegistry taskRegistry) throws IOException {
         // 规划子 Agent（行程规划师）：inline 模式声明，注册到主 Agent 的 HarnessAgent 中
         // maxIters 设得比主 Agent 小，控制 token 消耗；skills 限定其可用的技能集
         // workspaceMode(SHARED)：与主 Agent 共享工作区，保证主 Agent 写入的 task_backlog.md
@@ -222,7 +236,9 @@ public class AgentConfig {
                 .modelResolver(name -> dashscopeChatModel)
                 .toolkit(toolkit)
                 .maxIters(TravelMasterAgent.MAX_ITERS)
-                .middleware(new IntentRouterMiddleware())
+                // 责任链：意图路由（onSystemPrompt 注入本轮路由指令）
+                //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
+                .middlewares(List.of(new IntentRouterMiddleware(), new PlanningGateMiddleware(taskRegistry)))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
                 // 否则工具调用会挂起等待用户确认导致对话提前结束
                 .permissionContext(PermissionContextState.builder()
@@ -265,17 +281,19 @@ public class AgentConfig {
      * 共享任务区间服务
      * <p>
      * 管理主 Agent 与规划 Agent 之间的共享任务区间（一组 Markdown 文件）。
-     * 每个 session 对应一个独立的任务目录：
+     * 路径按 <b>用户 + 会话</b> 双级隔离（需求 1），且与 harness 的用户目录约定对齐：
+     * Agent 的文件工具会把相对路径解析到 {@code {workspacePath}/{userId}/} 之下，
+     * 因此磁盘路径为：
      * <pre>
-     * {workspacePath}/tasks/{sessionId}/
-     *   ├── task_backlog.md       主 Agent 写入的任务清单
+     * {workspacePath}/{userId}/tasks/{sessionId}/
+     *   ├── task_backlog.md       主 Agent 经 create_task_backlog 登记的任务清单
      *   ├── execution_result.md   规划 Agent 写回的执行结果
      *   ├── itinerary_draft.md    规划 Agent 生成的行程草案
      *   └── session_meta.md       会话元信息
      * </pre>
+     * Agent 侧使用相对路径 {@code tasks/{sessionId}/...} 访问，天然用户隔离。
      * </p>
      */
-    @Service
     public static class TaskWorkspaceService {
 
         private static final Logger wsLog = LoggerFactory.getLogger(TaskWorkspaceService.class);
@@ -298,59 +316,67 @@ public class AgentConfig {
         /**
          * 初始化任务区间（创建目录 + 元信息文件）
          *
-         * @param sessionId 会话ID
+         * @param userId    用户 ID（隔离第一级）
+         * @param sessionId 会话 ID（隔离第二级）
          * @return 任务区间根路径
          */
-        public Path initTaskWorkspace(String sessionId) {
-            Path dir = getTaskDir(sessionId);
+        public Path initTaskWorkspace(String userId, String sessionId) {
+            Path dir = getTaskDir(userId, sessionId);
             try {
                 Files.createDirectories(dir);
                 String meta = """
                         # 会话元信息
 
+                        - 用户ID: %s
                         - 会话ID: %s
                         - 创建时间: %s
                         - 状态: 进行中
                         - 参与者: travel-master, planning-agent
-                        """.formatted(sessionId, LocalDateTime.now().format(FMT));
-                writeFile(sessionId, FILE_SESSION_META, meta);
-                wsLog.info("任务区间初始化: sessionId={}, dir={}", sessionId, dir);
+                        """.formatted(userId, sessionId, LocalDateTime.now().format(FMT));
+                writeFile(userId, sessionId, FILE_SESSION_META, meta);
+                wsLog.info("任务区间初始化: 用户={}, 会话={}, dir={}", userId, sessionId, dir);
                 return dir;
             } catch (IOException e) {
-                wsLog.error("初始化任务区间失败: sessionId={}", sessionId, e);
+                wsLog.error("初始化任务区间失败: 用户={}, 会话={}", userId, sessionId, e);
                 throw new RuntimeException("初始化任务区间失败: " + e.getMessage(), e);
             }
         }
 
         /**
-         * 写入任务清单（task_backlog.md）—— 主 Agent 调用
+         * 写入任务清单（task_backlog.md）—— create_task_backlog 工具调用
          *
-         * @param sessionId 会话ID
-         * @param content    任务清单 Markdown 内容
+         * @return 实际落盘文件路径
          */
-        public void writeTaskBacklog(String sessionId, String content) {
-            writeFile(sessionId, FILE_TASK_BACKLOG, content);
-            wsLog.info("任务清单已写入: sessionId={}", sessionId);
+        public Path writeTaskBacklog(String userId, String sessionId, String content) {
+            return Path.of(writeFile(userId, sessionId, FILE_TASK_BACKLOG, content));
         }
 
         /**
-         * 读取任务清单（task_backlog.md）—— 规划 Agent 调用
-         *
-         * @param sessionId 会话ID
-         * @return 任务清单内容，不存在返回 null
+         * 读取任务清单（task_backlog.md）
          */
-        public String readTaskBacklog(String sessionId) {
-            return readFile(sessionId, FILE_TASK_BACKLOG);
+        public String readTaskBacklog(String userId, String sessionId) {
+            return readFile(userId, sessionId, FILE_TASK_BACKLOG);
+        }
+
+        /**
+         * 任务清单在 Agent 工作区中的相对路径（注入路由指令 / 委派说明使用）
+         * <p>Agent 的文件工具相对路径以 {workspace}/{userId}/ 为根，因此无需用户前缀。</p>
+         */
+        public String backlogRelativePath(String sessionId) {
+            return "tasks/" + sessionId + "/" + FILE_TASK_BACKLOG;
+        }
+
+        /**
+         * 会话协作目录在 Agent 工作区中的相对路径
+         */
+        public String collabDirRelativePath(String sessionId) {
+            return "tasks/" + sessionId;
         }
 
         /**
          * 追加执行结果（execution_result.md）—— 规划 Agent 调用
-         *
-         * @param sessionId 会话ID
-         * @param taskId    任务ID
-         * @param result    执行结果内容
          */
-        public void appendExecutionResult(String sessionId, String taskId, String result) {
+        public void appendExecutionResult(String userId, String sessionId, String taskId, String result) {
             String block = """
 
                     ## 执行结果: %s
@@ -361,7 +387,7 @@ public class AgentConfig {
                     ---
                     """.formatted(taskId, LocalDateTime.now().format(FMT), result);
 
-            Path file = getTaskDir(sessionId).resolve(FILE_EXECUTION_RESULT);
+            Path file = getTaskDir(userId, sessionId).resolve(FILE_EXECUTION_RESULT);
             try {
                 if (!Files.exists(file)) {
                     String header = "# 执行结果记录\n\n会话ID: " + sessionId + "\n";
@@ -369,72 +395,74 @@ public class AgentConfig {
                 } else {
                     Files.writeString(file, block, StandardCharsets.UTF_8, StandardOpenOption.APPEND);
                 }
-                wsLog.info("执行结果已追加: sessionId={}, taskId={}", sessionId, taskId);
+                wsLog.info("执行结果已追加: 用户={}, 会话={}, taskId={}", userId, sessionId, taskId);
             } catch (IOException e) {
-                wsLog.error("写入执行结果失败: sessionId={}, taskId={}", sessionId, taskId, e);
+                wsLog.error("写入执行结果失败: 用户={}, 会话={}, taskId={}", userId, sessionId, taskId, e);
             }
         }
 
         /**
          * 读取执行结果（execution_result.md）—— 主 Agent 调用
          */
-        public String readExecutionResult(String sessionId) {
-            return readFile(sessionId, FILE_EXECUTION_RESULT);
+        public String readExecutionResult(String userId, String sessionId) {
+            return readFile(userId, sessionId, FILE_EXECUTION_RESULT);
         }
 
         /**
          * 写入行程草案（itinerary_draft.md）—— 规划 Agent 调用
          */
-        public void writeItineraryDraft(String sessionId, String content) {
-            writeFile(sessionId, FILE_ITINERARY_DRAFT, content);
-            updateSessionStatus(sessionId, "已完成");
-            wsLog.info("行程草案已写入: sessionId={}", sessionId);
+        public void writeItineraryDraft(String userId, String sessionId, String content) {
+            writeFile(userId, sessionId, FILE_ITINERARY_DRAFT, content);
+            updateSessionStatus(userId, sessionId, "已完成");
+            wsLog.info("行程草案已写入: 用户={}, 会话={}", userId, sessionId);
         }
 
         /**
          * 读取行程草案（itinerary_draft.md）—— 主 Agent 调用
          */
-        public String readItineraryDraft(String sessionId) {
-            return readFile(sessionId, FILE_ITINERARY_DRAFT);
+        public String readItineraryDraft(String userId, String sessionId) {
+            return readFile(userId, sessionId, FILE_ITINERARY_DRAFT);
         }
 
         // ==================== 工具方法 ====================
 
         /**
-         * 获取任务区间目录路径
+         * 任务区间目录：{workspaceRoot}/{userId}/tasks/{sessionId}
+         * <p>与 harness 的用户目录约定对齐（Agent 相对路径以 {workspace}/{userId}/ 为根）。</p>
          */
-        public Path getTaskDir(String sessionId) {
-            return Paths.get(workspaceRoot, "tasks", sessionId);
+        public Path getTaskDir(String userId, String sessionId) {
+            return Paths.get(workspaceRoot, String.valueOf(userId), "tasks", sessionId);
         }
 
-        private void writeFile(String sessionId, String fileName, String content) {
-            Path dir = getTaskDir(sessionId);
+        private String writeFile(String userId, String sessionId, String fileName, String content) {
+            Path dir = getTaskDir(userId, sessionId);
             try {
                 Files.createDirectories(dir);
                 Path file = dir.resolve(fileName);
                 Files.writeString(file, content, StandardCharsets.UTF_8);
+                return file.toString();
             } catch (IOException e) {
-                wsLog.error("写入文件失败: sessionId={}, file={}", sessionId, fileName, e);
+                wsLog.error("写入文件失败: 用户={}, 会话={}, file={}", userId, sessionId, fileName, e);
                 throw new RuntimeException("写入文件失败: " + e.getMessage(), e);
             }
         }
 
-        private String readFile(String sessionId, String fileName) {
-            Path file = getTaskDir(sessionId).resolve(fileName);
+        private String readFile(String userId, String sessionId, String fileName) {
+            Path file = getTaskDir(userId, sessionId).resolve(fileName);
             if (!Files.exists(file)) {
-                wsLog.warn("文件不存在: sessionId={}, file={}", sessionId, fileName);
+                wsLog.warn("文件不存在: 用户={}, 会话={}, file={}", userId, sessionId, fileName);
                 return null;
             }
             try {
                 return Files.readString(file, StandardCharsets.UTF_8);
             } catch (IOException e) {
-                wsLog.error("读取文件失败: sessionId={}, file={}", sessionId, fileName, e);
+                wsLog.error("读取文件失败: 用户={}, 会话={}, file={}", userId, sessionId, fileName, e);
                 return null;
             }
         }
 
-        private void updateSessionStatus(String sessionId, String status) {
-            Path file = getTaskDir(sessionId).resolve(FILE_SESSION_META);
+        private void updateSessionStatus(String userId, String sessionId, String status) {
+            Path file = getTaskDir(userId, sessionId).resolve(FILE_SESSION_META);
             try {
                 if (Files.exists(file)) {
                     String content = Files.readString(file, StandardCharsets.UTF_8);
@@ -443,7 +471,7 @@ public class AgentConfig {
                     Files.writeString(file, content, StandardCharsets.UTF_8);
                 }
             } catch (IOException e) {
-                wsLog.error("更新会话状态失败: sessionId={}", sessionId, e);
+                wsLog.error("更新会话状态失败: 用户={}, 会话={}", userId, sessionId, e);
             }
         }
     }
