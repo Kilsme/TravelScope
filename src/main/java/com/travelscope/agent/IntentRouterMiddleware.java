@@ -62,8 +62,10 @@ public class IntentRouterMiddleware implements MiddlewareBase {
     }
 
     /**
-     * PLANNING 意图的路由指令：注入本会话隔离的协作路径与「登记 → 委派」的工具调用顺序
-     * （委派门禁 PlanningGateMiddleware 会在代码层校验，未登记清单直接委派会被拦截）
+     * PLANNING 意图的路由指令：注入本会话隔离的协作路径与
+     * 「intake 收口 → 登记 → 委派」的工具调用顺序
+     * （委派门禁 PlanningGateMiddleware 会在代码层校验，未登记清单直接委派会被拦截；
+     * intake-agent 的委派发生在登记之前，门禁已对其豁免）
      */
     private String planningDirective(RuntimeContext ctx) {
         String collabDir = ctx.get(CTX_COLLAB_DIR_KEY) != null
@@ -71,22 +73,28 @@ public class IntentRouterMiddleware implements MiddlewareBase {
         String sessionId = ctx.getSessionId();
         if (collabDir == null) {
             return """
-                    【本轮路由指令】系统已判定本轮为完整行程规划意图：请按任务拆分流程处理，\
-                    先用 create_task_backlog 工具把任务清单登记进任务容器，再委派规划子 Agent，\
-                    最后整合结果返回用户。""";
+                    【本轮路由指令】系统已判定本轮为完整行程规划意图：请按规划流程处理，\
+                    先委派 intake-agent 收口需求（缺项反问，信息收齐前不要进入任务拆分），\
+                    再用 create_task_backlog 工具把任务清单登记进任务容器，\
+                    然后委派规划子 Agent，最后整合结果返回用户。""";
         }
         return """
                 【本轮路由指令】系统已判定本轮为完整行程规划意图。本轮会话: %s，协作目录: %s（相对工作区根）。
 
                 委派流程（系统在代码层强制校验，跳步会被拦截）：
-                1. 按你的规划流程拆分任务（每项含 taskId/描述/建议工具/优先级）
-                2. 调用 create_task_backlog 工具登记清单：sessionId 填 "%s"，tasksJson 填任务 JSON 数组。
+                1. 委派 intake-agent 收口需求：任务说明中带上本轮用户消息与协作目录 %s。
+                   - intake-agent 返回反问 → 原样转达给用户，本轮结束
+                   - intake-agent 返回「信息已收齐」→ 读取 %s/intake_done.md，继续第 2 步
+                2. 按需求拆分任务（每项含 taskId/描述/建议工具/优先级）
+                3. 调用 create_task_backlog 工具登记清单：sessionId 填 "%s"，tasksJson 填任务 JSON 数组。
                    禁止用 write_file 代替本工具——容器以本工具为准
-                3. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
-                   「用 read_file 读取 %s/task_backlog.md 执行；每完成一项任务调用 update_task_status 工具回报状态」
-                4. 需要时调用 get_task_progress 查询未完成任务数；完成后读取 %s/ 下的 execution_result.md \
-                与 itinerary_draft.md 整合输出
-                """.formatted(sessionId, collabDir, sessionId, collabDir, collabDir);
+                4. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
+                   「用 read_file 读取 %s/task_backlog.md 与 %s/intake_done.md 执行；
+                   每完成一项任务调用 update_task_status 工具回报状态」
+                5. 需要时调用 get_task_progress 查询未完成任务数；完成后读取 %s/ 下的 execution_result.md、\
+                itinerary_draft.md 与 review_passed.md 整合输出
+                """.formatted(sessionId, collabDir, collabDir, collabDir, sessionId,
+                collabDir, collabDir, collabDir);
     }
 
     // ==================== 其余阶段透传 ====================

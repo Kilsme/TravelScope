@@ -30,6 +30,10 @@ import java.util.List;
  * </ul>
  * 这保证了「任务拆分必须写入容器」不依赖模型自觉——即使提示词被忽略，委派在代码层也无法绕过容器。
  * </p>
+ * <p>
+ * v3 豁免（需求文档 4.2 步骤 [5]/[6]）：需求收集发生在任务登记<b>之前</b>，
+ * 因此对 {@code agent_id=intake-agent} 的 spawn 不做门禁校验，直接放行。
+ * </p>
  */
 public class PlanningGateMiddleware implements MiddlewareBase {
 
@@ -49,9 +53,16 @@ public class PlanningGateMiddleware implements MiddlewareBase {
                                      java.util.function.Function<ActingInput, Flux<AgentEvent>> next) {
         String intent = ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY) != null
                 ? String.valueOf(ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY)) : null;
-        boolean hasSpawn = input.toolCalls().stream()
-                .anyMatch(t -> "agent_spawn".equals(t.getName()));
-        if (!hasSpawn || !"PLANNING".equals(intent)) {
+        List<ToolUseBlock> spawns = input.toolCalls().stream()
+                .filter(t -> "agent_spawn".equals(t.getName()))
+                .toList();
+        if (spawns.isEmpty() || !"PLANNING".equals(intent)) {
+            return next.apply(input);
+        }
+        // intake-agent 豁免：需求收集是任务登记的前置步骤，不受门禁约束
+        boolean hasGatedSpawn = spawns.stream()
+                .anyMatch(t -> !IntakeAgent.AGENT_NAME.equals(agentIdOf(t)));
+        if (!hasGatedSpawn) {
             return next.apply(input);
         }
 
@@ -62,19 +73,29 @@ public class PlanningGateMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
-        // 未登记清单 → 替换 agent_spawn 为纠正提示工具，委派不会发生
+        // 未登记清单 → 替换受门禁约束的 agent_spawn 为纠正提示工具，委派不会发生
+        // （intake-agent 的 spawn 即使与受门禁的 spawn 同轮出现也原样保留）
         log.warn("委派门禁拦截: 用户={}, 会话={}, 任务清单未登记，agent_spawn 已被替换为 {}",
                 userId, sessionId, GATE_HINT_TOOL);
         String hint = taskRegistry.gateHint(userId, sessionId);
         List<ToolUseBlock> rewritten = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
-            if ("agent_spawn".equals(call.getName())) {
+            if ("agent_spawn".equals(call.getName())
+                    && !IntakeAgent.AGENT_NAME.equals(agentIdOf(call))) {
                 rewritten.add(replaceWithHint(call, hint));
             } else {
                 rewritten.add(call);
             }
         }
         return next.apply(new ActingInput(rewritten));
+    }
+
+    /**
+     * 读取 agent_spawn 调用参数中的目标 agent_id（缺失视为未知，仍受门禁约束）
+     */
+    private String agentIdOf(ToolUseBlock call) {
+        Object agentId = call.getInput() != null ? call.getInput().get("agent_id") : null;
+        return agentId != null ? String.valueOf(agentId) : null;
     }
 
     /**

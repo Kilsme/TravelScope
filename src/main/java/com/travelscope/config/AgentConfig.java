@@ -2,14 +2,22 @@ package com.travelscope.config;
 
 import com.travelscope.agent.IntentClassifier;
 import com.travelscope.agent.IntentRouterMiddleware;
+import com.travelscope.agent.IntakeAgent;
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.PlanningGateMiddleware;
+import com.travelscope.agent.PoiResearchAgent;
+import com.travelscope.agent.ReviewerAgent;
+import com.travelscope.agent.ReviewerRetryMiddleware;
+import com.travelscope.agent.RouteOptimizerAgent;
 import com.travelscope.agent.TravelMasterAgent;
 import com.travelscope.agent.tools.AttractionTool;
 import com.travelscope.agent.tools.HotelTool;
+import com.travelscope.agent.tools.RequirementTools;
 import com.travelscope.agent.tools.TaskTools;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
+import com.travelscope.service.TaskRegistry;
+import com.travelscope.service.TripRequirementStore;
 import io.agentscope.core.skill.repository.ClasspathSkillRepository;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionMode;
@@ -21,7 +29,6 @@ import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
-import com.travelscope.service.TaskRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -43,23 +50,35 @@ import java.util.Map;
 /**
  * AgentScope 多智能体配置类
  * <p>
- * 组装架构（1主1从）：
+ * 组装架构（v3，6 Agent 编排）：
  * <pre>
- * 主 Agent（TravelMasterAgent）
- *  ├── 工具：WeatherTool / HotelTool / TransportTool
- *  ├── MCP 工具：12306（火车票实时查询）/ 飞常准（机票实时查询）
- *  └── 子 Agent → 规划 Agent（ItineraryAgent / planning-agent）
+ * 主 Agent（travel-master，HarnessAgent）
+ *  ├── 工具：WeatherTool / HotelTool / AttractionTool / TransportTool
+ *  │         + TaskTools / RequirementTools + MCP（12306 火车票 / 飞常准机票）
+ *  ├── Middleware：IntentRouterMiddleware → PlanningGateMiddleware → ReviewerRetryMiddleware
+ *  ├── subagent: intake-agent（需求收集，声明式叶子）
+ *  └── subagentFactory: planning-agent（二级编排者，手工构建非叶子）
+ *        ├── subagent: poi-research（景点检索筛选）
+ *        ├── subagent: route-optimizer（分日路线调优）
+ *        └── subagent: reviewer-agent（5 维质检）
  * </pre>
  * </p>
  * <p>
- * 协作流程：
+ * planning-agent 经 subagentFactory 工厂手工构建的原因：声明式 SubagentDeclaration
+ * 注册的子 Agent 会被框架标记为叶子节点（toolkit 无 agent_spawn，无法再委派），
+ * 而 v3 要求 Planner 并行调度 poi-research / route-optimizer 并送审 reviewer
+ * （需求文档 4.1/4.2），故走公开 API subagentFactory(name, description, factory)
+ * 在工厂内手工构建——工厂返回的 Agent 不做叶子标记，build 时自带 SubagentsMiddleware。
+ * spawn 深度 master(0) → planner(1) → poi/route/reviewer(2) ≤ 框架上限 3，合法。
+ * </p>
+ * <p>
+ * 协作流程（需求文档 4.2）：
  * <ol>
- *   <li>主 Agent 意图识别 + 任务拆分</li>
- *   <li>主 Agent 写入 task_backlog.md 到共享任务区间</li>
- *   <li>主 Agent 委派规划 Agent 执行</li>
- *   <li>规划 Agent 读取 task_backlog.md，调用工具，写回 execution_result.md</li>
- *   <li>规划 Agent 综合生成 itinerary_draft.md</li>
- *   <li>主 Agent 读取结果，汇总返回用户</li>
+ *   <li>主 Agent 意图路由（应用层）</li>
+ *   <li>委派 intake-agent 收口需求（状态机工具判缺项，≤3 轮反问）→ intake_done.md</li>
+ *   <li>主 Agent 拆分任务，create_task_backlog 登记任务容器</li>
+ *   <li>委派 planning-agent：直调工具 + 并行 spawn poi/route + 组装 + reviewer 质检</li>
+ *   <li>主 Agent 读取 itinerary_draft.md / review_passed.md 整合返回用户</li>
  * </ol>
  * </p>
  */
@@ -90,12 +109,13 @@ public class AgentConfig {
      * 创建 Toolkit（工具集）
      * <p>
      * 注册天气查询、酒店搜索、景点搜索、市内交通等本地工具，
+     * 任务容器工具（TaskTools）与需求状态机工具（RequirementTools），
      * 并通过 MCP 客户端接入火车票（12306）与飞机票（飞常准）实时查询工具，
-     * 供主 Agent 和规划 Agent 共同使用。
+     * 供主 Agent 和各子 Agent（SHARED 工作区、共享 Toolkit）共同使用。
      * </p>
      */
     @Bean
-    public Toolkit travelToolkit(TaskRegistry taskRegistry) {
+    public Toolkit travelToolkit(TaskRegistry taskRegistry, TripRequirementStore tripRequirementStore) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(weatherTool);
         toolkit.registerTool(hotelTool);
@@ -104,9 +124,19 @@ public class AgentConfig {
         // 任务容器工具：create_task_backlog / get_task_progress / update_task_status
         // 主 Agent 与规划子 Agent（SHARED 工作区、共享 Toolkit）均可调用
         toolkit.registerTool(new TaskTools(taskRegistry));
+        // 需求状态机工具（v3 FR-S02）：intake-agent 判缺项/写回用，判断环节零模型调用
+        toolkit.registerTool(new RequirementTools(tripRequirementStore));
         registerMcpClients(toolkit);
-        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器工具 + MCP(12306、飞常准)");
+        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + MCP(12306、飞常准)");
         return toolkit;
+    }
+
+    /**
+     * 行程需求状态仓库 Bean（intake-agent 的状态机存储，userId:sessionId 双键隔离）
+     */
+    @Bean
+    public TripRequirementStore tripRequirementStore() {
+        return new TripRequirementStore();
     }
 
     /**
@@ -197,35 +227,30 @@ public class AgentConfig {
      * 创建主 Agent（TravelMasterAgent）
      * <p>
      * 主 Agent 负责：
-     * - 意图识别（判断是简单查询还是行程规划）
-     * - 任务拆分（将复杂需求拆分为具体任务清单）
-     * - 写入 task_backlog.md 到共享任务区间
-     * - 委派规划 Agent 执行
-     * - 读取执行结果，汇总返回用户
+     * - 意图路由（应用层分类 + 路由指令注入）
+     * - 委派 intake-agent 收口需求（缺项反问）
+     * - 任务拆分并登记任务容器
+     * - 委派 planning-agent（二级编排者）执行完整规划
+     * - 读取执行结果，整合返回用户
      * </p>
      */
     @Bean
     public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel,
                                           TaskRegistry taskRegistry) throws IOException {
-        // 规划子 Agent（行程规划师）：inline 模式声明，注册到主 Agent 的 HarnessAgent 中
-        // maxIters 设得比主 Agent 小，控制 token 消耗；skills 限定其可用的技能集
-        // workspaceMode(SHARED)：与主 Agent 共享工作区，保证主 Agent 写入的 task_backlog.md
-        // 对子 Agent 的 read_file 可见（默认 ISOLATED 会把子 Agent 隔离到 agents/{name}/ 子目录，
-        // 导致它读不到主 Agent 写入的任务清单）
-        SubagentDeclaration planningSubAgent = SubagentDeclaration.builder()
-                .name(ItineraryAgent.AGENT_NAME)
-                .description("规划 Agent（行程规划师），负责执行主 Agent 分配的任务清单，"
-                        + "调用天气/酒店/景点/火车票/飞机票工具获取实时数据，生成行程方案")
-                .inlineAgentsBody(ItineraryAgent.SYS_PROMPT)
+        // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
+        // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state）
+        SubagentDeclaration intakeSubAgent = SubagentDeclaration.builder()
+                .name(IntakeAgent.AGENT_NAME)
+                .description("需求收集 Agent（接待员），负责规划前的关键信息反问："
+                        + "调需求状态机工具判断缺项（纯代码零模型调用），理解用户模糊回答并写回状态，"
+                        + "≤3 轮反问后收齐或带默认值放行，产出 intake_done.md")
+                .inlineAgentsBody(IntakeAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
-                .maxIters(ItineraryAgent.MAX_ITERS)
+                .maxIters(IntakeAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
-                .skills(List.of(
-                        "weather-query",
-                        "hotel-search",
-                        "attraction-search",
-                        "train-ticket-query",
-                        "flight-ticket-query"))
+                .tools(List.of(
+                        "get_missing_fields",
+                        "update_requirement_state"))
                 .build();
 
         HarnessAgent agent = HarnessAgent.builder()
@@ -238,7 +263,10 @@ public class AgentConfig {
                 .maxIters(TravelMasterAgent.MAX_ITERS)
                 // 责任链：意图路由（onSystemPrompt 注入本轮路由指令）
                 //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
-                .middlewares(List.of(new IntentRouterMiddleware(), new PlanningGateMiddleware(taskRegistry)))
+                //         + Reviewer 回炉（v3 骨架空壳透传，拦截逻辑待实现）
+                .middlewares(List.of(new IntentRouterMiddleware(),
+                        new PlanningGateMiddleware(taskRegistry),
+                        new ReviewerRetryMiddleware()))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
                 // 否则工具调用会挂起等待用户确认导致对话提前结束
                 .permissionContext(PermissionContextState.builder()
@@ -247,14 +275,97 @@ public class AgentConfig {
                 .workspace(appProperties.getAgentscope().getWorkspacePath())
                 .skillRepository(new ClasspathSkillRepository("skills"))
                 .stateStore(new InMemoryAgentStateStore())
-                .subagent(planningSubAgent)
+                // 子 Agent 一：intake-agent（声明式叶子，需求收集）
+                .subagent(intakeSubAgent)
+                // 子 Agent 二：planning-agent（subagentFactory 工厂手工构建非叶子二级编排者，
+                // 工厂内挂 poi-research / route-optimizer / reviewer 三个声明，见 buildPlannerAgent；
+                // 框架每次 spawn 时调用工厂 build 新实例，与 IntentClassifier 每次新建同款模式）
+                .subagentFactory(ItineraryAgent.AGENT_NAME,
+                        "规划 Agent（行程规划师，二级编排者）：直调工具获取天气/酒店/车票实时数据，"
+                                + "并行调度 poi-research 与 route-optimizer 两个子 Agent，"
+                                + "组装行程草案并经 reviewer-agent 质检闭环",
+                        name -> buildPlannerAgent(toolkit, dashscopeChatModel))
                 .build();
 
-        log.info("主 Agent 构建完成: {} (workspace={}, 含 1 个规划子 Agent: {})",
+        log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 声明式 + {} 工厂式[内含 {}/{}/{}])",
                 TravelMasterAgent.AGENT_NAME,
                 appProperties.getAgentscope().getWorkspacePath(),
-                ItineraryAgent.AGENT_NAME);
+                IntakeAgent.AGENT_NAME,
+                ItineraryAgent.AGENT_NAME,
+                PoiResearchAgent.AGENT_NAME, RouteOptimizerAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME);
         return agent;
+    }
+
+    /**
+     * 手工构建规划 Agent（planning-agent，非叶子二级编排者）
+     * <p>
+     * 不走声明式 SubagentDeclaration（其子 Agent 被框架标记为叶子、无 agent_spawn），
+     * 而是直接用 HarnessAgent.builder() 构建：build 时自动安装 SubagentsMiddleware，
+     * 注册 agent_spawn / agent_send / agent_list / task_* 工具，因此本 Agent 能 spawn
+     * 自己声明的三个子 Agent。深度 master(0) → planner(1) → 子(2)，在框架上限 3 之内。
+     * </p>
+     * <p>
+     * 传入共享 toolkit 引用（HarnessAgent.build() 内部会 copy，浅拷贝共享工具实例，
+     * 不污染 travelToolkit Bean，MCP npx 进程不会重复拉起）；
+     * workspace / skillRepository / 权限模式与主 Agent 一致。
+     * </p>
+     */
+    private HarnessAgent buildPlannerAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel) {
+        // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
+        SubagentDeclaration poiResearch = SubagentDeclaration.builder()
+                .name(PoiResearchAgent.AGENT_NAME)
+                .description("景点检索 Agent（检索员）：按目的地+天数+偏好多轮检索筛选景点候选，"
+                        + "召回不足时换关键词重查，产出 poi_shortlist.md")
+                .inlineAgentsBody(PoiResearchAgent.SYS_PROMPT)
+                .model(appProperties.getDashscope().getModel())
+                .maxIters(PoiResearchAgent.MAX_ITERS)
+                .workspaceMode(WorkspaceMode.SHARED)
+                .skills(List.of("attraction-search"))
+                .build();
+
+        // 路线调优子 Agent：读候选清单迭代排线，产出 route_plan.md
+        SubagentDeclaration routeOptimizer = SubagentDeclaration.builder()
+                .name(RouteOptimizerAgent.AGENT_NAME)
+                .description("路线调优 Agent（排线员）：读 poi_shortlist.md，两两调路线工具算通勤，"
+                        + "就近聚类分日 + 迭代调整再算，产出 route_plan.md")
+                .inlineAgentsBody(RouteOptimizerAgent.SYS_PROMPT)
+                .model(appProperties.getDashscope().getModel())
+                .maxIters(RouteOptimizerAgent.MAX_ITERS)
+                .workspaceMode(WorkspaceMode.SHARED)
+                .build();
+
+        // 质检子 Agent：5 维评分 + 可调工具核验事实，产出 review_passed.md / review_report.md
+        SubagentDeclaration reviewer = SubagentDeclaration.builder()
+                .name(ReviewerAgent.AGENT_NAME)
+                .description("质量审阅 Agent（质检员）：对 itinerary_draft.md 做 5 维评分"
+                        + "（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分），"
+                        + "可调工具核验事实，通过写 review_passed.md，不通过写 review_report.md")
+                .inlineAgentsBody(ReviewerAgent.SYS_PROMPT)
+                .model(appProperties.getDashscope().getModel())
+                .maxIters(ReviewerAgent.MAX_ITERS)
+                .workspaceMode(WorkspaceMode.SHARED)
+                .build();
+
+        try {
+            return HarnessAgent.builder()
+                    .name(ItineraryAgent.AGENT_NAME)
+                    .sysPrompt(ItineraryAgent.SYS_PROMPT)
+                    .model(dashscopeChatModel)
+                    .modelResolver(name -> dashscopeChatModel)
+                    .toolkit(toolkit)
+                    .maxIters(ItineraryAgent.MAX_ITERS)
+                    .permissionContext(PermissionContextState.builder()
+                            .mode(PermissionMode.BYPASS)
+                            .build())
+                    .workspace(appProperties.getAgentscope().getWorkspacePath())
+                    .skillRepository(new ClasspathSkillRepository("skills"))
+                    .stateStore(new InMemoryAgentStateStore())
+                    .subagents(List.of(poiResearch, routeOptimizer, reviewer))
+                    .build();
+        } catch (IOException e) {
+            // subagentFactory 的 Function 不允许抛受检异常，转非受检
+            throw new IllegalStateException("构建 planning-agent 失败: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -280,16 +391,21 @@ public class AgentConfig {
     /**
      * 共享任务区间服务
      * <p>
-     * 管理主 Agent 与规划 Agent 之间的共享任务区间（一组 Markdown 文件）。
+     * 管理主 Agent 与各子 Agent 之间的共享任务区间（一组 Markdown 文件）。
      * 路径按 <b>用户 + 会话</b> 双级隔离（需求 1），且与 harness 的用户目录约定对齐：
      * Agent 的文件工具会把相对路径解析到 {@code {workspacePath}/{userId}/} 之下，
      * 因此磁盘路径为：
      * <pre>
      * {workspacePath}/{userId}/tasks/{sessionId}/
-     *   ├── task_backlog.md       主 Agent 经 create_task_backlog 登记的任务清单
-     *   ├── execution_result.md   规划 Agent 写回的执行结果
-     *   ├── itinerary_draft.md    规划 Agent 生成的行程草案
-     *   └── session_meta.md       会话元信息
+     *   ├── intake_done.md      intake-agent 写入的需求收集结果
+     *   ├── task_backlog.md     主 Agent 经 create_task_backlog 登记的任务清单
+     *   ├── poi_shortlist.md    poi-research 产出的景点候选清单
+     *   ├── route_plan.md       route-optimizer 产出的分日路线方案
+     *   ├── execution_result.md 规划 Agent 写回的执行结果
+     *   ├── itinerary_draft.md  规划 Agent 生成的行程草案
+     *   ├── review_report.md    reviewer-agent 不通过时的质检报告
+     *   ├── review_passed.md    reviewer-agent 通过时的凭证
+     *   └── session_meta.md     会话元信息
      * </pre>
      * Agent 侧使用相对路径 {@code tasks/{sessionId}/...} 访问，天然用户隔离。
      * </p>
@@ -300,9 +416,14 @@ public class AgentConfig {
 
         private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
+        public static final String FILE_INTAKE_DONE = "intake_done.md";
         public static final String FILE_TASK_BACKLOG = "task_backlog.md";
+        public static final String FILE_POI_SHORTLIST = "poi_shortlist.md";
+        public static final String FILE_ROUTE_PLAN = "route_plan.md";
         public static final String FILE_EXECUTION_RESULT = "execution_result.md";
         public static final String FILE_ITINERARY_DRAFT = "itinerary_draft.md";
+        public static final String FILE_REVIEW_REPORT = "review_report.md";
+        public static final String FILE_REVIEW_PASSED = "review_passed.md";
         public static final String FILE_SESSION_META = "session_meta.md";
 
         private final String workspaceRoot;
@@ -331,7 +452,7 @@ public class AgentConfig {
                         - 会话ID: %s
                         - 创建时间: %s
                         - 状态: 进行中
-                        - 参与者: travel-master, planning-agent
+                        - 参与者: travel-master, intake-agent, planning-agent, poi-research, route-optimizer, reviewer-agent
                         """.formatted(userId, sessionId, LocalDateTime.now().format(FMT));
                 writeFile(userId, sessionId, FILE_SESSION_META, meta);
                 wsLog.info("任务区间初始化: 用户={}, 会话={}, dir={}", userId, sessionId, dir);
