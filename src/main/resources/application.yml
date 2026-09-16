@@ -122,6 +122,31 @@ travelscope:
     # RRF 参数（仅当 fusion=rrf 时生效）
     rrf-k: 60
 
+  # ---- 意图三层级联配置（FR-S01）----
+  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 qwen-turbo 单标签 → L3 IntentClassifier 兜底
+  # 上层命中即短路；规则表为空时代码内置同款默认规则
+  intent-cascade:
+    enabled: true
+    l0-enabled: true
+    l0-ttl-minutes: 30
+    l0-max-message-length: 20
+    l2-enabled: true
+    l2-model: qwen-turbo
+    l2-cache-enabled: true
+    l2-cache-ttl-minutes: 60
+    # L1 规则表（按序首个命中生效；规划类自然语言刻意不进 L1，交由 L2/L3 语义判定）
+    l1-rules:
+      - pattern: "^(你好|您好|嗨|哈喽|hi|hello|在吗)[?？!！。~～\\s]*$"
+        intent: CHAT
+      - pattern: "^/规划"
+        intent: PLANNING
+      - pattern: "^/天气"
+        intent: TOOL_CALL
+      - pattern: "(查询|查一下|查查).{0,12}(火车票|高铁票|动车票|车票|机票|航班)"
+        intent: TOOL_CALL
+      - pattern: "(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)"
+        intent: TOOL_CALL
+
 # ======================== 日志配置 ========================
 logging:
   level:

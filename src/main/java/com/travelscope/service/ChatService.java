@@ -2,7 +2,7 @@ package com.travelscope.service;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
-import com.travelscope.agent.IntentClassifier;
+import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
 import com.travelscope.dto.ChatEvent;
@@ -53,18 +53,18 @@ public class ChatService {
     private static final String SESSION_PREFIX = "conv-";
 
     private final HarnessAgent travelMasterAgent;
-    private final IntentClassifier intentClassifier;
+    private final IntentCascadeRouter intentCascadeRouter;
     private final RagService ragService;
     private final ConversationService conversationService;
     private final TaskWorkspaceService taskWorkspaceService;
 
     public ChatService(HarnessAgent travelMasterAgent,
-                       IntentClassifier intentClassifier,
+                       IntentCascadeRouter intentCascadeRouter,
                        RagService ragService,
                        ConversationService conversationService,
                        TaskWorkspaceService taskWorkspaceService) {
         this.travelMasterAgent = travelMasterAgent;
-        this.intentClassifier = intentClassifier;
+        this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
         this.conversationService = conversationService;
         this.taskWorkspaceService = taskWorkspaceService;
@@ -102,12 +102,15 @@ public class ChatService {
     }
 
     /**
-     * 意图分类（阻塞调用，运行在 boundedElastic）
+     * 意图分类（阻塞调用，运行在 boundedElastic；FR-S01 三层级联入口）
+     * <p>
+     * L0 会话延续 → L1 规则表 → L2 qwen-turbo → L3 IntentClassifier 兜底，
+     * 上层命中即短路（见 IntentCascadeRouter）；日志格式 cascade_hit=L{n} latency=xms。
      *
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
     private IntentResult resolveIntent(String userMessage, Long userId, Long conversationId) {
-        IntentResult result = intentClassifier.classify(
+        IntentResult result = intentCascadeRouter.classify(
                 userMessage, String.valueOf(userId), SESSION_PREFIX + conversationId);
         if (result != null && result.toIntentType() == IntentType.RAG) {
             log.info("意图=RAG，知识库可用: {}（不可用时由路由指令回退为直接回答）", ragService.isAvailable());

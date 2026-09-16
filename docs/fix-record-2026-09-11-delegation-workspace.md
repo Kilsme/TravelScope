@@ -146,3 +146,130 @@ write_file → write_file:SUCCESS → read_file → read_file:SUCCESS → … �
 - 本机 `mvn spring-boot:run` 存在类路径问题（agentscope 类加载失败），用
   `java -cp "target/classes;依赖" com.travelscope.TravelScopeApplication` 启动正常；IDEA 内启动不受影响
 - 打包为 Spring Boot fat jar 启动时，harness 的文件写入不落盘（classpath 启动正常），部署时需留意
+
+## 7. v3 架构重构对本文机制的演进（2026-09-14 追记）
+
+> 2026-09-14 按需求文档 v3 完成主/子 Agent 骨架重构（6 Agent 编排，工具代码原样保留）。
+> 本节说明本文记录的两项机制在 v3 下的延续与变更，历史记录（第 1~6 节）保持原样。
+> 现行架构详见 `architecture.md` 第 7 节。
+
+### 7.1 WorkspaceMode.SHARED 的延续
+
+本文的核心修复（子代理共享工作区）在 v3 全面继承：全部 5 个子 Agent 声明
+（intake-agent / poi-research / route-optimizer / reviewer-agent，以及工厂内构建的
+planning-agent）均显式 `workspaceMode(WorkspaceMode.SHARED)`，协作文件收敛在
+`{workspace}/{userId}/tasks/{sessionId}/`（v3 新增 intake_done.md / poi_shortlist.md /
+route_plan.md / review_report.md / review_passed.md 5 个文件）。
+
+### 7.2 planning-agent 注册方式的变更（声明式 → 工厂）
+
+v3 要求 Planner 作为二级编排者 spawn poi-research / route-optimizer / reviewer-agent，
+但框架核验发现（agentscope-harness 2.0.3 反编译）：`SubagentDeclaration` 声明的子 Agent
+被强制 `asLeafSubagent()`——toolkit 无 `agent_spawn`，不能再委派。因此 planning-agent
+从本文 3.1 节的声明式注册改为 `subagentFactory(name, description, factory)` 公开 API：
+工厂内用 `HarnessAgent.builder()` 手工构建（非叶子），能 spawn 自己声明的 3 个子 Agent，
+spawn 深度 2 ≤ 框架上限 3。
+
+注意：本文 3.1 节的「修复后」代码片段是 **2026-09-11 当时的历史状态**（声明式 + SHARED），
+v3 起该写法已不适用于 planning-agent，但 intake-agent 等叶子子 Agent 仍是同一声明式写法。
+
+### 7.3 PlanningGateMiddleware 新增 intake-agent 豁免
+
+v3 流程中需求收集发生在任务登记**之前**（需求文档 4.2 步骤 [5]/[6]：master 先委派
+intake-agent 反问收口，收齐后才 create_task_backlog）——若门禁不加区分，intake 的
+spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更新为：读取 `agent_spawn` 调用参数
+中的 `agent_id`，仅对 `intake-agent` 之外的目标执行「未登记即拦截」；intake 的 spawn
+即使与受门禁的 spawn 同轮出现也原样放行。
+
+### 7.4 后续迭代（未落地，见需求文档 v3 §9.2）
+
+- ReviewerRetryMiddleware 目前为空壳透传（order=-900 占位），回炉拦截逻辑待实现
+- TripRequirementStore 为内存版，待迁移 Redis hash `trip:req:{userId}:{sessionId}`
+- 意图三层级联已于 2026-09-16 落地（见 7.5 节）；SSE 新事件（clarify_question /
+  agent_status / review_score）、RAG 双路检索仍为后续迭代项
+
+### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
+
+> 意图识别从「每条消息必调 qwen-plus 单层分类」升级为三层级联，与本文主题
+> （委派时序/工作区）同属应用层编排机制，追记于此。完整设计见 `architecture.md` 第 5 节。
+
+**结构**：`IntentCascadeRouter`（新入口，ChatService.resolveIntent 改接）——
+L0 会话延续（短追问 + Redis 30min 最近意图，0 计算）→ L1 保守正则规则表
+（yml `travelscope.intent-cascade.l1-rules` 可配置，未配置用代码内置默认；首个命中即返回）→
+L2 qwen-turbo 单标签 + Redis 文本缓存（sha256 键，60min）→ L3 现有 IntentClassifier
+方法引用包装（零改动兜底）。每层命中即短路、写回 L0（TTL 滚动）、打
+`cascade_hit=L{n} latency={x}ms` 埋点日志。
+
+**L1 刻意保守**（验收标准驱动）：规划类自然语言（「帮我规划杭州三日游」）不进 L1，
+由 L2 语义判定——L1 只收编打招呼、`/规划`、`/天气` 命令前缀与极固定句式，
+并有负向回归用例固定守护。
+
+**实测验收**：「你好」/「/天气 北京」L1 命中 0ms 零模型调用；
+「帮我规划杭州三日游」真实链路 L2 命中 270ms 判 PLANNING；
+同会话追问「那改成四天呢」L0 命中 0ms。全量 49 测试 0 失败。
+
+**两个根因排查记录**（对后续开发有复用价值）：
+
+1. **qwen-turbo 不走结构化输出**：框架 `call(msg, Class)` 的结构化输出依赖
+   metadata `_structured_output` 键，qwen-plus 能走通合成工具路径，但 qwen-turbo
+   实测常把标签（如 `CHAT`）直接当纯文本输出，框架抛
+   `No structured output in message metadata` 异常导致 L2 全部 miss。
+   修复：LightweightIntentClassifier 双路径解析——结构化解析异常/为空后，
+   对 textContent 做纯文本标签归一化（去引号句读 → IntentType.valueOf），
+   双路皆失败才返回 null 落 L3。教训：**轻量模型接入 AgentScope 结构化输出
+   前必须实测验证遵循度，纯文本标签兜底是低成本保险**。
+2. **Router 层缓存防御缺失**：初期 Router 假设 IntentCache 实现永不抛异常
+   （静默降级职责全押在 RedisIntentCache 实现里），ThrowingCache 单测暴露
+   异常直接穿透级联链路。修复：Router 侧加 safe* 防御包装，与实现层降级
+   形成双保险。教训：**接口实现方的容错约定不能替代调用方防御**。
+
+**环境备注**：Redis 回环测试（RedisIntentCacheTest）按 6379 端口门控——本机
+Redis 未运行时自动跳过，`docker-compose up -d redis` 后生效；Redis 不可用期间
+级联自动降级为 L1→L2→L3（无缓存模式），不阻断对话。
+
+### 7.6 PlanningGateMiddleware 豁免逻辑上线后的 ClassCastException（2026-09-16 追记）
+
+> 7.3 节的 intake-agent 豁免上线首日，真实规划请求触发
+> `String cannot be cast to [C` 导致 Agent 执行异常——根因是 AgentScope API
+> 的一个泛型签名陷阱，记录于此防止复发。
+
+**现象**：前端规划对话报「Agent 执行异常: class java.lang.String cannot be
+cast to class [C」；堆栈顶在 `PlanningGateMiddleware.onActing`（豁免逻辑读
+意图的行）。
+
+**根因**：`RuntimeContext.get(String)` 的签名是 `<T> T get(String)`（泛型返回值，
+无目标类型时 javac 需自行推断）。豁免代码写的：
+
+```java
+String intent = ctx.get(CTX_INTENT_KEY) != null
+        ? String.valueOf(ctx.get(CTX_INTENT_KEY)) : null;   // ← 出事行
+```
+
+javac 的**目标类型推断**把 `<T>` 推断为 `char[]`，使 `String.valueOf(...)`
+绑定了 `String.valueOf(char[])` 重载（而非预期的 `valueOf(Object)`）。反编译
+字节码可见 `checkcast [C` + `String.valueOf([C)` 铁证；运行时存的是 String，
+强转 char[] 即抛 ClassCastException。
+
+**为什么骨架测试没拦住**：单测桩直接构造 IntentCache/LlmClassifier，未走
+真实 `RuntimeContext.put/get` 链路；首次真实 PLANNING 请求进中间件链才触发。
+教训：**读上下文的代码路径要有一条真实链路集成测试覆盖**。
+
+**修复**：直接以 `String` 接收（泛型推断为 String，零强转）：
+
+```java
+String intent = ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY);   // 直接接收
+```
+
+同步排查全仓，IntentRouterMiddleware.planningDirective 里 collabDir 的同款
+三元写法一并修复（该处历史代码因推断路径不同暂未爆雷，但写法相同，属隐患），
+两处均留注释说明陷阱。
+
+**通用教训（对使用 AgentScope 泛型 API 的所有代码有效）**：
+`<T> T` 返回值的方法（`ctx.get(key)` 等）**不要套 `String.valueOf(...)`**
+——目标类型推断会把它绑定到 `valueOf(char[])` 重载；直接用具体类型变量接收。
+验证手段：`javap -c` 检查产物无 `checkcast [C`。
+
+**修复后验证**：级联相关 25 测试全过；重启应用真实请求复现——
+`cascade_hit=L2 intent=PLANNING` → 门禁豁免放行 intake-agent →
+intake-agent 调 get_missing_fields 反问出发日期，v3 规划链路（含 6.2 节任务
+容器、7.3 节豁免、7.5 节级联）首次端到端跑通，无异常。

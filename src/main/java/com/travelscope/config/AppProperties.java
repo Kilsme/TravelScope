@@ -4,6 +4,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 应用配置属性类
  * <p>
@@ -37,6 +40,9 @@ public class AppProperties {
 
     /** RAG 双路检索配置 */
     private RagConfig rag = new RagConfig();
+
+    /** 意图三层级联配置（FR-S01） */
+    private IntentCascadeConfig intentCascade = new IntentCascadeConfig();
 
     @Data
     public static class DashScopeConfig {
@@ -141,5 +147,45 @@ public class AppProperties {
         private String fusion = "rrf";
         /** RRF 参数 k（仅当 fusion=rrf 时生效） */
         private int rrfK = 60;
+    }
+
+    /**
+     * 意图三层级联配置（FR-S01：L0 会话延续 → L1 规则表 → L2 轻量分类 → L3 LLM 兜底）
+     * <p>
+     * L1 规则表为仓库首个 List 类型配置：yml 显式配置时以 yml 为准，
+     * 未配置/为空时 IntentCascadeRouter 使用代码内置同款默认规则。
+     * 规则按序首个命中即生效，规划类自然语言（如「帮我规划杭州三日游」）
+     * 刻意不进 L1，交由 L2/L3 语义判定。
+     * </p>
+     */
+    @Data
+    public static class IntentCascadeConfig {
+        /** 级联总开关（false 时直通 L3，保持旧行为） */
+        private boolean enabled = true;
+        /** L1 规则表（正则 + 意图标签，按序首个命中生效） */
+        private List<L1Rule> l1Rules = new ArrayList<>();
+        /** L0 会话延续开关 */
+        private boolean l0Enabled = true;
+        /** L0 最近意图缓存 TTL（分钟） */
+        private int l0TtlMinutes = 30;
+        /** L0 触发的消息长度上限（字符，短追问才查缓存） */
+        private int l0MaxMessageLength = 20;
+        /** L2 轻量分类开关 */
+        private boolean l2Enabled = true;
+        /** L2 轻量分类模型（单标签，低成本） */
+        private String l2Model = "qwen-turbo";
+        /** L2 文本缓存开关 */
+        private boolean l2CacheEnabled = true;
+        /** L2 文本缓存 TTL（分钟） */
+        private int l2CacheTtlMinutes = 60;
+    }
+
+    /** L1 单条规则：正则模式 + 意图标签（CHAT/TOOL_CALL/PLANNING/RAG） */
+    @Data
+    public static class L1Rule {
+        /** 正则表达式（Java Pattern 语法） */
+        private String pattern;
+        /** 意图标签（IntentType.name()） */
+        private String intent;
     }
 }

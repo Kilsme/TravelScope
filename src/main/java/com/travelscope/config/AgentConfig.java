@@ -1,9 +1,11 @@
 package com.travelscope.config;
 
+import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentClassifier;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntakeAgent;
 import com.travelscope.agent.ItineraryAgent;
+import com.travelscope.agent.LightweightIntentClassifier;
 import com.travelscope.agent.PlanningGateMiddleware;
 import com.travelscope.agent.PoiResearchAgent;
 import com.travelscope.agent.ReviewerAgent;
@@ -16,6 +18,7 @@ import com.travelscope.agent.tools.RequirementTools;
 import com.travelscope.agent.tools.TaskTools;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
+import com.travelscope.service.IntentCache;
 import com.travelscope.service.TaskRegistry;
 import com.travelscope.service.TripRequirementStore;
 import io.agentscope.core.skill.repository.ClasspathSkillRepository;
@@ -207,18 +210,38 @@ public class AgentConfig {
     }
 
     /**
-     * 创建 DashScope 聊天模型 Bean
+     * 创建 DashScope 聊天模型 Bean（主链路 qwen-plus）
      * <p>
      * 显式构建（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY），
      * 供主 Agent 与意图分类器共用；子代理的字符串模型 ID 通过 modelResolver 解析到同一实例，
      * 避免依赖 DASHSCOPE_API_KEY 环境变量的字符串模型自动解析路径。
      * </p>
+     * <p>
+     * @Primary：容器内现在有两个 DashScopeChatModel Bean（本 Bean + turbo），
+     * 按类型注入的 ChatService 等回退到本主链路模型。
+     * </p>
      */
     @Bean
-    public DashScopeChatModel dashscopeChatModel() {
-        return DashScopeChatModel.builder()
+    @org.springframework.context.annotation.Primary
+    public DashScopeChatModel dashscopeChatModel() {        return DashScopeChatModel.builder()
                 .apiKey(appProperties.getDashscope().getApiKey())
                 .modelName(appProperties.getDashscope().getModel())
+                .stream(true)
+                .build();
+    }
+
+    /**
+     * L2 轻量分类模型 Bean（qwen-turbo，FR-S01 意图级联）
+     * <p>
+     * 与主链路共用 apiKey，仅模型名不同（travelscope.intent-cascade.l2-model）；
+     * 仅被意图级联的 L2 层使用（LightweightIntentClassifier）。
+     * </p>
+     */
+    @Bean
+    public DashScopeChatModel dashscopeTurboModel() {
+        return DashScopeChatModel.builder()
+                .apiKey(appProperties.getDashscope().getApiKey())
+                .modelName(appProperties.getIntentCascade().getL2Model())
                 .stream(true)
                 .build();
     }
@@ -369,15 +392,36 @@ public class AgentConfig {
     }
 
     /**
-     * 创建意图分类器 Bean
+     * 创建意图分类器 Bean（FR-S01 三层级联的 L3 兜底层）
      * <p>
-     * 轻量 ReActAgent（无工具无子代理），对用户消息做结构化意图分类，
-     * ChatService 据此在应用层路由（避免闲聊/单点查询触发规划子 Agent）。
+     * 轻量 ReActAgent（无工具无子代理），对用户消息做结构化意图分类。
+     * v3 起不再被 ChatService 直接调用，而是被 IntentCascadeRouter 以方法引用
+     * 包装为 L3 兜底（本类逻辑零改动）；L0~L2 未命中或级联关闭时才到达这里。
      * </p>
      */
     @Bean
-    public IntentClassifier intentClassifier(DashScopeChatModel dashscopeChatModel) {
+    public IntentClassifier intentClassifier(
+            @org.springframework.beans.factory.annotation.Qualifier("dashscopeChatModel")
+            DashScopeChatModel dashscopeChatModel) {
         return new IntentClassifier(dashscopeChatModel);
+    }
+
+    /**
+     * 创建意图级联路由器 Bean（FR-S01：L0 → L1 → L2 → L3，上层命中即短路）
+     * <p>
+     * L2 注入 qwen-turbo 轻量分类器；L3 以方法引用包装现有 IntentClassifier（零改动）；
+     * 缓存为 RedisIntentCache（Redis 不可用时静默降级为无缓存模式）。
+     * </p>
+     */
+    @Bean
+    public IntentCascadeRouter intentCascadeRouter(
+            IntentCache intentCache,
+            IntentClassifier intentClassifier,
+            @org.springframework.beans.factory.annotation.Qualifier("dashscopeTurboModel")
+            DashScopeChatModel dashscopeTurboModel) {
+        LightweightIntentClassifier l2 = new LightweightIntentClassifier(dashscopeTurboModel);
+        return new IntentCascadeRouter(appProperties, intentCache,
+                l2::classify, intentClassifier::classify);
     }
 
     /**

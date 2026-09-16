@@ -51,8 +51,10 @@ public class PlanningGateMiddleware implements MiddlewareBase {
     @Override
     public Flux<AgentEvent> onActing(Agent agent, RuntimeContext ctx, ActingInput input,
                                      java.util.function.Function<ActingInput, Flux<AgentEvent>> next) {
-        String intent = ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY) != null
-                ? String.valueOf(ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY)) : null;
+        // 注意：RuntimeContext.get(String) 是 <T> T get(String)，泛型目标类型推断下
+        // String.valueOf(ctx.get(...)) 会绑定到 String.valueOf(char[]) 重载（T 推断为 char[]），
+        // 运行时 String→char[] 强转直接 ClassCastException——直接以 String 接收即可
+        String intent = ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY);
         List<ToolUseBlock> spawns = input.toolCalls().stream()
                 .filter(t -> "agent_spawn".equals(t.getName()))
                 .toList();

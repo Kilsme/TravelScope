@@ -68,8 +68,9 @@ public class IntentRouterMiddleware implements MiddlewareBase {
      * intake-agent 的委派发生在登记之前，门禁已对其豁免）
      */
     private String planningDirective(RuntimeContext ctx) {
-        String collabDir = ctx.get(CTX_COLLAB_DIR_KEY) != null
-                ? String.valueOf(ctx.get(CTX_COLLAB_DIR_KEY)) : null;
+        // 直接以 String 接收（泛型推断），勿用 String.valueOf(ctx.get(...))——
+        // 那会绑定到 String.valueOf(char[]) 重载引发运行时 ClassCastException
+        String collabDir = ctx.get(CTX_COLLAB_DIR_KEY);
         String sessionId = ctx.getSessionId();
         if (collabDir == null) {
             return """

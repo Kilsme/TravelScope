@@ -1,12 +1,28 @@
 ## TravelScope - 智能旅游助手 Docker Compose
 ## 拉取 Redis、MinIO、Elasticsearch（PostgreSQL 本地已有，不需要额外安装）
 ##
+## 统一管理（2026-09-16）：
+##   显式项目名 name: travelscope —— Docker Desktop 中本项目全部容器
+##   归入同一 compose 分组（travelscope），一键启停/查看
+##   全部服务挂同一显式网络 travelscope-net
+##
 ## 启动方式：
 ##   docker-compose up -d
+## 仅启动部分服务：
+##   docker-compose up -d redis
 ## 停止方式：
 ##   docker-compose down
 ## 清除数据（重新初始化）：
 ##   docker-compose down -v
+## 查看本项目全部容器：
+##   docker compose -p travelscope ps
+
+name: travelscope
+
+networks:
+  travelscope-net:
+    name: travelscope-net
+    driver: bridge
 
 services:
   # ======================== Redis ========================
@@ -20,6 +36,8 @@ services:
       - redis-data:/data
     command: redis-server --appendonly yes --requirepass root123456
     restart: unless-stopped
+    networks:
+      - travelscope-net
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "root123456", "ping"]
       interval: 10s
@@ -41,6 +59,8 @@ services:
       MINIO_ROOT_PASSWORD: root123456
     command: server /data --console-address ":9001"
     restart: unless-stopped
+    networks:
+      - travelscope-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -87,6 +107,8 @@ services:
       - http.cors.enabled=true
       - http.cors.allow-origin="*"
     restart: unless-stopped
+    networks:
+      - travelscope-net
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
       interval: 15s
