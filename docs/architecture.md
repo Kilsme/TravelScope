@@ -46,10 +46,10 @@ flowchart TB
     MW3 -.-> MA
 ```
 
-> v3 骨架阶段的状态：6 Agent 编排与需求状态机工具已落地（提示词 + 装配 + 工具骨架）；
-> **意图三层级联（L0~L3）已落地（FR-S01，含 Redis L0/L2 缓存与级联埋点日志）**；
-> SSE 新事件（clarify_question / agent_status / review_score）、
-> Reviewer 回炉拦截、Redis 状态持久化、RAG 双路检索为后续迭代（需求文档 v3 §9.2）。
+> v3 骨架阶段的状态：6 Agent 编排、需求状态机工具已落地；**意图三层级联（FR-S01）与
+> intake-agent 混合形态（FR-S02：Redis 状态机 + ask_user 反问出口 + clarify_question
+> SSE）均已落地并 E2E 验证**；SSE 新事件（agent_status / review_score）、
+> Reviewer 回炉拦截、RAG 双路检索为后续迭代（需求文档 v3 §9.2）。
 
 ## 2. 前端模块（`frontend/`）
 
@@ -135,17 +135,26 @@ RuntimeContext ctx = RuntimeContext.builder()
         .sessionId(SESSION_PREFIX + conversation.getId())   // "conv-13"
         .build();
 ctx.put(IntentRouterMiddleware.CTX_INTENT_KEY, type.name());
-// 协作目录相对路径（tasks/{sessionId}）注入上下文，Middleware 据此给出具体路径
+// 协作目录相对路径（tasks/{sessionId}）注入上下文，Middleware 据此给出具体路径；
+// 该键同时是 intake-agent 侧工具解析主会话 ID 的来源（子代理 ctx.sessionId 是 sub-xxx，见 6.4 节）
 ctx.put(IntentRouterMiddleware.CTX_COLLAB_DIR_KEY,
         taskWorkspaceService.collabDirRelativePath(agentSessionId));
 
+// v3 FR-S02 代码层兜底：PLANNING 且需求未收齐时，向用户消息前置「立即委派 intake-agent」
+// 系统指令——master 对提示词的委派遵循性有波动（实测约 50% 轮次只回文本），应用层注入是硬保证
+if (type == IntentType.PLANNING && !tripRequirementStore.isCollected(userId, agentSessionId)) {
+    outgoing = "【系统指令】需求收集尚未完成，请立即调用 agent_spawn 委派 intake-agent…\n\n【用户消息】" + outgoing;
+}
+
 UserMessage msg = new UserMessage(outgoing);
 return travelMasterAgent.streamEvents(msg, ctx)          // Reactor 事件流
-        .filter(this::isMainAgentEvent)                  // 子代理转发事件（source 含 "/"）不透传
+        .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))  // 主 Agent 事件 + intake 反问（6.4 节）
         .mapNotNull(this::toChatEvent);                  // AgentEvent → SSE 事件映射
 ```
 
-事件映射：`TextBlockDeltaEvent → delta`、`ToolCallStartEvent / ToolResultEndEvent → tool`、`AgentEndEvent → null`（结束在流完成回调统一处理）。
+事件映射：`TextBlockDeltaEvent → delta`、`ToolCallStartEvent / ToolResultEndEvent → tool`、
+intake 反问的 `ToolResultTextDeltaEvent → clarify_question`（见 6.4 节）、`AgentEndEvent → null`
+（结束在流完成回调统一处理）。
 
 ## 5. 意图分类与路由（FR-S01 三层级联，已落地）
 
@@ -218,12 +227,15 @@ PLANNING 指令会注入本轮会话的具体协作路径（来自 `CTX_COLLAB_D
 
 ### 6.1 TaskRegistry（`service/TaskRegistry.java`）
 
-内存容器 + MD 文件双份存储，按 `userId:sessionId` 双键隔离：
+内存容器 + MD 文件双份存储，按 `userId:sessionId` 双键隔离；登记时做**四维覆盖校验**（FR-S03）：
 
 ```java
 public String createBacklog(String userId, String sessionId, String tasksJson) {
     List<PlanningTask> parsed = parseTasks(tasksJson);          // fastjson2 解析 JSON 数组
     if (parsed.isEmpty()) return "ERROR: tasksJson 无法解析…";   // 代码层校验
+    List<String> missing = missingDimensions(parsed);           // 四维校验：交通/住宿/景点/天气
+    if (!missing.isEmpty())                                     // 缺维 → 报错重拆，不落盘不注册
+        return "ERROR: 任务清单缺少维度：" + … + dimensionHints(missing);
     String md = renderBacklogMd(sessionId, parsed);
     Path file = taskWorkspaceService.writeTaskBacklog(userId, sessionId, md);  // 落盘（隔离路径）
     containers.put(containerKey(userId, sessionId),
@@ -231,6 +243,12 @@ public String createBacklog(String userId, String sessionId, String tasksJson) {
     return "任务清单已登记：共 N 项…现在可以调用 agent_spawn 委派 planning-agent…";
 }
 ```
+
+四维维度映射（`DIMENSION_RULES`，双路匹配）：**suggestedTool 前缀/精确**（train-ticket-query /
+flight-ticket-query / mcp__c12306* / mcp__variflight* → 交通；hotel-search → 住宿；
+attraction-search → 景点；weather-query → 天气）**+ description 关键词兜底**（火车/酒店/景点/天气等），
+任一命中即视为该维覆盖。缺维返回 ERROR（附建议技能名）引导 master 补拆重登——与
+PlanningGateMiddleware 的 GATE_REJECTED 纠错循环同款模式。测试：`TaskRegistryDimensionTest`。
 
 - `progress(userId, sessionId)` → 「共 N 项：已完成 x，进行中 y，待处理 z，失败 f。未完成任务: T2(PENDING)…」
 - `updateStatus(userId, sessionId, taskId, status)` → 状态机 PENDING/IN_PROGRESS/DONE/FAILED，同时追加写 MD 文件
@@ -293,7 +311,7 @@ public Flux<AgentEvent> onActing(Agent agent, RuntimeContext ctx, ActingInput in
 `order() = -1000`：`MiddlewareChain.build` 按列表顺序嵌套、第一个为最外层，harness 的
 `SubagentsMiddleware`（order=1，直接执行 agent_spawn）必须排在其后，拦截才生效。
 
-### 6.4 需求状态机（v3 FR-S02：intake-agent 的代码工具）
+### 6.4 需求状态机（v3 FR-S02：intake-agent 的代码工具，已落地）
 
 「判断缺什么」是纯确定性逻辑，下沉为代码工具（`agent/tools/RequirementTools.java`），
 「怎么问、怎么听」由 intake-agent 的语言能力承载：
@@ -305,14 +323,33 @@ public String get_missing_fields(@ToolParam(name = "sessionId") String sessionId
 }
 
 @Tool(description = "把本轮理解到的需求字段写回状态机。fieldsJson 形如 {\"destination\":\"北京\",…}")
-public String update_requirement_state(@ToolParam(name = "sessionId") String sessionId,
-        @ToolParam(name = "fieldsJson") String fieldsJson, RuntimeContext ctx) { … }
+public String update_requirement_state(…) { … store.save(userId, sessionId, s); }  // Redis 副本须显式写回
+
+@Tool(description = "向用户发出一轮反问（intake-agent 唯一反问出口）…")
+public String ask_user(@ToolParam(name = "question") String question, …, RuntimeContext ctx) {
+    TripRequirementState s = store.incrementClarifyCycles(userId, sessionId);   // 轮次+1，满3轮置 DEGRADED
+    return question + ";;[intake]反问已发送（第 n/3 轮）…";     // ;; 前段经 SSE 转 clarify_question
+}
 ```
 
 - `dto/TripRequirementState`：8 字段（必填 destination/days/startDate/fromCity + 选填
   budget/preference/people/special）+ 状态枚举 COLLECTING/DONE/DEGRADED + 反问轮次计数
-- `service/TripRequirementStore`：`userId:sessionId` 双键隔离存储（对齐 TaskRegistry 模式）；
-  TODO 迁移 Redis hash `trip:req:{userId}:{sessionId}`（FR-S02）
+- `service/TripRequirementStore`：**Redis hash `trip:req:{userId}:{sessionId}`**（hash 字段即
+  状态字段，TTL 24h 滚动刷新，运维可 HGETALL 直接观察收集进度）；Redis 异常时降级进程内存
+  （首次 warn 后续 debug）。注意 Redis 模式下 get 返回副本，修改后必须 save 写回
+- **sessionId 解析**（`resolveSessionId`）：工具参数为 conv- 前缀则信任；否则从 ctx 的
+  `travelscope.collab.dir`（master 注入、子代理经 RuntimeContext 继承）解析——
+  intake-agent 被 spawn 后自身 ctx.sessionId 是框架生成的 sub-xxx，不能作状态键
+- **反问链路**（clarify_question SSE 事件）：intake 的 ask_user 工具结果文本
+  （`ToolResultTextDeltaEvent`，source 形如 `conv-xx/intake-agent`）被 ChatService 拦截，
+  截取 `;;` 前的反问推送。两个硬前提由代码保证：①PlanningGateMiddleware 把 intake 的
+  异步 spawn（timeout_seconds=0）强制改写为同步——异步模式下子代理事件不进本会话流；
+  ②ChatService 在 PLANNING 且需求未收齐时向用户消息前置「立即委派 intake」系统指令——
+  master 对提示词的委派遵循性有波动（实测约 50% 轮次只回文本），应用层注入是硬保证
+- **收尾闭环**：必填收齐 → DONE 写 intake_done.md；反问满 3 轮仍缺 → DEGRADED 带默认值
+  放行（缺项标「待确认」），DEGRADED 一旦置位不回退
+- 测试：`RequirementToolsTest`（7 用例，ThrowingRedisTemplate 驱动内存降级路径）、
+  `TripRequirementStoreRedisTest`（6 用例，6379 门控，HGETALL 断言 hash 结构/TTL/DEGRADED 持久化）
 
 ## 7. Agent 层（`config/AgentConfig.java` + `agent/`）
 
@@ -326,7 +363,7 @@ v3 编排为 6 Agent：master 收口 → intake 收需求 → Planner 直调工�
   能 spawn 自己声明的 3 个子 Agent；spawn 深度 master(0)→planner(1)→子(2) ≤ 框架上限 3
 
 ```java
-// intake-agent：声明式叶子，tools 白名单限定需求状态机工具
+// intake-agent：声明式叶子，tools 白名单限定需求状态机工具（含 ask_user 反问出口）
 SubagentDeclaration intakeSubAgent = SubagentDeclaration.builder()
         .name(IntakeAgent.AGENT_NAME)
         .description("需求收集 Agent（接待员）…")
@@ -334,7 +371,7 @@ SubagentDeclaration intakeSubAgent = SubagentDeclaration.builder()
         .model(appProperties.getDashscope().getModel())
         .maxIters(IntakeAgent.MAX_ITERS)               // 6
         .workspaceMode(WorkspaceMode.SHARED)
-        .tools(List.of("get_missing_fields", "update_requirement_state"))
+        .tools(List.of("get_missing_fields", "update_requirement_state", "ask_user"))
         .build();
 
 HarnessAgent agent = HarnessAgent.builder()
@@ -432,6 +469,7 @@ return HarnessAgent.builder()
 | `intent` | `{"intent":"PLANNING","reason":"…"}` | 意图分类完成后（每轮第一个事件） |
 | `delta` | 文本增量 | 主 Agent 流式输出 |
 | `tool` | 工具名 / `工具名:SUCCESS` | 工具调用开始/结束（含 write_file、agent_spawn、create_task_backlog 等） |
+| `clarify_question` | 反问文本 | intake-agent 经 ask_user 工具发出的反问（v3 FR-S02，选择题式；前端以「💬 需要补充信息」气泡展示） |
 | `done` | 完整回复文本 | 事件流完成（助手回复已持久化） |
 | `error` | 错误消息 | Agent 执行异常 |
 
@@ -441,7 +479,7 @@ return HarnessAgent.builder()
 |---|---|---|
 | `getWeather` / `getWeatherForecast` | `WeatherTool`（@Tool 注解） | 和风天气 API |
 | `searchHotels` / `searchNearbyPois` | `HotelTool` | 高德 POI |
-| `searchAttractions` / `searchNearbyAttractions` | `AttractionTool` | 高德 POI |
+| `searchPois` / `searchNearbyAttractions` | `AttractionTool`（searchPois 为 Planner POI 初查直调入口，v3） | 高德 POI |
 | `geocode` / `getDrivingRoute` / `getTransitRoute` | `TransportTool` | 高德路径规划 |
 | `create_task_backlog` / `get_task_progress` / `update_task_status` / `planning_gate_hint` | `TaskTools` → `TaskRegistry` | 内存容器 + 工作区 MD |
 | `get_missing_fields` / `update_requirement_state` | `RequirementTools` → `TripRequirementStore`（v3 新增） | 内存状态机（TODO Redis） |

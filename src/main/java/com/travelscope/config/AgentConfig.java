@@ -136,10 +136,15 @@ public class AgentConfig {
 
     /**
      * 行程需求状态仓库 Bean（intake-agent 的状态机存储，userId:sessionId 双键隔离）
+     * <p>
+     * Redis hash {@code trip:req:{userId}:{sessionId}}（TTL 24h 滚动刷新），
+     * Redis 不可用时自动降级进程内存（见 TripRequirementStore）。
+     * </p>
      */
     @Bean
-    public TripRequirementStore tripRequirementStore() {
-        return new TripRequirementStore();
+    public TripRequirementStore tripRequirementStore(
+            org.springframework.data.redis.core.StringRedisTemplate stringRedisTemplate) {
+        return new TripRequirementStore(stringRedisTemplate);
     }
 
     /**
@@ -261,19 +266,21 @@ public class AgentConfig {
     public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel,
                                           TaskRegistry taskRegistry) throws IOException {
         // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
-        // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state）
+        // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
+        // ask_user 反问出口——ask_user 的工具结果经 SSE 层转为 clarify_question 事件推给前端）
         SubagentDeclaration intakeSubAgent = SubagentDeclaration.builder()
                 .name(IntakeAgent.AGENT_NAME)
                 .description("需求收集 Agent（接待员），负责规划前的关键信息反问："
                         + "调需求状态机工具判断缺项（纯代码零模型调用），理解用户模糊回答并写回状态，"
-                        + "≤3 轮反问后收齐或带默认值放行，产出 intake_done.md")
+                        + "反问经 ask_user 工具发出（≤3 轮，超限 DEGRADED 带默认值放行），产出 intake_done.md")
                 .inlineAgentsBody(IntakeAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
                 .maxIters(IntakeAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .tools(List.of(
                         "get_missing_fields",
-                        "update_requirement_state"))
+                        "update_requirement_state",
+                        "ask_user"))
                 .build();
 
         HarnessAgent agent = HarnessAgent.builder()

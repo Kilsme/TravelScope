@@ -25,10 +25,38 @@ public class RequirementTools {
 
     private static final Logger log = LoggerFactory.getLogger(RequirementTools.class);
 
+    /**
+     * 主会话 ID 的路由指令来源键（IntentRouterMiddleware.CTX_COLLAB_DIR_KEY，
+     * 值形如 "tasks/conv-29"）。master 在每轮注入，子代理经 RuntimeContext 继承可见——
+     * intake-agent 被 spawn 后自身 ctx.sessionId 是 sub-xxx（框架生成），不能作为状态键。
+     */
+    private static final String CTX_COLLAB_DIR_KEY = "travelscope.collab.dir";
+
     private final TripRequirementStore store;
 
     public RequirementTools(TripRequirementStore store) {
         this.store = store;
+    }
+
+    /**
+     * 解析主会话 ID（状态键的会话维度）：
+     * ① 参数为 conv- 前缀 → 直接信任（master/planning-agent 显式传值）
+     * ② 否则从 ctx 的协作目录键解析（tasks/conv-29 → conv-29；intake-agent 子代理继承 master 注入）
+     * ③ 都没有 → 回退参数原值（保持旧行为，日志可查）
+     */
+    private static String resolveSessionId(String sessionId, RuntimeContext ctx) {
+        if (sessionId != null && sessionId.startsWith("conv-")) {
+            return sessionId;
+        }
+        Object collabDir = ctx.get(CTX_COLLAB_DIR_KEY);
+        if (collabDir != null) {
+            String dir = String.valueOf(collabDir);
+            int idx = dir.lastIndexOf('/');
+            if (idx >= 0 && idx < dir.length() - 1) {
+                return dir.substring(idx + 1);
+            }
+        }
+        return sessionId;
     }
 
     /**
@@ -38,15 +66,49 @@ public class RequirementTools {
      */
     @Tool(description = "查询当前会话行程需求的收集状态：已收集哪些字段、还缺哪些必填项"
             + "（destination/days/startDate/fromCity）、已反问几轮。"
-            + "必填项收齐时返回「已全部收齐」——此时应写 intake_done.md 并收尾")
+            + "必填项收齐时返回「已全部收齐」——此时应写 intake_done.md 并收尾；"
+            + "状态显示 DEGRADED（已反问满 3 轮仍缺）时不得再反问，带默认值收尾")
     public String get_missing_fields(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用路由指令中给出的值，如 conv-13")
             String sessionId,
             RuntimeContext ctx) {
         String userId = ctx.getUserId();
+        sessionId = resolveSessionId(sessionId, ctx);
         TripRequirementState s = store.get(userId, sessionId);
         log.info("get_missing_fields: 用户={}, 会话={}", userId, sessionId);
         return s.summary();
+    }
+
+    /**
+     * 反问统一出口（FR-S02）：intake-agent 的每一次反问都必须经本工具发出——
+     * 直接文本输出的反问不会实时到达用户（SSE clarify_question 事件挂在工具结果上）。
+     * 每次调用自动累加反问轮次，达到 3 轮且必填仍缺时状态置 DEGRADED。
+     */
+    @Tool(description = "向用户发出一轮反问（intake-agent 唯一反问出口，不要在文本里反问）。"
+            + "每次调用自动累加反问轮次（上限 3 轮，超限后 get_missing_fields 显示 DEGRADED，"
+            + "届时不得再调用本工具，须带默认值收尾）。question 为一句选择题式反问，"
+            + "如「想去哪里玩？国内 / 国外 / 还没定（热门：成都、杭州、西安）」")
+    public String ask_user(
+            @ToolParam(name = "question", description = "反问内容（一句，选择题式，一次只问最关键的 1~2 项）")
+            String question,
+            @ToolParam(name = "sessionId", description = "本轮会话 ID，使用路由指令中给出的值")
+            String sessionId,
+            RuntimeContext ctx) {
+        String userId = ctx.getUserId();
+        sessionId = resolveSessionId(sessionId, ctx);
+        TripRequirementState s = store.incrementClarifyCycles(userId, sessionId);
+        log.info("ask_user: 用户={}, 会话={}, 第 {} 轮反问, 状态={}",
+                userId, sessionId, s.clarifyCycles, s.status);
+        if (s.status == TripRequirementState.Status.DEGRADED) {
+            return "[DEGRADED]已反问满 " + s.clarifyCycles + " 轮仍缺必填项。"
+                    + "不要再调用 ask_user，请立即按默认值收尾：写 intake_done.md"
+                    + "（缺项标注「待确认」）并返回「信息已收齐（部分待确认）」。";
+        }
+        // 返回值经 ToolResultTextDelta 流向 SSE 层：分号前是用户可见的反问（clarify_question 事件截取），
+        // 分号后是给 LLM 的轮次提示（不出现在事件里）
+        return question + ";;[intake]反问已发送给用户（第 " + s.clarifyCycles + "/"
+                + TripRequirementStore.MAX_CLARIFY_CYCLES
+                + " 轮），等待用户下轮回答后由主 Agent 重新委派你继续";
     }
 
     /**
@@ -63,6 +125,7 @@ public class RequirementTools {
             String fieldsJson,
             RuntimeContext ctx) {
         String userId = ctx.getUserId();
+        sessionId = resolveSessionId(sessionId, ctx);
         TripRequirementState s = store.get(userId, sessionId);
         JSONObject fields;
         try {
@@ -126,6 +189,7 @@ public class RequirementTools {
         if (s.missingFields().isEmpty() && s.status == TripRequirementState.Status.COLLECTING) {
             s.status = TripRequirementState.Status.DONE;
         }
+        store.save(userId, sessionId, s);   // Redis 模式下 get 返回副本，必须显式写回
         log.info("update_requirement_state: 用户={}, 会话={}, 写回 {} 个字段", userId, sessionId, applied);
         return "已写回 " + applied + " 个字段。" + s.summary();
     }

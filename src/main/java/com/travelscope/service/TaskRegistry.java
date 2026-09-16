@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +46,23 @@ public class TaskRegistry {
     public static final String STATUS_DONE = "DONE";
     public static final String STATUS_FAILED = "FAILED";
 
+    /**
+     * 四维覆盖规则（FR-S03：交通/住宿/景点/天气，缺维报错重拆）
+     * <p>
+     * 双路匹配：suggestedTool 前缀/精确 + description 关键词兜底——
+     * 模型拆分时两项都可能携带维度信号，任一命中即视为该维覆盖。
+     * </p>
+     */
+    private static final List<DimensionRule> DIMENSION_RULES = List.of(
+            new DimensionRule("交通", List.of("train-ticket-query", "flight-ticket-query", "mcp__c12306", "mcp__variflight"),
+                    List.of("火车", "高铁", "动车", "车票", "机票", "航班", "交通", "接驳", "大交通")),
+            new DimensionRule("住宿", List.of("hotel-search"),
+                    List.of("酒店", "住宿", "民宿", "宾馆", "青旅", "入住", "住哪", "住哪里", "落脚")),
+            new DimensionRule("景点", List.of("attraction-search", "searchPois"),
+                    List.of("景点", "POI", "游览", "景区", "博物馆", "打卡", "行程安排")),
+            new DimensionRule("天气", List.of("weather-query"),
+                    List.of("天气", "气温", "降水", "穿衣", "预报")));
+
     private final TaskWorkspaceService taskWorkspaceService;
 
     /** 注册键 userId:sessionId → 会话任务容器 */
@@ -56,9 +74,10 @@ public class TaskRegistry {
 
     /**
      * 登记任务清单（create_task_backlog 工具的唯一实现）：
-     * 解析任务 JSON → 落盘 MD（用户+会话隔离路径）→ 注册内存容器
+     * 解析任务 JSON → <b>四维覆盖校验</b>（FR-S03：交通/住宿/景点/天气缺维报错重拆，
+     * 校验失败不落盘不注册）→ 落盘 MD（用户+会话隔离路径）→ 注册内存容器
      *
-     * @return 登记结果描述（供 Agent 工具返回）
+     * @return 登记结果描述（供 Agent 工具返回；缺维时返回 ERROR 引导补拆）
      */
     public String createBacklog(String userId, String sessionId, String tasksJson) {
         List<PlanningTask> parsed = parseTasks(tasksJson);
@@ -66,17 +85,61 @@ public class TaskRegistry {
             return "ERROR: tasksJson 无法解析为任务数组或为空，请传 JSON 数组，"
                     + "每项形如 {\"taskId\":\"T1\",\"description\":\"...\",\"suggestedTool\":\"...\",\"priority\":\"P0\"}";
         }
+        List<String> missingDimensions = missingDimensions(parsed);
+        if (!missingDimensions.isEmpty()) {
+            log.warn("四维校验未通过: 用户={}, 会话={}, 缺少维度={}", userId, sessionId, missingDimensions);
+            return "ERROR: 任务清单缺少维度：" + String.join("、", missingDimensions)
+                    + "。行程规划必须四维覆盖（交通/住宿/景点/天气，每维至少一项任务）。"
+                    + "请补齐缺失维度的任务后重新调用 create_task_backlog（本次登记未生效）。"
+                    + dimensionHints(missingDimensions);
+        }
         String md = renderBacklogMd(sessionId, parsed);
         Path file = taskWorkspaceService.writeTaskBacklog(userId, sessionId, md);
         SessionTaskContainer container = new SessionTaskContainer(userId, sessionId, file, parsed);
         containers.put(containerKey(userId, sessionId), container);
-        log.info("任务清单已登记: {} 项任务, 用户={}, 会话={}, 文件={}",
+        log.info("任务清单已登记: {} 项任务, 四维校验通过, 用户={}, 会话={}, 文件={}",
                 parsed.size(), userId, sessionId, file);
         return "任务清单已登记：共 " + parsed.size() + " 项任务（"
                 + parsed.stream().map(t -> nz(t.taskId)).collect(Collectors.joining("、"))
                 + "），已写入 " + taskWorkspaceService.backlogRelativePath(sessionId)
                 + "。现在可以调用 agent_spawn 委派 planning-agent，"
                 + "并在任务说明中告知其用 read_file 读取该路径执行；执行期间可随时调用 get_task_progress 查询进度。";
+    }
+
+    /**
+     * 四维覆盖校验：返回缺失的维度名（空列表 = 通过）。
+     * 双路匹配：suggestedTool 前缀/精确命中 或 description 含关键词，任一即覆盖。
+     */
+    private List<String> missingDimensions(List<PlanningTask> tasks) {
+        List<String> missing = new ArrayList<>();
+        for (DimensionRule rule : DIMENSION_RULES) {
+            boolean covered = tasks.stream().anyMatch(t -> {
+                String tool = t.suggestedTool == null ? "" : t.suggestedTool;
+                String desc = t.description == null ? "" : t.description;
+                boolean toolHit = rule.tools().stream().anyMatch(tool::startsWith);
+                boolean descHit = rule.keywords().stream().anyMatch(desc::contains);
+                return toolHit || descHit;
+            });
+            if (!covered) {
+                missing.add(rule.name());
+            }
+        }
+        return missing;
+    }
+
+    /** 缺维时的补拆提示（给模型的建议技能名） */
+    private String dimensionHints(List<String> missing) {
+        StringBuilder sb = new StringBuilder("维度参考：");
+        for (DimensionRule rule : DIMENSION_RULES) {
+            if (missing.contains(rule.name())) {
+                sb.append("「").append(rule.name()).append("」建议 suggestedTool=").append(rule.tools().get(0)).append("；");
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 单个维度的覆盖规则（技能名前缀 + 描述关键词） */
+    private record DimensionRule(String name, List<String> tools, List<String> keywords) {
     }
 
     /**

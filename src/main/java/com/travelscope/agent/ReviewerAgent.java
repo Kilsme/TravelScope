@@ -70,7 +70,7 @@ public class ReviewerAgent {
 
             - 天气：getWeather(city) / getWeatherForecast(city, days)
             - 路线/地理：geocode(address) / getDrivingRoute / getTransitRoute
-            - 景点：searchAttractions / searchNearbyAttractions（核验 POI 真实性）
+            - 景点：searchPois / searchNearbyAttractions（核验 POI 真实性）
             - read_file / write_file：读 itinerary_draft.md，写 review_passed.md / review_report.md
             各工具参数细节以技能文件为准。
 

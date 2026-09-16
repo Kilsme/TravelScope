@@ -40,7 +40,9 @@ public class TaskTools {
      */
     @Tool(description = "登记行程规划任务清单到任务容器（写入 task_backlog.md 并注册内存队列）。"
             + "委派 planning-agent 之前必须先调用本工具；tasksJson 为 JSON 数组，"
-            + "每项形如 {\"taskId\":\"T1\",\"description\":\"查询目的地天气预报\",\"suggestedTool\":\"weather-query\",\"priority\":\"P0\"}")
+            + "每项形如 {\"taskId\":\"T1\",\"description\":\"查询目的地天气预报\",\"suggestedTool\":\"weather-query\",\"priority\":\"P0\"}。"
+            + "清单必须四维覆盖：交通(train/flight-ticket-query)、住宿(hotel-search)、"
+            + "景点(attraction-search)、天气(weather-query)每维至少一项任务，缺维会被拒绝登记")
     public String create_task_backlog(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用路由指令中给出的值，如 conv-13")
             String sessionId,

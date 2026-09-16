@@ -91,6 +91,11 @@ function App() {
               cur.toolCalls = [...(cur.toolCalls ?? []), event.data]
               break
             }
+            case 'clarify_question': {
+              // intake-agent 的反问（经 ask_user 工具）：作为提示行追加，后续 delta 仍是主 Agent 的整合输出
+              cur.content += `${cur.content ? '\n\n' : ''}💬 ${event.data}`
+              break
+            }
             case 'done': {
               if (!cur.content && event.data) cur.content = event.data
               cur.streaming = false

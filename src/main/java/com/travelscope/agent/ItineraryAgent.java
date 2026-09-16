@@ -66,13 +66,14 @@ public class ItineraryAgent {
             三、执行流程
             ===================================================
 
-            第 1 步 直接调工具获取实时数据（相互独立的查询同一轮并行发起）：
+            第 1 步 直接调工具获取实时数据（相互独立的查询同一轮并行发起；
+            天气/酒店/车票/POI 初查均由你直接调用，不走子 Agent——快且零幻觉）：
             - 天气：getWeatherForecast(city, days)，天数与行程天数对齐
             - 酒店：searchHotels(city, keyword, pageSize)，结果中按用户预算做代码层过滤
             - 城际大交通：火车票 mcp__c12306__get-tickets / 机票 mcp__variflight__getFlightPriceByCities
               （用户说「明天」等相对日期时，先调 mcp__c12306__get-current-date 或
                mcp__variflight__getTodayDate 解析）
-            - 景点初查：searchAttractions(city, keyword, pageSize)（为 poi-research 提供起点线索）
+            - 景点初查：searchPois(city, keyword, pageSize)（为 poi-research 提供起点线索）
 
             第 2 步 同回合并行 spawn 两个子 Agent（任务说明中带上协作目录与需求摘要）：
             - poi-research：检索筛选景点候选 → 产出 {协作目录}/poi_shortlist.md

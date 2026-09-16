@@ -65,7 +65,9 @@ public class PlanningGateMiddleware implements MiddlewareBase {
         boolean hasGatedSpawn = spawns.stream()
                 .anyMatch(t -> !IntakeAgent.AGENT_NAME.equals(agentIdOf(t)));
         if (!hasGatedSpawn) {
-            return next.apply(input);
+            // 仅剩 intake spawn：强制同步模式（timeout_seconds=0 为异步——异步下 intake 的
+            // 反问事件不进本会话流，clarify_question 推不到用户；摘除该参数走默认同步）
+            return next.apply(forceSyncIntake(input));
         }
 
         String userId = ctx.getUserId();
@@ -98,6 +100,36 @@ public class PlanningGateMiddleware implements MiddlewareBase {
     private String agentIdOf(ToolUseBlock call) {
         Object agentId = call.getInput() != null ? call.getInput().get("agent_id") : null;
         return agentId != null ? String.valueOf(agentId) : null;
+    }
+
+    /**
+     * 强制 intake-agent 的 spawn 为同步模式：摘除 timeout_seconds=0（异步）参数。
+     * <p>
+     * 异步 spawn 下 intake 的工具结果事件不进本会话事件流，ask_user 反问
+     * （SSE clarify_question）无法实时到达用户——同步模式是反问链路的硬前提。
+     * 保持同 id 构造新的 ToolUseBlock（input 为可变 HashMap 拷贝）。
+     * </p>
+     */
+    private ActingInput forceSyncIntake(ActingInput input) {
+        List<ToolUseBlock> rewritten = new ArrayList<>();
+        boolean changed = false;
+        for (ToolUseBlock call : input.toolCalls()) {
+            if ("agent_spawn".equals(call.getName())
+                    && IntakeAgent.AGENT_NAME.equals(agentIdOf(call))
+                    && call.getInput() != null) {
+                Object timeout = call.getInput().get("timeout_seconds");
+                if (timeout != null && "0".equals(String.valueOf(timeout))) {
+                    java.util.Map<String, Object> newInput = new java.util.HashMap<>(call.getInput());
+                    newInput.remove("timeout_seconds");
+                    rewritten.add(new ToolUseBlock(call.getId(), call.getName(), newInput));
+                    changed = true;
+                    log.info("intake-agent spawn 已强制同步（摘除 timeout_seconds=0）");
+                    continue;
+                }
+            }
+            rewritten.add(call);
+        }
+        return changed ? new ActingInput(rewritten) : input;
     }
 
     /**

@@ -1,75 +1,77 @@
-# FR-S01 意图识别三层级联实现计划（修订版：L1 规则集对齐验收标准 a~e）
+# intake-agent 混合形态补完计划（Redis 状态 + 反问轮次 + clarify_question SSE）
 
-## 一、总体设计（不变）
+## 一、现状与缺口（已核实）
 
-```
-用户消息 → ChatService.resolveIntent → IntentCascadeRouter.classify【新入口】
-  L0 会话延续：短追问(≤20字符且含代词/语气词) + Redis 有 30 分钟内该会话最近意图 → 沿用，0 计算
-  L1 规则表：保守正则集（yml 可配置 + 代码内置同款默认），首个命中即短路
-  L2 轻量分类：qwen-turbo 单标签（LightweightIntentClassifier）+ Redis 文本缓存（SHA-256 键）
-  L3 兜底：现有 IntentClassifier 以方法引用包装，零改动
-每层命中即短路返回，写回 L0 最近意图（TTL 30min）；日志 cascade_hit=L{n} latency={x}ms
-Redis 不可用时缓存全部静默失败（首次 warn 后续 debug），级联自动降级为 L1→L2→L3
-```
-
-## 二、L1 规则表（修订核心：按验收标准 c 收窄）
-
-**"帮我规划杭州三日游"必须不命中 L1、落到 L2/L3 判 PLANNING**——自然语言的规划请求（含目的地/天数）交给 L2；L1 只收编「打招呼、命令前缀、极固定句式」，与需求文档 v3 §3.1 对 L1 的定位（`/天气`、`/规划` 命令、固定句式）一致：
-
-| # | 规则（正则，按序首个命中生效） | 意图 | 对应验收 |
-|---|---|---|---|
-| 1 | `^(你好|您好|嗨|哈喽|hi|hello|在吗)[?？!！。~～\s]*$` | CHAT | a |
-| 2 | `^/规划` | PLANNING | — |
-| 3 | `^/天气` | TOOL_CALL | b（"/天气 北京"前缀命中） |
-| 4 | `(查询|查一下|查查).{0,12}(火车票|高铁票|动车票|车票|机票|航班)` | TOOL_CALL | —（v3 固定句式） |
-| 5 | `(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)` | TOOL_CALL | — |
-
-关键负向校验：「帮我规划杭州三日游」对以上 5 条全部不命中（规划类自然语言不走 L1）——作为固定回归用例。yml `travelscope.intent-cascade.l1-rules` 显式配置同款规则，未配置/为空时代码内置默认兜底（单一事实源：代码默认与 yml 保持一致）。
-
-L0 追问判定正则（代码常量）：`那|这个|那个|它|他|她|再|还是|还有|帮我|刚才|前面|上面|继续|接着|换个|改成|另外|呢|吧|呗`（含"改成"，覆盖标准 d 的"那改成四天呢"；不含疑问词，避免误判）。
-
-## 三、新建 4 个主代码文件
-
-1. **`agent/IntentCascadeRouter.java`**：嵌套接口 `LlmClassifier{IntentResult classify(String,String,String)}`（L2/L3 注入，测试打桩）；构造时预编译 L1 规则（非法正则/意图 warn 跳过）；classify 流程 `enabled=false 直通 L3 → L0(长度≤上限 && FOLLOWUP 命中才查 Redis，命中刷新 TTL) → L1 → L2(先查文本缓存，miss 调 turbo，成功回写) → L3`；每层成功写回 L0；L2 返回 null 或意图非法视为 miss 落 L3；L3 原样返回（含 null，保持 ChatService 现有容错）。日志：`cascade_hit=L0|L1|L2|L2_CACHE|L3 latency={}ms intent={} ...`、全 miss 打 `cascade_miss`，内部计时 `System.nanoTime()`。
-2. **`agent/LightweightIntentClassifier.java`**（L2）：对齐 IntentClassifier 结构（每次新建 ReActAgent、结构化输出、独立 sessionId 后缀 `-intent-l2`），差异：精简 SYS_PROMPT（4 类定义+少量示例+只出单标签）、超时 15s。
-3. **`service/IntentCache.java`** 接口：`getRecentIntent / saveRecentIntent(ttl)`（L0）+ `getCachedL2 / saveCachedL2(ttl)`（L2）。
-4. **`service/RedisIntentCache.java`**（@Service）：StringRedisTemplate；键 `travelscope:intent:l0:{userId}:{sessionId}`、`travelscope:intent:l2:{sha256(trim)}`；每个操作 try/catch 全异常静默降级（volatile 首次失败 warn）。
-
-## 四、配置与接线（修改 3 文件，IntentClassifier 零改动）
-
-- `AppProperties` 新增嵌套 `IntentCascadeConfig`（含 `L1Rule{pattern,intent}`，仓库首个 List 配置）：`enabled=true / l0Enabled=true / l0TtlMinutes=30 / l0MaxMessageLength=20 / l2Enabled=true / l2Model="qwen-turbo" / l2CacheEnabled=true / l2CacheTtlMinutes=60 / l1Rules`
-- `application.yml` 新增 `travelscope.intent-cascade` 段（上述 5 条规则显式写出）
-- `AgentConfig`：`dashscopeChatModel` 加 `@Primary`；新增 `dashscopeTurboModel` Bean（同 apiKey + l2Model）；新增 `intentCascadeRouter` Bean（L2=`new LightweightIntentClassifier(turbo)`，L3=`intentClassifier::classify`）
-- `ChatService`：构造器与字段 `IntentClassifier` → `IntentCascadeRouter`，`resolveIntent` 改调 router.classify；其余不动
-
-## 五、测试计划（逐条映射验收标准 a~e）
-
-### 1. `IntentCascadeRouterTest`（纯 JUnit5 单测，无门控必跑；手写 FakeIntentCache/ThrowingIntentCache + lambda 计数桩）
-
-| 验收 | 测试用例 | 断言 |
+| 项 | 现状 | 缺口 |
 |---|---|---|
-| a | `testCriterionA_greetingHitsL1ZeroModelCalls`："你好" | cascade_hit=L1、intent=CHAT、**L2/L3 桩调用次数=0**（等价于 DashScope 调用数不变） |
-| b | `testCriterionB_weatherCommandHitsL1`："/天气 北京" | L1 命中 TOOL_CALL，L2/L3 零调用 |
-| c | `testCriterionC_planningFallsThroughToL2`："帮我规划杭州三日游" | **L1 不命中**（负向回归）→ L2 桩返回 PLANNING → cascade_hit=L2 |
-| c' | 同消息 L2 桩返回 null | 落 L3，cascade_hit=L3 |
-| d | `testCriterionD_followupHitsL0`：同会话先发"帮我规划杭州三日游"（L2 桩）再发"那改成四天呢" | 第二次 cascade_hit=L0、intent=PLANNING、L2/L3 零调用 |
-| e | `testCriterionE_l1LatencyUnder10ms`：循环 100 次发"你好" | 平均耗时 < 10ms（纳秒计时） |
-| 补 | L2 文本缓存命中（同消息第二次 L2 桩零调用→cascade_hit=L2_CACHE）；长消息/无代词不触发 L0；ThrowingCache 全异常时 L1/L2/L3 照常；enabled=false 直通 L3；yml 缺省时内置默认规则生效 | 各 ~1 用例 |
+| RequirementTools（get_missing_fields / update_requirement_state） | ✅ 已有 | 缺 `ask_user`（反问统一出口） |
+| TripRequirementState 实体 | ✅ 已有（8 字段 + COLLECTING/DONE/DEGRADED + missingFields 纯代码计算） | — |
+| intake-agent SubagentDeclaration | ✅ 已有（tools 白名单=2 个状态机工具） | 白名单需加 ask_user |
+| 反问话术提示词 | ✅ 已有（IntakeAgent.SYS_PROMPT） | 需改为经 ask_user 发问 + DEGRADED 收尾指令 |
+| master 委派逻辑 | ✅ 已有（planningDirective 第 1 步 + PlanningGate 豁免，E2E 已跑通） | — |
+| 状态存储 | ❌ 内存 ConcurrentHashMap | **需迁 Redis hash** `trip:req:{userId}:{sessionId}` |
+| 反问轮次计数 | ❌ `incrementClarifyCycles` 无任何调用方（**3 轮 DEGRADED 放行断线**，检测标准 4 无法满足） | ask_user 调用时计数 |
+| SSE clarify_question | ❌ 不存在（intake 反问混在 master 的 delta 文本里；子代理事件被 isMainAgentEvent 过滤） | 新增事件类型 + 拦截转换 |
+| 前端 | ❌ 无 clarify 处理 | 类型 + 最小展示 |
 
-### 2. `LightweightIntentClassifierTest`（`@EnabledIfEnvironmentVariable(named="API_KEY", matches="sk-.+")`，本机已配置会实跑）
-真实 qwen-turbo 调用 3 条消息（天气/规划/闲聊），断言非空且 `toIntentType()` 合法。
+**框架机制依据（反编译核验）**：子代理执行 @Tool 时，其 `ToolResultTextDeltaEvent` 会带 `parentSessionId/agentId` 格式 source 转发进 master 的 streamEvents 流（与 isMainAgentEvent 过滤注释吻合）；工具结果文本只在 `ToolResultTextDeltaEvent.getDelta()`（End 事件无内容 getter）。**拦截点定为子代理流的 ask_user 工具结果事件**——实时、语义精确，优于解析 agent_spawn 混合文本（有超时 promote 三层不确定性）。
 
-### 3. `IntentCascadeRealApiTest`（同上门控）：真实 turbo L2 + 真实 qwen-plus L3 + Fake 缓存的端到端级联——发"帮我规划杭州三日游"断言最终 PLANNING 且日志可见 cascade_hit=L2 或 L3；顺带记录 L2 真实延迟（观测 200ms 目标，不作硬断言）。
+## 二、改动清单
 
-### 4. `RedisIntentCacheTest`（自定义 `@EnabledIf`：6379 端口可达才跑）：手工构造 Lettuce 连接（localhost:6379/root123456）测 L0/L2 读写回环与 TTL；Redis 未运行自动跳过。
+### 1. `service/TripRequirementStore.java` 重写为 Redis hash 存储（核心）
+- 删除 @Service 注解（AgentConfig 已有 @Bean，消除双注册），构造器注入 `StringRedisTemplate`
+- 键 `trip:req:{userId}:{sessionId}`，**hash 字段即状态字段**：destination/days/startDate/fromCity/budget/preference/people/special/status/clarifyCycles（fastjson2 序列化单值，逐字段 HSET；读时 HGETALL 反序列化）+ TTL 24h（常量，防会话键无限累积）
+- **API 变化**：Redis 下 get() 返回的是反序列化副本，直接改字段不会持久——新增 `save(userId, sessionId, state)`；`incrementClarifyCycles` 内部 get→+1→DEGRADED 判定→save
+- **降级**：Redis 异常时回退内存 ConcurrentHashMap（沿用 RedisIntentCache 的"首次 warn 后续 debug"模式；降级期间状态仅存进程内存，可接受——与意图缓存降级同语义）
 
-## 六、验证步骤
+### 2. `agent/tools/RequirementTools.java` 新增 ask_user（反问统一出口）
+```java
+@Tool(description = "向用户发出反问（intake-agent 专用唯一反问出口，不要用文本输出反问）。"
+        + "每次调用自动累加反问轮次（上限 3 轮，超限后 get_missing_fields 会显示 DEGRADED）")
+public String ask_user(@ToolParam(name="question") String question,
+                       @ToolParam(name="sessionId") String sessionId, RuntimeContext ctx)
+```
+实现：`store.incrementClarifyCycles(...)` 后**返回 question 原文**——工具返回值会经 ToolResultTextDeltaEvent 流向 SSE 层，这是 clarify_question 事件的文本载体。同时 `update_requirement_state` 在字段写回后调用 `store.save(...)`（适配 Redis 副本语义）。
 
-1. `mvn compile`（JAVA_HOME=ms-21.0.7 + wrapper 路径）
-2. 定向跑 4 个新测试类 → 全量 `mvn test`（既有测试均环境门控不受影响）
-3. **尽力 E2E**（对应"日志 cascade_hit"字面验证）：探测 5432/6379 端口，若 PostgreSQL 可用则启动应用，依次 curl 发送 a~d 四条消息（同会话发 c→d），grep 应用日志确认 cascade_hit=L1/L1/L2(或 L3)/L0；DB 不可用则跳过，验收由单测+真实 API 测试覆盖（a 的"无模型调用"由桩零调用证明）
-4. 尽力启动 Redis（docker-compose up -d redis；daemon 未运行则跳过，降级路径已由 ThrowingCache 用例验证）
+### 3. `agent/IntakeAgent.java` 提示词更新
+- 反问策略改为：**所有反问必须经 ask_user 工具发出**（直接文本输出的反问不会实时到达用户）
+- 收尾判定强化：get_missing_fields 返回 DEGRADED（已反问 3 轮仍缺）→ 不再反问，带默认值写 intake_done.md（缺项标注「待确认」）并以「信息已收齐（部分待确认）」收尾
+- 不重复追问：get_missing_fields 的已收集字段列表是唯一事实源，已答字段不再问
+- 选择题式反问保留并强化（缺目的地 → "国内/国外/还没定"+热门城市；缺天数 → "2 天/3 天/5 天+"；缺日期 → "本周末/下周末/具体日期"）
 
-## 七、文档更新
+### 4. `config/AgentConfig.java`
+- intake 声明 tools 白名单：`["get_missing_fields","update_requirement_state","ask_user"]`
+- `tripRequirementStore` Bean 方法签名加 `StringRedisTemplate` 参数
 
-`docs/architecture.md`：第 1 节图 `IntentClassifier` 节点 → `IntentCascadeRouter(L0~L3)`；第 5 节改写为三层级联描述（层定义/短路语义/日志格式/配置键/Redis 降级行为/验收标准对照）。
+### 5. `dto/ChatEvent.java` + `service/ChatService.java`（SSE 事件）
+- ChatEvent 加 `TYPE_CLARIFY_QUESTION = "clarify_question"`
+- runAgent 事件流：filter 条件从 `isMainAgentEvent(e)` 放宽为 `isMainAgentEvent(e) || isClarifyEvent(e)`——后者判定 `ToolResultTextDeltaEvent && "ask_user".equals(getToolCallName()) && source 含 "/"`（intake-agent 转发事件）；toChatEvent 中该事件 → `ChatEvent.of(TYPE_CLARIFY_QUESTION, e.getDelta())`。ask_user 的其他转发事件（Start/End）仍被子代理过滤器拦截，不产生噪音；master 后续整合文本照常走 delta（前端不升级也能看到反问，clarify_question 是增强信号）
+
+### 6. 前端最小适配（React）
+- `frontend/src/types.ts`：事件类型联合加 `'clarify_question'`
+- `frontend/src/App.tsx`：clarify_question 渲染为「💬 需要补充信息」气泡（实现时先读这两个文件确认现有渲染模式，按现有风格最小插入；不重构）
+
+### 7. 文档同步（architecture.md）
+- 6.4 节需求状态机：补 Redis hash 存储、ask_user 工具、轮次/DEGRADED 闭环、降级行为
+- 第 9 节 SSE 事件表：加 clarify_question 行
+
+## 三、测试
+
+1. **单测（无门控必跑）**：`RequirementToolsTest`——手写 ThrowingRedisTemplate（opsForHash 全抛）驱动 store 走内存降级，验证：update 写回+save、get_missing 摘要、ask_user 轮次 +1、**连续 3 次 ask_user 后 DEGRADED**、收齐后 DONE、非法字段拒绝
+2. **Redis 集成（6379 端口门控）**：`TripRequirementStoreRedisTest`——真实 hash 读写回环、**HGETALL 断言 hash 字段结构**（检测标准 2 的 Redis 可见性）、TTL 存在、3 轮 DEGRADED、Redis 停机降级（连不上的端口）
+3. **全量 mvn test 回归**（现有 58 测试零破坏）
+
+## 四、E2E 检测（启动 PG + Redis + 应用，curl 带会话）
+
+| # | 操作 | 预期 |
+|---|---|---|
+| 1 | 新会话发"帮我规划行程" | SSE 收到 clarify_question 事件（选择题式反问，缺目的地给"国内/国外/还没定"——标准 1/3） |
+| 2 | 答"下周吧，两三个人，穷游" | `redis-cli HGETALL trip:req:{userId}:{sessionId}` 显示 people/budget/startDate 已写入；下轮反问不再问已答字段（标准 2） |
+| 3 | 3 轮仍缺（如一直不答目的地） | 状态 DEGRADED、工作区出现 `intake_done.md`（含「待确认」标注）、master 放行进入拆分（标准 4） |
+| 4 | 新会话一次说全（目的地/天数/日期/出发城市） | intake 0 反问（无 clarify_question 事件）直接 intake_done.md → 四维拆分登记（标准 5） |
+
+## 五、明确不做
+
+- master 直接反问路径（master 只做编排，语言能力全在 intake——维持 3.3 决策三的职责切分）
+- reviewer/其余 SSE 新事件（agent_status/review_score 是后续迭代）
+- 前端反问选项按钮交互（clarify_question 仅展示气泡；按钮化是前端迭代项）

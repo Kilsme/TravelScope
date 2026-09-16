@@ -83,10 +83,13 @@ public class IntentRouterMiddleware implements MiddlewareBase {
                 【本轮路由指令】系统已判定本轮为完整行程规划意图。本轮会话: %s，协作目录: %s（相对工作区根）。
 
                 委派流程（系统在代码层强制校验，跳步会被拦截）：
-                1. 委派 intake-agent 收口需求：任务说明中带上本轮用户消息与协作目录 %s。
+                1. 第一步【必须先委派 intake-agent，禁止自己反问用户需求】：
+                   调用 agent_spawn 委派 intake-agent（同步等待：不要传 timeout_seconds=0，
+                   异步模式下反问无法实时到达用户），任务说明中必须包含：
+                   「本轮用户消息：{用户原话}；协作目录: %s；sessionId: %s」。
                    - intake-agent 返回反问 → 原样转达给用户，本轮结束
                    - intake-agent 返回「信息已收齐」→ 读取 %s/intake_done.md，继续第 2 步
-                2. 按需求拆分任务（每项含 taskId/描述/建议工具/优先级）
+                2. 按需求拆分任务（每项含 taskId/描述/建议工具/优先级，四维覆盖：交通/住宿/景点/天气）
                 3. 调用 create_task_backlog 工具登记清单：sessionId 填 "%s"，tasksJson 填任务 JSON 数组。
                    禁止用 write_file 代替本工具——容器以本工具为准
                 4. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
@@ -94,7 +97,7 @@ public class IntentRouterMiddleware implements MiddlewareBase {
                    每完成一项任务调用 update_task_status 工具回报状态」
                 5. 需要时调用 get_task_progress 查询未完成任务数；完成后读取 %s/ 下的 execution_result.md、\
                 itinerary_draft.md 与 review_passed.md 整合输出
-                """.formatted(sessionId, collabDir, collabDir, collabDir, sessionId,
+                """.formatted(sessionId, collabDir, collabDir, sessionId, collabDir, sessionId,
                 collabDir, collabDir, collabDir);
     }
 

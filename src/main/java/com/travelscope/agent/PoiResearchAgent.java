@@ -38,7 +38,7 @@ public class PoiResearchAgent {
             二、检索策略（多轮迭代）
             ===================================================
 
-            1. 第一轮：用 searchAttractions 按目的地 + 偏好关键词检索城市景点
+            1. 第一轮：用 searchPois 按目的地 + 偏好关键词检索城市景点
             2. 评估召回质量：数量是否够、主题是否匹配用户偏好、评分是否达标
             3. 召回不足时自主决定换路重查：
                - 换关键词（如「故宫」→「博物馆」「历史文化」）
@@ -51,7 +51,7 @@ public class PoiResearchAgent {
             三、可用工具
             ===================================================
 
-            - searchAttractions(city, keyword, pageSize)：城市景点搜索（高德）
+            - searchPois(city, keyword, pageSize)：城市景点搜索（高德，POI 初查统一入口）
             - searchNearbyAttractions(location, radius, pageSize)：周边景点搜索（高德）
             - read_file / write_file：读写协作目录下的 poi_shortlist.md
             各工具参数细节以技能文件 attraction-search 为准。
@@ -67,7 +67,7 @@ public class PoiResearchAgent {
             - 开放时间: xxx
             - 建议游玩时长: x 小时
             - 推荐理由: xxx（与用户偏好的关联）
-            - 来源: searchAttractions(keyword=xxx)
+            - 来源: searchPois(keyword=xxx)
 
             ===================================================
             五、约束

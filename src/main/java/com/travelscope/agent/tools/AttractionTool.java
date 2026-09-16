@@ -23,8 +23,9 @@ import java.util.List;
  * 景点搜索工具（高德地图 POI 搜索）
  * <p>
  * 通过高德地图 Web API 查询景点信息：
- * - 城市景点搜索：/place/text，POI 类型码 110000（风景名胜）
- * - 周边景点搜索：/place/around，按坐标 + 半径搜索
+ * - 城市景点搜索：/place/text，POI 类型码 110000（风景名胜）—— searchPois，
+ *   v3 起 Planner 的 POI 初查直调入口（不走子 Agent）
+ * - 周边景点搜索：/place/around，按坐标 + 半径搜索 —— searchNearbyAttractions
  * 接口文档: https://lbs.amap.com/api/webservice/guide/api/search
  * </p>
  */
@@ -48,15 +49,16 @@ public class AttractionTool {
     }
 
     /**
-     * 搜索指定城市的景点
+     * 搜索指定城市的景点（POI 初查统一入口，v3：Planner 直调，不走子 Agent）
      *
      * @param city     城市名称（如 "北京"、"杭州"）
      * @param keyword  搜索关键词（景点名、主题等，可为空）
      * @param pageSize 返回结果数量
      * @return 景点列表 JSON 字符串
      */
-    @Tool(description = "搜索指定城市的景点信息，包括景点名称、地址、经纬度、评分等。用于旅游行程的景点选择。")
-    public String searchAttractions(
+    @Tool(description = "搜索指定城市的景点 POI（searchPois，城市景点初查统一入口），"
+            + "包括景点名称、地址、经纬度、评分等。用于旅游行程的景点初查与选择。")
+    public String searchPois(
             @ToolParam(name = "city", description = "城市名称，如 '北京'、'杭州'、'成都'")
             String city,
             @ToolParam(name = "keyword", description = "搜索关键词，如 '西湖'、'博物馆'、'古镇'，传空字符串则搜索城市热门景点")
@@ -71,7 +73,7 @@ public class AttractionTool {
             return errorResult("高德地图 API Key 未配置，请检查环境变量 AMAP_WEB_API_KEY");
         }
 
-        log.info("搜索景点: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
+        log.info("搜索景点POI: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
 
         HttpUrl url = HttpUrl.parse(baseUrl + "/place/text").newBuilder()
                 .addQueryParameter("key", apiKey)

@@ -14,6 +14,7 @@ import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.harness.agent.HarnessAgent;
 import org.slf4j.Logger;
@@ -57,17 +58,20 @@ public class ChatService {
     private final RagService ragService;
     private final ConversationService conversationService;
     private final TaskWorkspaceService taskWorkspaceService;
+    private final TripRequirementStore tripRequirementStore;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
                        RagService ragService,
                        ConversationService conversationService,
-                       TaskWorkspaceService taskWorkspaceService) {
+                       TaskWorkspaceService taskWorkspaceService,
+                       TripRequirementStore tripRequirementStore) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
         this.conversationService = conversationService;
         this.taskWorkspaceService = taskWorkspaceService;
+        this.tripRequirementStore = tripRequirementStore;
     }
 
     /**
@@ -141,10 +145,25 @@ public class ChatService {
         if (type == IntentType.RAG && ragService.isAvailable()) {
             outgoing = augmentWithRag(userMessage, ragService.retrieve(userMessage, 5));
         }
+        // v3 FR-S02 代码层兜底：PLANNING 且需求未收齐时，向本轮用户消息前置 intake 委派指令。
+        // 模型对提示词的委派遵循性有波动（实测约 50% 轮次 master 只回文本不委派），
+        // 应用层注入是硬保证——intake 收齐（DONE/DEGRADED）后不再注入。
+        if (type == IntentType.PLANNING) {
+            String agentSessionIdForReq = SESSION_PREFIX + conversation.getId();
+            if (!tripRequirementStore.isCollected(String.valueOf(userId), agentSessionIdForReq)) {
+                outgoing = "【系统指令】需求收集尚未完成，请立即调用 agent_spawn 委派 intake-agent"
+                        + "（同步等待，不要传 timeout_seconds=0），任务说明中带上：本轮用户消息："
+                        + userMessage + "；协作目录: " + taskWorkspaceService.collabDirRelativePath(agentSessionIdForReq)
+                        + "；sessionId: " + agentSessionIdForReq
+                        + "。禁止自己反问用户。\n\n【用户消息】" + userMessage;
+                log.info("注入 intake 委派指令（需求未收齐）: 会话={}", agentSessionIdForReq);
+            }
+        }
 
         UserMessage msg = new UserMessage(outgoing);
         return travelMasterAgent.streamEvents(msg, ctx)
-                .filter(this::isMainAgentEvent)
+                // 主 Agent 自身事件 + intake-agent 转发的 ask_user 反问（转 clarify_question）
+                .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))
                 .doOnNext(event -> {
                     if (event instanceof TextBlockDeltaEvent e) {
                         replyBuf.append(e.getDelta());
@@ -166,9 +185,33 @@ public class ChatService {
     }
 
     /**
+     * 反问事件（v3 FR-S02）：intake-agent 调 ask_user 工具的结果文本（source 含 "/" 的转发事件）。
+     * <p>
+     * 工具结果文本只出现在 ToolResultTextDeltaEvent（End 事件无内容 getter）。
+     * ask_user 的返回值格式为「{反问};;[intake]{给 LLM 的轮次提示}」——SSE 层
+     * 截取 {@code ;;} 之前的部分作为 clarify_question 事件推给前端。
+     * 其他子代理转发事件（Start/End/delta 文本）仍被 isMainAgentEvent 拦截。
+     * </p>
+     */
+    private boolean isClarifyEvent(AgentEvent event) {
+        return event instanceof ToolResultTextDeltaEvent e
+                && "ask_user".equals(e.getToolCallName())
+                && e.getSource() != null && e.getSource().contains("/");
+    }
+
+    /**
      * AgentEvent → SSE 事件映射（非推送事件返回 null 被过滤）
      */
     private ChatEvent toChatEvent(AgentEvent event) {
+        if (event instanceof ToolResultTextDeltaEvent e && isClarifyEvent(e)) {
+            // 截取 ;; 前的反问本身（其后是给 LLM 的轮次提示，不推给用户）
+            String delta = e.getDelta();
+            int cut = delta != null ? delta.indexOf(";;") : -1;
+            String question = cut >= 0 ? delta.substring(0, cut) : delta;
+            return question == null || question.isBlank()
+                    ? null   // 轮次提示段（;; 之后）不推送
+                    : ChatEvent.of(ChatEvent.TYPE_CLARIFY_QUESTION, question);
+        }
         if (event instanceof TextBlockDeltaEvent e) {
             return ChatEvent.of(ChatEvent.TYPE_DELTA, e.getDelta());
         }

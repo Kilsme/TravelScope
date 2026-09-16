@@ -184,9 +184,10 @@ spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更�
 ### 7.4 后续迭代（未落地，见需求文档 v3 §9.2）
 
 - ReviewerRetryMiddleware 目前为空壳透传（order=-900 占位），回炉拦截逻辑待实现
-- TripRequirementStore 为内存版，待迁移 Redis hash `trip:req:{userId}:{sessionId}`
-- 意图三层级联已于 2026-09-16 落地（见 7.5 节）；SSE 新事件（clarify_question /
-  agent_status / review_score）、RAG 双路检索仍为后续迭代项
+- 意图三层级联已于 2026-09-16 落地（见 7.5 节）；四维校验与 Planner 工具直调
+  已于同日定稿（见 7.7 节）；intake 混合形态（Redis 状态 + ask_user +
+  clarify_question SSE）已于 2026-09-17 补完（见 7.8 节）；
+  SSE 新事件（agent_status / review_score）、RAG 双路检索仍为后续迭代项
 
 ### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
 
@@ -273,3 +274,92 @@ String intent = ctx.get(IntentRouterMiddleware.CTX_INTENT_KEY);   // 直接接�
 `cascade_hit=L2 intent=PLANNING` → 门禁豁免放行 intake-agent →
 intake-agent 调 get_missing_fields 反问出发日期，v3 规划链路（含 6.2 节任务
 容器、7.3 节豁免、7.5 节级联）首次端到端跑通，无异常。
+
+### 7.7 Planner 工具直调定稿 + 四维校验落地（2026-09-16 追记，FR-S03/决策二）
+
+> v3 决策二（5 Worker → 2 子 Agent）的代码定稿：天气/酒店/车票/POI 初查全部由
+> planning-agent 直调工具（0 子 Agent LLM 调用），本文 3.3 节的 ItineraryAgent
+> fail-fast 协议随 Planner 重写为「直调 → 并行 spawn poi/route → 组装 → 送审」
+> 四步执行流程。同时补齐 v1 起一直停留在文档层面的**四维覆盖校验**。
+
+**四维校验的文档-实现落差**：需求文档 v1/v2/v3 均声称「TaskRegistry.createBacklog
+四维覆盖校验（v1 已有）」，但 2026-09-16 核查发现**代码从未实现**——createBacklog
+只做 JSON 解析 + 落盘，PlanningTask 无维度字段，全仓 grep「四维」仅命中 reviewer
+提示词。本次补实现于 `TaskRegistry`：
+
+- `DIMENSION_RULES` 规则表，**双路匹配**：suggestedTool 前缀/精确（train/flight-ticket-query、
+  hotel-search、attraction-search、weather-query、mcp__c12306*/mcp__variflight* → 四维）
+  + description 关键词兜底（火车/酒店/景点/天气等口语词），任一命中即覆盖
+- 缺维 → 返回 `ERROR: 任务清单缺少维度：[…]`（附建议技能名），**不落盘、不注册内存容器**
+  ——master 读 ERROR 补拆重登，与 PlanningGate 的 GATE_REJECTED 纠错循环同款模式
+- **实测驱动的关键词补齐**：单测暴露「帮我看看住哪里合适」这类口语描述无法命中住宿维
+  （原关键词只有 酒店/住宿/民宿 等），补「住哪/住哪里/落脚」——启发式规则表要靠
+  真实用例喂养，与 L1 规则表的「规则自生长」同思路
+
+**searchPois 命名对齐**：需求文档 v3 的 4 处 `searchPois` 此前只是规划中的名字，
+实际方法是 `AttractionTool.searchAttractions`（9 处引用）。本轮重命名对齐：
+工具方法、4 个 Agent 提示词（Itinerary/PoiResearch×3/Reviewer）、SKILL.md、
+architecture.md 工具表全部同步；`searchNearbyAttractions` / `HotelTool.searchNearbyPois`
+（周边搜索）不动，避免扩大爆炸半径。
+
+**验证**：新增 TaskRegistryDimensionTest（9 用例：全维通过/缺各维 ERROR/多维缺失
+一次列出/双路映射/MCP 前缀/纠错闭环/缺维不落盘），全量 58 测试 0 失败。
+E2E 实测：意图级联 a~e 全过（L1 3ms / L2 283ms / L0 5ms）；真实规划链路
+「L2 判 PLANNING → intake 反问日期 → 补答 → intake_done → master 拆 4 项任务 →
+**任务清单已登记: 4 项任务, 四维校验通过** → planning-agent 接手」——提示词引导下
+master 一次拆全四维（未触发缺维 ERROR，属两条通过路径之一），planner 直调工具执行。
+
+**顺带核实的两件事（记录结论免复查）**：①5 个 SKILL.md 均为纯工具手册风格，
+无 worker/委派/agent_spawn 痕迹，「删伪 Worker 描述」无需执行；②planning-agent
+工厂化后无 skills 白名单是框架约束（HarnessAgent.Builder 无 .skills() 方法），
+v1 的 5 项白名单本就等于全量技能，等价无损失。
+
+**已知局限（意图级联迭代项，非本次引入）**：E2E 观察到规划进行中的补充回答
+（如「这周六出发」）被 L2 单标签判为 CHAT 并覆盖 L0 缓存——L2 只看单条消息，
+看不到会话正处规划中途。流程靠 intake 状态机未断；后续可在 L2 提示词注入
+会话最近意图参考，或 L0 写回时对 PLANNING 降级覆盖做保护。
+
+### 7.8 intake-agent 混合形态补完：四个链路缺陷的根因与修复（2026-09-17 追记，FR-S02）
+
+> RequirementTools 补 ask_user 反问出口、状态迁 Redis hash、SSE clarify_question
+> 事件落地。E2E（检测标准 1~5）过程中揪出四个真实缺陷，均带「提示词约束失效 →
+> 代码层硬保证」的修复思路，与本文 2026-09-12「任务容器 + 委派门禁」的强化路径同源。
+
+**交付概览**：`TripRequirementStore` 重写为 Redis hash `trip:req:{userId}:{sessionId}`
+（字段即状态、TTL 24h 滚动、异常降级进程内存、get 返回副本须显式 save）；
+`RequirementTools` 新增 `ask_user`（唯一反问出口：轮次自动计数、满 3 轮置
+DEGRADED、返回值「{反问};;[intake]{轮次提示}」双段设计）；ChatService 拦截
+intake 转发的 `ToolResultTextDeltaEvent`（source 形如 `conv-xx/intake-agent`）
+截取 `;;` 前段推送 clarify_question；前端最小适配。检测标准 1~5 全部实测通过，
+全量 71 测试 0 失败。
+
+**缺陷 1：sessionId 落错键**。intake-agent 被 spawn 后自身 `ctx.getSessionId()`
+是框架生成的 `sub-xxx`（反编译 DefaultAgentManager 证实：子代理 ctx 只设新
+sessionId + userId，父会话 ID 不传入），intake 拿它当状态键 → 反问轮次写到
+`trip:req:2:sub-70304709-…`，主会话键永远空。修复：`resolveSessionId`——工具参数
+非 `conv-` 前缀时，从 ctx 继承的 `travelscope.collab.dir`（值 `tasks/conv-35`，
+master 每轮注入、子代理经 RuntimeContext stringAttributes 拷贝可见）解析主会话 ID。
+**教训：给子代理的工具凡需会话维度，不能信任其自身 ctx.sessionId，走 master 注入的上下文键**。
+
+**缺陷 2：master 委派遵循性波动（约 50% 轮次）**。提示词已三处强化「第一动作必须
+agent_spawn 委派 intake、禁止自己反问」，实测仍有一半轮次 master 只回文本
+（「请您告诉我以下内容：…」）不委派——反问链路整轮丢失。修复：ChatService 代码层
+兜底，PLANNING 且 `tripRequirementStore.isCollected()` 为假时，向用户消息前置
+「【系统指令】立即委派 intake-agent…」——应用层注入不依赖模型自觉。
+**教训：跨轮流程关键动作（委派/登记）不能只靠提示词，ChatService/master 双层都要有硬保证
+（与 create_task_backlog 门禁同构，这是本项目第三次验证该模式）**。
+
+**缺陷 3：异步 spawn 静默丢反问事件**。master 偶尔给 agent_spawn 传
+`timeout_seconds=0`（异步模式）——异步下子代理事件不进本会话事件流，ask_user
+的 clarify_question 静默消失（同步 spawn 轮次正常，导致问题间歇出现、极难排查）。
+修复：PlanningGateMiddleware 在 intake 豁免分支增加 `forceSyncIntake`——检测到
+`timeout_seconds=0` 即重写 ToolUseBlock 摘除该参数，强制走默认同步。
+**教训：同步/异步 spawn 的事件转发行为完全不同；依赖子代理事件流的链路必须代码层锁定同步模式**。
+
+**缺陷 4：clarify 事件夹带元话语**。初版 ask_user 返回「反问已发送给用户（第 1/3 轮）。
+用户看到的反问：…」，整段被推给前端。修复：`;;` 双段分隔——前段是用户可见的反问
+（SSE 截取），后段是给 LLM 的轮次提示（不出现在事件里）。
+**教训：工具返回值同时服务两个受众（LLM 与 SSE 透传）时，用显式分隔符切分受众内容**。
+
+**已知小瑕疵**：「下周吧」未被 intake 稳定解析为 startDate（模型发挥波动），
+后续可在提示词补日期解析 few-shot。

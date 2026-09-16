@@ -18,7 +18,7 @@ export interface ChatMessage {
 }
 
 /** SSE 事件类型（与后端 ChatEvent 对应） */
-export type ChatEventType = 'intent' | 'delta' | 'tool' | 'done' | 'error'
+export type ChatEventType = 'intent' | 'delta' | 'tool' | 'clarify_question' | 'done' | 'error'
 
 export interface ChatEvent {
   event: ChatEventType
