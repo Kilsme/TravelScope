@@ -183,11 +183,11 @@ spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更�
 
 ### 7.4 后续迭代（未落地，见需求文档 v3 §9.2）
 
-- ReviewerRetryMiddleware 目前为空壳透传（order=-900 占位），回炉拦截逻辑待实现
 - 意图三层级联已于 2026-09-16 落地（见 7.5 节）；四维校验与 Planner 工具直调
-  已于同日定稿（见 7.7 节）；intake 混合形态（Redis 状态 + ask_user +
-  clarify_question SSE）已于 2026-09-17 补完（见 7.8 节）；
-  SSE 新事件（agent_status / review_score）、RAG 双路检索仍为后续迭代项
+  已于同日定稿（见 7.7 节）；intake 混合形态已于 2026-09-17 补完（见 7.8 节）；
+  LLM Gateway（限流/熔断/快慢泳道/降级）已于 2026-09-17 落地（见 7.9 节）；
+  剩余待办：ReviewerRetryMiddleware 回炉拦截、SSE agent_status / review_score 事件、
+  RAG 双路检索
 
 ### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
 
@@ -363,3 +363,49 @@ agent_spawn 委派 intake、禁止自己反问」，实测仍有一半轮次 mas
 
 **已知小瑕疵**：「下周吧」未被 intake 稳定解析为 startDate（模型发挥波动），
 后续可在提示词补日期解析 few-shot。
+
+### 7.9 LLM Gateway 落地（2026-09-17 追记，FR-S09）
+
+> 限流/熔断/快慢泳道/降级四件套。两层职责：对话准入层（LlmGateway，ChatService 调用）
+> 与模型调用层（LlmGatewayModel 装饰器，AgentConfig 包装主模型 Bean）。设计细节见
+> `architecture.md` 7.1 节；本文记录框架核验发现与实施中的两个真实缺陷。
+
+**框架核验发现**（反编译 agentscope 2.0.3，决定了实现形态）：
+1. `Model` 接口仅 2 抽象方法 + 3 default——框架自己的 fallbackModel 实现就是
+   `implements Model` 的包装器（ReActAgent$2），装饰器是框架认可的模式；
+   但 `ChatModelBase.stream` 是 **public final**（不能继承装饰，必须接口实现）。
+2. **DashScopeHttpException（401 错 Key / invalid model）不实现 ModelHttpException**——
+   框架原生重试谓词不认它，401 不会触发任何重试/降级，自建 Resilience4j 层是唯一处理点。
+3. `GenerateOptions.modelName` 被 DashScopeChatModel 忽略（始终用自身字段）——
+   fallback 无法靠改 per-call 选项实现，必须持有独立 turbo 模型实例。
+4. 框架无内置限流/信号量/隔板工具（PeriodicGate 是去重门，非 QPS 限流器）。
+
+**实施中的两个真实缺陷**（测试驱动发现）：
+
+1. **fallback 成功掩盖熔断统计**：初版把 CircuitBreakerOperator 挂在「外层整链」
+   （onErrorResume 之后）——fallback 成功使整链 SUCCESS，**主模型的 401 从未计入熔断器**，
+   持续故障时熔断永远不 OPEN、请求永远打向 DashScope 拿 401。修复：熔断统计移到
+   「主模型流」上（fallback 之前），主模型失败必计入；OPEN 期间主模型流快速失败
+   （CallNotPermitted）仍可经 fallback 服务（用户无感）。
+   **教训：熔断统计必须挂在「被保护资源」的流上，不能挂在带兜底的整链上。**
+2. **R4j OPEN→HALF_OPEN 是惰性转换**：探针实验证明纯 sleep 后 getState() 仍 OPEN——
+   状态转换由下一次调用的 permission 检查触发，不由时间主动驱动。测试（与排障脚本）
+   必须「等够 waitDuration 后发起一次调用」才能观察到 HALF_OPEN。
+   另：HALF_OPEN 默认放行 10 次探测，单次成功不立即 CLOSED。
+
+**E2E 检测记录**（检测标准 1~4 全过）：
+- 标准 1：同用户并发 3 条 → `gateway_reject reason=USER_BUSY`，SSE error 明确文案
+  「您的上一条请求还在处理中…」，不白屏。
+- 标准 2：错 Key 独立进程（8081，熔断窗口调小）连发 4 条 → 日志
+  `circuit_breaker CLOSED → OPEN`；OPEN 期间请求 249~278ms 快速失败（vs 首条 1992ms
+  完整 401 往返）；约 28s 后 `OPEN → HALF_OPEN` 探测日志。
+- 标准 3：真实 API 测试（LlmGatewayRealApiTest）错 Key plus → 日志
+  `fallback → qwen-turbo` → turbo（正确 Key）返回内容，用户仍收到回复。
+- 标准 4：规划（慢泳道）进行中并发天气查询——fast-lane 专用线程执行、独立完成
+  （18s < 快泳道 25s），不被拖到 60s 档。**参数实测校准**：快泳道初设 5s 会误杀
+  master 含工具调用的多轮推理链（qwen-plus 慢响应日首推理即 9s+），5→15→25s 两轮
+  调整后以 25s 定稿——泳道超时参数必须按「真实链路 P99 首响应」校准，不是拍脑袋值。
+
+**已知取舍**：fallback 粘滞切换（切 turbo 后本进程不自动回 plus，重启恢复）——
+避免主模型恢复瞬间反复抖动；单用户 Semaphore(2) 在无认证体系下即全站上限
+（guest 共享 userId），接入认证体系后自然恢复为真实单用户语义。

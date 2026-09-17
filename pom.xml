@@ -41,6 +41,9 @@
         <hutool.version>5.8.32</hutool.version>
         <fastjson2.version>2.0.53</fastjson2.version>
         <okhttp.version>5.3.2</okhttp.version>
+
+        <!-- 容错（LLM Gateway：熔断/限流，Boot 3.3.5 BOM 不管理版本，需显式声明） -->
+        <resilience4j.version>2.2.0</resilience4j.version>
     </properties>
 
     <dependencies>
@@ -181,6 +184,24 @@
         </dependency>
 
         <!-- OkHttp（通过 AgentScope 传递依赖引入 5.x，无需显式声明） -->
+
+        <!-- ==================== 容错（LLM Gateway，FR-S09） ==================== -->
+        <!-- Resilience4j 熔断（CircuitBreaker）+ 限流（RateLimiter）+ Reactor 操作符（Flux 接线） -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-ratelimiter</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-reactor</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
 
         <!-- ==================== Lombok ==================== -->
         <dependency>

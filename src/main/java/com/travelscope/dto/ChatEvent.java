@@ -13,7 +13,8 @@ import lombok.Setter;
  *   <li>tool   - 工具调用状态，payload 为工具名（或 工具名:结果状态）</li>
  *   <li>clarify_question - intake-agent 的反问（经 ask_user 工具），payload 为反问文本（v3 FR-S02）</li>
  *   <li>done   - 回复结束，payload 为完整回复文本</li>
- *   <li>error  - 错误，payload 为错误信息</li>
+ *   <li>error  - 错误，payload 为错误信息（含 FR-S09 LLM Gateway 降级文案：准入拒绝/
+ *               泳道超时/熔断兜底，前端以 ⚠️ 提示展示，不白屏）</li>
  * </ul>
  * </p>
  */

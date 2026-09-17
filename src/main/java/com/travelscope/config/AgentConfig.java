@@ -29,9 +29,14 @@ import io.agentscope.core.tool.Toolkit;
 import io.agentscope.core.tool.mcp.McpClientBuilder;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import io.agentscope.core.model.Model;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import com.travelscope.agent.LlmGatewayModel;
+import com.travelscope.service.LlmGateway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
@@ -219,27 +224,59 @@ public class AgentConfig {
      * <p>
      * 显式构建（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY），
      * 供主 Agent 与意图分类器共用；子代理的字符串模型 ID 通过 modelResolver 解析到同一实例，
-     * 避免依赖 DASHSCOPE_API_KEY 环境变量的字符串模型自动解析路径。
+    /**
+     * 创建主链路模型 Bean（qwen-plus，经 LLM Gateway 装饰，FR-S09）
+     * <p>
+     * 真实 DashScope 实例（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY）
+     * 外包 {@link LlmGatewayModel} 装饰器：熔断（滑动窗口失败率超阈值 → OPEN → HALF_OPEN）+
+     * 单次调用超时 + 失败 fallback → qwen-turbo 重流。master/planner/modelResolver/4 个声明式
+     * 子 Agent 全部收敛到本 Bean——包一个实例全链路生效（意图级联 L3 也经此）。
      * </p>
      * <p>
-     * @Primary：容器内现在有两个 DashScopeChatModel Bean（本 Bean + turbo），
-     * 按类型注入的 ChatService 等回退到本主链路模型。
+     * 返回类型为 {@link Model} 接口（装饰器模式；框架核验：Model 仅 2 抽象方法，
+     * 框架自身的 fallbackModel 实现就是同款 implements Model 包装器）。
+     * @Primary：按 DashScopeChatModel 类型注入 turbo 的地方不受影响，
+     * 按 Model 类型注入的下游解析到本装饰后主链路模型。
      * </p>
      */
     @Bean
     @org.springframework.context.annotation.Primary
-    public DashScopeChatModel dashscopeChatModel() {        return DashScopeChatModel.builder()
+    public Model dashscopeChatModel(DashScopeChatModel dashscopeTurboModel) {
+        Model primary = DashScopeChatModel.builder()
                 .apiKey(appProperties.getDashscope().getApiKey())
                 .modelName(appProperties.getDashscope().getModel())
                 .stream(true)
                 .build();
+        var gw = appProperties.getLlmGateway();
+        if (!gw.isEnabled()) {
+            return primary;   // 网关关闭：裸模型，保持旧行为
+        }
+        CircuitBreaker cb = CircuitBreaker.of("llm-gateway-model",
+                CircuitBreakerConfig.custom()
+                        .slidingWindowSize(gw.getCbSlidingWindowSize())
+                        .failureRateThreshold(gw.getCbFailureRateThreshold())
+                        .minimumNumberOfCalls(gw.getCbMinimumNumberOfCalls())
+                        .waitDurationInOpenState(Duration.ofSeconds(gw.getCbWaitDurationOpenSeconds()))
+                        .build());
+        return new LlmGatewayModel(primary,
+                gw.isFallbackEnabled() ? dashscopeTurboModel : null, cb,
+                Duration.ofSeconds(gw.getModelTimeoutSeconds()), gw.isFallbackEnabled());
+    }
+
+    /**
+     * LLM Gateway 对话准入层 Bean（FR-S09：全局/单用户并发 + QPS + 泳道超时）
+     */
+    @Bean
+    public LlmGateway llmGateway() {
+        return new LlmGateway(appProperties);
     }
 
     /**
      * L2 轻量分类模型 Bean（qwen-turbo，FR-S01 意图级联）
      * <p>
      * 与主链路共用 apiKey，仅模型名不同（travelscope.intent-cascade.l2-model）；
-     * 仅被意图级联的 L2 层使用（LightweightIntentClassifier）。
+     * 被意图级联的 L2 层使用（LightweightIntentClassifier），并作为主链路
+     * LlmGatewayModel 的 fallback 目标（fallback 是降级终点，自身不再套熔断）。
      * </p>
      */
     @Bean
@@ -263,7 +300,7 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public HarnessAgent travelMasterAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel,
+    public HarnessAgent travelMasterAgent(Toolkit toolkit, Model dashscopeChatModel,
                                           TaskRegistry taskRegistry) throws IOException {
         // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
         // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
@@ -340,7 +377,7 @@ public class AgentConfig {
      * workspace / skillRepository / 权限模式与主 Agent 一致。
      * </p>
      */
-    private HarnessAgent buildPlannerAgent(Toolkit toolkit, DashScopeChatModel dashscopeChatModel) {
+    private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model dashscopeChatModel) {
         // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
         SubagentDeclaration poiResearch = SubagentDeclaration.builder()
                 .name(PoiResearchAgent.AGENT_NAME)
@@ -409,7 +446,7 @@ public class AgentConfig {
     @Bean
     public IntentClassifier intentClassifier(
             @org.springframework.beans.factory.annotation.Qualifier("dashscopeChatModel")
-            DashScopeChatModel dashscopeChatModel) {
+            Model dashscopeChatModel) {
         return new IntentClassifier(dashscopeChatModel);
     }
 

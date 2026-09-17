@@ -147,6 +147,26 @@ travelscope:
       - pattern: "(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)"
         intent: TOOL_CALL
 
+  # ---- LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）----
+  # 对话准入层（ChatService→LlmGateway）：全局并发 50 + 单用户并发 2 + 全局 QPS 10
+  # 快泳道（CHAT/TOOL_CALL/RAG）5s / 慢泳道（PLANNING）60s 对话级超时
+  # 模型调用层（LlmGatewayModel 装饰器）：熔断（窗口 10 次/失败率 50%/OPEN 10s）
+  # + 单次调用超时 30s + 失败 fallback → qwen-turbo + SSE error 兜底文案
+  llm-gateway:
+    enabled: true
+    global-concurrency: 50
+    per-user-concurrency: 2
+    global-qps: 10
+    acquire-timeout-ms: 2000
+    fast-lane-timeout-seconds: 25
+    slow-lane-timeout-seconds: 60
+    model-timeout-seconds: 30
+    cb-sliding-window-size: 10
+    cb-failure-rate-threshold: 50
+    cb-minimum-number-of-calls: 5
+    cb-wait-duration-open-seconds: 10
+    fallback-enabled: true
+
 # ======================== 日志配置 ========================
 logging:
   level:

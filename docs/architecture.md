@@ -102,30 +102,38 @@ public SseEmitter stream(@Valid @RequestBody ChatRequest req) {
 
 ## 4. 编排层：ChatService（`service/ChatService.java`）
 
-一轮对话的完整编排（`streamChat` 方法）：
+一轮对话的完整编排（`streamChat` 方法，含 FR-S09 LLM Gateway 准入）：
 
 ```java
 public SseEmitter streamChat(Conversation conversation, Long userId, String userMessage) {
     conversationService.saveUserMessage(conversation, userId, userMessage);   // 1. 用户消息入库
-    SseEmitter emitter = new SseEmitter(0L);
-    StringBuilder replyBuf = new StringBuilder();
+
+    // 2. LLM Gateway 准入（FR-S09）：全局 Semaphore(50) → QPS(10/s) → 单用户 Semaphore(2)
+    //    被拒 → SSE error 降级文案（明确提示不白屏），不跑 Agent
+    LlmGateway.AcquireResult admission = llmGateway.tryAcquire(String.valueOf(userId));
+    if (!admission.allowed()) { emitter.send(error(admission.message())); return emitter; }
 
     Disposable disposable = Mono
-            .fromCallable(() -> resolveIntent(userMessage, userId, conversation.getId()))  // 2. 意图分类（boundedElastic）
+            .fromCallable(() -> resolveIntent(userMessage, userId, conversation.getId()))  // 3. 意图级联（boundedElastic）
             .subscribeOn(Schedulers.boundedElastic())
             .flatMapMany(intent -> Flux.concat(
-                    Flux.just(toIntentEvent(intent)),                                // 3. 先推 intent 事件
-                    runAgent(conversation, userId, userMessage, intent, replyBuf)))  // 4. 跑主 Agent 事件流
+                    Flux.just(toIntentEvent(intent)),                                // 4. 先推 intent 事件
+                    runAgent(conversation, userId, userMessage, intent, replyBuf))   // 5. 跑主 Agent 事件流
+                    // 快慢泳道线程池隔离（FR-S09）：按意图调度到 fast-lane/slow-lane 专用池——
+                    // PLANNING 的同步 spawn 长阻塞只占慢池，查询在快池独立执行互不拖拽
+                    .subscribeOn(intent.toIntentType() == PLANNING ? slowLaneScheduler : fastLaneScheduler))
             .subscribe(event -> sendEvent(emitter, event),
-                    error -> handleError(emitter, replyBuf, conversation, userId, error),
-                    () -> handleComplete(emitter, replyBuf, conversation, userId));  // 5. done 时助手回复入库
-
-    emitter.onTimeout(disposable::dispose);   // 防订阅泄漏
-    emitter.onError(t -> disposable.dispose());
-    emitter.onCompletion(disposable::dispose);
-    return emitter;
+                    error -> handleError(...),                                       // 6. 释放网关槽位 + SSE error
+                    () -> handleComplete(...));                                      // 7. done 时释放槽位 + 入库
+    ...
 }
 ```
+
+`runAgent` 尾部的泳道超时：`.timeout(gateway.laneTimeout(isPlanning))`——PLANNING 60s /
+其余 25s（实测校准：master 含工具调用的多轮推理链在 qwen-plus 慢响应下 5s/15s 会误杀），
+超时 → SSE error「处理超时了（N 秒上限），请稍后重试或换个问法～」。
+Agent 层异常经 `sseFallbackMessage` 映射降级文案（熔断 OPEN →「模型服务暂时不可用
+（已触发熔断保护）…」；认证类 →「模型服务认证异常…」）。
 
 意图路由与上下文注入（`runAgent`）——**用户+会话隔离的关键接线**：
 
@@ -434,6 +442,55 @@ return HarnessAgent.builder()
 - `RouteOptimizerAgent`：两两算通勤 → 就近聚类分日 → 迭代调整 → route_plan.md
 - `ReviewerAgent`：5 维评分（各 20 分，总分 ≥80 且无单维 <12 通过）→ 可调工具核验事实 →
   review_passed.md / review_report.md
+
+### 7.1 LLM Gateway（FR-S09，已落地：限流/熔断/快慢泳道/降级）
+
+两层职责解耦，各自可测：
+
+**对话准入层 `service/LlmGateway`**（ChatService 调用，纯 Java + R4j RateLimiter）：
+
+- 全局 `Semaphore(50)` → 全局 QPS（R4j 滑动窗口 10/s）→ 单用户 `Semaphore(2)`（当前
+  无认证体系，guest 即全站上限），全部 `tryAcquire`（等待 2s），被拒返回用户可读文案
+  → SSE error（不白屏）：GLOBAL_BUSY「当前使用人数较多…」/ QPS_LIMIT「请求过于频繁…」/
+  USER_BUSY「您的上一条请求还在处理中…」
+- 失败路径按获取逆序回滚信号量（QPS 拒绝不泄漏全局槽位）；对话结束（done/error）release
+- **快慢泳道线程池隔离**：ChatService 持有两个 `Schedulers.newBoundedElastic` 专用池
+  （fast-lane / slow-lane 各 10 线程），按意图把整条对话链调度到对应池——PLANNING 的
+  同步 spawn 长阻塞只占慢池，查询类在快池独立执行互不拖拽；叠加对话级超时
+  （PLANNING 60s / 其余 25s，实测校准）
+
+**模型调用层 `agent/LlmGatewayModel`**（`implements Model` 装饰器，AgentConfig 包装主模型 Bean）：
+
+```java
+Flux<ChatResponse> guardedPrimary = Flux.defer(() -> activeModel.get().stream(...))
+        .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))  // 熔断统计挂主模型流
+        .timeout(callTimeout);                                          // 单次调用 30s
+return guardedPrimary.onErrorResume(e -> {
+    log.warn("fallback → qwen-turbo …");                                // 检测标准 3 的日志锚点
+    activeModel.set(fallback);
+    return fallback.stream(...);                                        // 中途失败也切（强于原生）
+});
+```
+
+- master/planner/modelResolver/4 个声明式子 Agent/意图级联 L3 全部收敛到装饰后的主模型
+  Bean——包一个实例全链路生效；turbo Bean 保持裸实例（L2 + fallback 目标，降级终点不套熔断）
+- 熔断参数：窗口 10 次 / 失败率 50% / 最小样本 5 / OPEN 10s → HALF_OPEN 惰性转换
+  （纯等待不转状态，下一次调用的 permission 检查触发）
+- 状态变迁埋点：`circuit_breaker CLOSED → OPEN / OPEN → HALF_OPEN` 日志
+
+**框架核验结论**（反编译 agentscope 2.0.3，落地依据）：Model 仅 2 抽象方法+3 default，
+框架自己的 fallbackModel 实现就是同款 `implements Model` 包装器（ReActAgent$2）；
+`ChatModelBase.stream` 是 public final（不能继承装饰）；**DashScopeHttpException（401/
+invalid model）不实现 ModelHttpException——框架原生重试不认它**，自建 R4j 层是唯一处理点；
+`GenerateOptions.modelName` 被 DashScopeChatModel 忽略——fallback 必须持有独立 turbo 实例。
+
+**设计取舍**：未用框架原生 `fallbackModel`/`maxRetries`（原生只在首个信号错误时切换、
+且与本装饰器叠加会双层重试）；fallback 采用粘滞切换（切到 turbo 后本进程不自动回 plus，
+重启恢复）——避免主模型恢复瞬间反复抖动。
+
+测试：`LlmGatewayTest`（7 用例：单用户/全局/QPS/release/回滚/泳道取值/开关）、
+`LlmGatewayModelTest`（5 用例：fallback/中途失败/双失败上抛/熔断 OPEN+HALF_OPEN/能力委托）、
+`LlmGatewayRealApiTest`（API_KEY 门控：正常路径 + 错 Key 401→fallback→turbo 真实链路）。
 
 ## 8. 工作区与隔离结构（需求 1）
 

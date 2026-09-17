@@ -44,6 +44,9 @@ public class AppProperties {
     /** 意图三层级联配置（FR-S01） */
     private IntentCascadeConfig intentCascade = new IntentCascadeConfig();
 
+    /** LLM Gateway 配置（FR-S09） */
+    private LlmGatewayConfig llmGateway = new LlmGatewayConfig();
+
     @Data
     public static class DashScopeConfig {
         /** 通义千问 API Key */
@@ -187,5 +190,43 @@ public class AppProperties {
         private String pattern;
         /** 意图标签（IntentType.name()） */
         private String intent;
+    }
+
+    /**
+     * LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）
+     * <p>
+     * 两层职责：对话准入层（ChatService 调 LlmGateway——全局/单用户并发 + 全局 QPS +
+     * 快慢泳道超时）；模型调用层（LlmGatewayModel 装饰器——熔断 + 单次超时 + fallback）。
+     * </p>
+     */
+    @Data
+    public static class LlmGatewayConfig {
+        /** 网关总开关（false 时准入直通、模型不装饰，保持旧行为） */
+        private boolean enabled = true;
+        /** 全局并发上限（同时在处理的对话数） */
+        private int globalConcurrency = 50;
+        /** 单用户并发上限（同一用户同时在处理的对话数；当前无认证体系，guest 即全站） */
+        private int perUserConcurrency = 2;
+        /** 全局准入 QPS（滑动窗口限流，每秒放行的对话数） */
+        private double globalQps = 10;
+        /** 准入等待超时（毫秒）：信号量在此时长内拿不到即拒绝（明确提示，不白屏） */
+        private int acquireTimeoutMs = 2000;
+        /** 快泳道超时（秒）：CHAT/TOOL_CALL/RAG 意图的对话级超时（25s——master 含工具调用的
+         *  多轮推理链实测 5s 会误杀，25s 仍与慢泳道 60s 保持数量级差异） */
+        private int fastLaneTimeoutSeconds = 25;
+        /** 慢泳道超时（秒）：PLANNING 意图的对话级超时 */
+        private int slowLaneTimeoutSeconds = 60;
+        /** 模型单次调用超时（秒，LlmGatewayModel 装饰器） */
+        private int modelTimeoutSeconds = 30;
+        /** 熔断：滑动窗口大小（次） */
+        private int cbSlidingWindowSize = 10;
+        /** 熔断：失败率阈值（%，窗口内失败率超此值即 OPEN） */
+        private int cbFailureRateThreshold = 50;
+        /** 熔断：最小调用样本数（窗口内达到才计算失败率） */
+        private int cbMinimumNumberOfCalls = 5;
+        /** 熔断：OPEN 状态持续时间（秒），过后转 HALF_OPEN 探测 */
+        private int cbWaitDurationOpenSeconds = 10;
+        /** fallback 降级开关（主模型失败 → qwen-turbo 重试一次） */
+        private boolean fallbackEnabled = true;
     }
 }

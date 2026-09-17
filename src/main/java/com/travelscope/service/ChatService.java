@@ -27,6 +27,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.List;
 
 import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
@@ -59,41 +60,69 @@ public class ChatService {
     private final ConversationService conversationService;
     private final TaskWorkspaceService taskWorkspaceService;
     private final TripRequirementStore tripRequirementStore;
+    private final LlmGateway llmGateway;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
                        RagService ragService,
                        ConversationService conversationService,
                        TaskWorkspaceService taskWorkspaceService,
-                       TripRequirementStore tripRequirementStore) {
+                       TripRequirementStore tripRequirementStore,
+                       LlmGateway llmGateway) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
         this.conversationService = conversationService;
         this.taskWorkspaceService = taskWorkspaceService;
         this.tripRequirementStore = tripRequirementStore;
+        this.llmGateway = llmGateway;
     }
 
     /**
-     * 处理一轮对话：持久化用户消息 → 意图分类 → 路由执行 → SSE 推送 → 持久化回复
+     * 处理一轮对话：持久化用户消息 → LLM Gateway 准入 → 意图分类 → 路由执行 → SSE 推送 → 持久化回复
      *
      * @param conversation 会话（已校验归属）
      * @param userId       用户 ID
      * @param userMessage  用户消息原文
      * @return SSE 发射器
      */
+    /** 快泳道专用调度池（FR-S09 线程池隔离）：查询类对话独立于慢泳道，规划的长阻塞不拖慢查询 */
+    private final reactor.core.scheduler.Scheduler fastLaneScheduler =
+            reactor.core.scheduler.Schedulers.newBoundedElastic(10, 10_000, "fast-lane", 60, true);
+    /** 慢泳道专用调度池：PLANNING 长任务（同步 spawn 阻塞等待子 Agent）在此排队 */
+    private final reactor.core.scheduler.Scheduler slowLaneScheduler =
+            reactor.core.scheduler.Schedulers.newBoundedElastic(10, 10_000, "slow-lane", 60, true);
+
     public SseEmitter streamChat(Conversation conversation, Long userId, String userMessage) {
         conversationService.saveUserMessage(conversation, userId, userMessage);
 
         SseEmitter emitter = new SseEmitter(0L);
         StringBuilder replyBuf = new StringBuilder();
 
+        // LLM Gateway 准入（FR-S09）：全局/单用户并发 + QPS；被拒 → SSE error 降级文案（不白屏）
+        LlmGateway.AcquireResult admission = llmGateway.tryAcquire(String.valueOf(userId));
+        if (!admission.allowed()) {
+            try {
+                emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
+                        .data(admission.message()));
+            } catch (Exception ignored) {
+                // 客户端已断开
+            }
+            emitter.complete();
+            return emitter;
+        }
+
         Disposable disposable = Mono
                 .fromCallable(() -> resolveIntent(userMessage, userId, conversation.getId()))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(intent -> Flux.concat(
                         Flux.just(toIntentEvent(intent)),
-                        runAgent(conversation, userId, userMessage, intent, replyBuf)))
+                        runAgent(conversation, userId, userMessage, intent, replyBuf))
+                        // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
+                        // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
+                        // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
+                        .subscribeOn(intent != null && intent.toIntentType() == IntentType.PLANNING
+                                ? slowLaneScheduler : fastLaneScheduler))
                 .subscribe(
                         event -> sendEvent(emitter, event),
                         error -> handleError(emitter, replyBuf, conversation, userId, error),
@@ -161,6 +190,9 @@ public class ChatService {
         }
 
         UserMessage msg = new UserMessage(outgoing);
+        // 快慢泳道（FR-S09）：PLANNING → 慢泳道 60s；其余（CHAT/TOOL_CALL/RAG/null）→ 快泳道 5s。
+        // 查询类不被进行中的长规划拖慢（独立链路 + 各自超时保护），超时 → SSE error 兜底文案
+        Duration laneTimeout = llmGateway.laneTimeout(type == IntentType.PLANNING);
         return travelMasterAgent.streamEvents(msg, ctx)
                 // 主 Agent 自身事件 + intake-agent 转发的 ask_user 反问（转 clarify_question）
                 .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))
@@ -170,9 +202,17 @@ public class ChatService {
                     }
                 })
                 .mapNotNull(this::toChatEvent)
+                .timeout(laneTimeout)
                 .onErrorResume(e -> {
+                    if (e instanceof java.util.concurrent.TimeoutException) {
+                        log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
+                                type, laneTimeout.toSeconds(), conversation.getId());
+                        return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
+                                "处理超时了（" + laneTimeout.toSeconds() + " 秒上限），请稍后重试或换个问法～"));
+                    }
                     log.error("Agent 执行异常: conversationId={}", conversation.getId(), e);
-                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR, "Agent 执行异常: " + e.getMessage()));
+                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
+                            sseFallbackMessage(e)));
                 });
     }
 
@@ -257,13 +297,28 @@ public class ChatService {
         }
     }
 
+    /**
+     * Agent 层异常 → SSE error 降级文案（FR-S09 兜底：熔断 OPEN / fallback 也失败时给用户明确提示，不白屏）
+     */
+    private String sseFallbackMessage(Throwable e) {
+        String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        if (msg.contains("CircuitBreaker") || msg.contains("CallNotPermitted")) {
+            return "模型服务暂时不可用（已触发熔断保护），请稍等片刻再试；我们已自动降级重试。";
+        }
+        if (msg.contains("401") || msg.contains("Unauthorized") || msg.contains("invalid")) {
+            return "模型服务认证异常，请稍后再试或联系管理员。";
+        }
+        return "处理失败，请稍后重试（" + msg + "）";
+    }
+
     private void handleError(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
                              Long userId, Throwable error) {
         log.error("对话处理异常: conversationId={}", conversation.getId(), error);
+        llmGateway.release(String.valueOf(userId));
         persistReply(conversation, userId, replyBuf);
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
-                    .data("处理失败: " + error.getMessage()));
+                    .data(sseFallbackMessage(error)));
         } catch (Exception ignored) {
             // 客户端已断开
         }
@@ -271,6 +326,7 @@ public class ChatService {
     }
 
     private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation, Long userId) {
+        llmGateway.release(String.valueOf(userId));
         persistReply(conversation, userId, replyBuf);
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_DONE)
