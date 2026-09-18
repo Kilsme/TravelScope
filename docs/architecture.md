@@ -46,10 +46,10 @@ flowchart TB
     MW3 -.-> MA
 ```
 
-> v3 骨架阶段的状态：6 Agent 编排、需求状态机工具已落地；**意图三层级联（FR-S01）与
-> intake-agent 混合形态（FR-S02：Redis 状态机 + ask_user 反问出口 + clarify_question
-> SSE）均已落地并 E2E 验证**；SSE 新事件（agent_status / review_score）、
-> Reviewer 回炉拦截、RAG 双路检索为后续迭代（需求文档 v3 §9.2）。
+> v3 骨架阶段的状态：6 Agent 编排、需求状态机工具已落地；**意图三层级联（FR-S01）、
+> intake-agent 混合形态（FR-S02）、LLM Gateway（FR-S09）、poi-research 双路检索
+> （FR-S11）与 TaskResultCache（FR-S14）均已落地并 E2E 验证**；
+> SSE 新事件（agent_status / review_score）、Reviewer 回炉拦截为后续迭代（需求文档 v3 §9.2）。
 
 ## 2. 前端模块（`frontend/`）
 
@@ -539,7 +539,9 @@ invalid model）不实现 ModelHttpException——框架原生重试不认它**�
 | `searchPois` / `searchNearbyAttractions` | `AttractionTool`（searchPois 为 Planner POI 初查直调入口，v3） | 高德 POI |
 | `geocode` / `getDrivingRoute` / `getTransitRoute` | `TransportTool` | 高德路径规划 |
 | `create_task_backlog` / `get_task_progress` / `update_task_status` / `planning_gate_hint` | `TaskTools` → `TaskRegistry` | 内存容器 + 工作区 MD |
-| `get_missing_fields` / `update_requirement_state` | `RequirementTools` → `TripRequirementStore`（v3 新增） | 内存状态机（TODO Redis） |
+| `get_missing_fields` / `update_requirement_state` | `RequirementTools` → `TripRequirementStore`（v3） | Redis hash `trip:req:*`（内存降级） |
+| `search_pois_with_rag` | `PoiRagTools` → `RagServiceImpl`（FR-S11 双路检索，v3 新增） | pgvector + ES + RRF |
+| `get_cached_task_result` / `register_task_result` | `PoiRagTools` → `TaskResultCache`（FR-S14，v3 新增） | Redis（内存降级） |
 | `mcp__c12306__get-tickets` 等 | 12306 MCP（stdio，`npx -y 12306-mcp`，免鉴权） | 12306 实时余票 |
 | `mcp__variflight__searchFlightsByDepArr` 等 | 飞常准 MCP（需 `VARIFLIGHT_API_KEY`） | 实时机票票价 |
 | `agent_spawn` / `write_file` / `read_file` 等 | harness 内置（SubagentsMiddleware / 文件系统） | AgentScope harness |
@@ -556,9 +558,52 @@ MCP 注册（`AgentConfig.registerMcpClients`）：Windows 下经 `cmd /c npx �
 - `schema.sql`：建表脚本（JPA `ddl-auto: none`）；助手回复在 Agent 事件流完成回调中入库
 - `common/GlobalExceptionHandler`：统一 `{code, message}` 错误响应
 
-## 12. RAG 预留（`service/RagService.java` + `RagServiceStub`）
+## 12. RAG 双路检索（FR-S11，已落地：pgvector 语义 + ES BM25 + RRF 融合）
 
-接口 `isAvailable()`（当前 false）+ `retrieve(query, topK)`（空列表）。
-ChatService 在 intent=RAG 且可用时把检索片段拼入消息（`augmentWithRag`）；
-schema 中 `documents` / `document_chunks`（pgvector vector(1024) + HNSW）已就绪，
-后续接 `agentscope-extensions-rag-simple` 的 SimpleKnowledge + PgVectorStore 零改造。
+```
+query（如「杭州 必去景点」）
+   ├─ 语义路：DashScopeTextEmbedding(text-embedding-v3) → PgVectorStore(document_chunks, COSINE kNN)
+   │          —— 100% AgentScope 原生组件（SimpleKnowledge 编排）
+   ├─ 关键词路：EsBm25Client（自写，elasticsearch-java 9.0.2 Rest5Client）
+   │          —— BM25 multi_match(content/title)，ik_smart 搜索分词
+   └─ RrfFusion（自写）：score = Σ 1/(rrfK + rank)，按 chunkId 去重，
+              双路命中标 RAG+ES → 融合 top-K（带来源标记）
+```
+
+**组件**（`service/`）：
+- `RagServiceImpl`（替换原 Stub）：实现 RagService（isAvailable/retrieve 走双路融合）+
+  `dualRetrieveWithSource(query, topK)` 返回 `List<RetrievedFragment{content, source, score, chunkId}>`；
+  两路各自降级（语义路构造失败→纯 BM25，ES 挂→纯语义，双挂→isAvailable=false）；
+  RagConfig.mode 支持 dual/vector/fulltext；埋点 `rag_retrieve query=… 语义路=N条 BM25路=N条 融合=N条`
+- `EsBm25Client`：BM25 检索 + `ensureIndex()`（幂等建索引，classpath:elasticsearch/index-mapping.json）+
+  bulkIndex（种子/摄取写入）+ refresh；失败静默降级（首次 warn 后续 debug）
+- `RrfFusion`：纯静态融合工具（可单测）；`dto/RetrievedFragment`：带来源标记的结果载体
+- `PoiRagTools`（`agent/tools/`，注册进共享 Toolkit）：
+  `search_pois_with_rag(query, topK)`（poi-research 双路召回入口，返回片段+来源标记）、
+  `get_cached_task_result(taskType)` / `register_task_result(taskType, taskId, content)`
+  （FR-S14 缓存工具面；sessionId 经 ctx 协作目录键解析主会话，与 RequirementTools 同款）
+- `KnowledgeIngestRunner`（`config/`）：`travelscope.rag.seed-enabled=true` 时启动灌
+  内置 22 条攻略片段（杭州为主）→ embedding → 双写 pgvector + ES（幂等）
+
+**TaskResultCache**（`service/`，FR-S14 为 P7 局部回炉打底）：Redis key
+`taskresult:{userId}:{sessionId}:{taskType}`，TTL 按类型（POI/路线/酒店 30min、天气 10min）；
+命中打 `cache_hit={taskType}` 日志；`invalidate(单段|全部)` 预留给按影响面失效
+（目的地变更全失效/预算变更只失效酒店段）；降级进程内存。
+
+**框架核验结论**（反编译 agentscope 2.0.3）：①原生 `ElasticsearchStore.search` 只做 kNN
+（content 字段 index=false），**BM25 路必须自写**；②全库无 fusion/rerank API，**RRF 自写**；
+③`PgVectorStore` 实测以 **VARCHAR 写 chunk_id**（schema.sql 原定义为 INTEGER 会写入失败，
+2026-09-18 已修正 schema + ES mapping 同步 keyword）；④embedding 生成在 Knowledge 层
+（SimpleKnowledge），Store 只收向量。
+
+**环境要点**：ES IK 分词插件需容器启动后手动装（`docker exec … elasticsearch-plugin
+install --batch …` 或手动解压到 plugins/analysis-ik/ + restart；**装在容器层，容器重建即丢**）；
+种子灌入需 API_KEY（embedding 真实调用）。
+
+**E2E 实测**（2026-09-18，conv-44 杭州 2 日游）：poi_shortlist.md 产出 5 个 POI 全带
+RAG+ES/ES/RAG 来源标记与坐标；`rag_retrieve` 日志显示多轮换词（西湖→河坊街→南宋御街→
+丝绸博物馆，各 语义路5条+BM25路5条+融合5条 ~560ms）；同会话二次规划 `cache_hit=poi`
+且 poi-research 零重跑；planner 的 hotel 缓存 miss→执行→register 完整闭环。
+
+测试：`RrfFusionTest`（5）、`TaskResultCacheTest`（5+2 门控）、`PoiRagToolsTest`（5）、
+`RagServiceImplTest`（2，ES 门控）。

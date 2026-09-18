@@ -67,19 +67,28 @@ public class ItineraryAgent {
             ===================================================
 
             第 1 步 直接调工具获取实时数据（相互独立的查询同一轮并行发起；
-            天气/酒店/车票/POI 初查均由你直接调用，不走子 Agent——快且零幻觉）：
-            - 天气：getWeatherForecast(city, days)，天数与行程天数对齐
-            - 酒店：searchHotels(city, keyword, pageSize)，结果中按用户预算做代码层过滤
+            天气/酒店/车票/POI 初查均由你直接调用，不走子 Agent——快且零幻觉）。
+            【缓存优先】先调 get_cached_task_result 查 weather/hotel 缓存，
+            命中（返回缓存内容）则直接复用不再调工具，未命中（CACHE_MISS）才执行：
+            - 天气：getWeatherForecast(city, days)，天数与行程天数对齐；
+              完成后调 register_task_result(taskType=weather) 登记
+            - 酒店：searchHotels(city, keyword, pageSize)，结果中按用户预算做代码层过滤；
+              完成后调 register_task_result(taskType=hotel) 登记
             - 城际大交通：火车票 mcp__c12306__get-tickets / 机票 mcp__variflight__getFlightPriceByCities
               （用户说「明天」等相对日期时，先调 mcp__c12306__get-current-date 或
                mcp__variflight__getTodayDate 解析）
             - 景点初查：searchPois(city, keyword, pageSize)（为 poi-research 提供起点线索）
 
-            第 2 步 同回合并行 spawn 两个子 Agent（任务说明中带上协作目录与需求摘要）：
-            - poi-research：检索筛选景点候选 → 产出 {协作目录}/poi_shortlist.md
+            第 2 步 景点候选（缓存优先，FR-S14）：
+            - 先调 get_cached_task_result(taskType=poi)——命中则把缓存内容写入
+              {协作目录}/poi_shortlist.md，跳过 spawn poi-research（同需求二次规划提速）；
+              未命中才 spawn poi-research（任务说明中带协作目录与需求摘要，它会用
+              search_pois_with_rag 双路检索知识库并产出带来源标记的清单）
+            - poi-research 完成后：读 poi_shortlist.md 全文，
+              调 register_task_result(taskType=poi, content=全文) 登记
             - route-optimizer：读 poi_shortlist.md 排线 → 产出 {协作目录}/route_plan.md
-              （注意顺序依赖：route-optimizer 需要 poi_shortlist.md，若同轮 spawn 后
-               它读不到清单，等 poi-research 完成后再单独 spawn 一次）
+              （先查 get_cached_task_result(taskType=route)，命中复用跳过 spawn；
+               完成后 register_task_result(taskType=route) 登记）
 
             第 3 步 收齐组装 {协作目录}/itinerary_draft.md：
             - 依据 route_plan.md 的分日顺序 + 你的天气/酒店/大交通数据，形成完整行程
@@ -89,9 +98,13 @@ public class ItineraryAgent {
             - 末尾汇总：每日预算与总预算、天气与穿衣建议、注意事项与备选方案
 
             第 4 步 spawn reviewer-agent 送审（任务说明中带上协作目录与需求摘要）：
-            - 通过（产出 review_passed.md）→ 把评分写入你的汇报，流程结束
+            - 通过（产出 review_passed.md）→ 把评分写入你的汇报，流程结束；
+              调 register_task_result(taskType=itinerary) 登记行程草案
             - 不通过（产出 review_report.md）→ 按改进建议修订 itinerary_draft.md 后
               重新送审；回炉最多 2 次，超限后带「当前最佳版本（已尽力）」说明结束
+            - 【局部回炉】review_report 只指出某段问题时，先查该段缓存
+              （如 POI 合理性问题 → get_cached_task_result(route) 命中则只重排线，
+              不必重跑 poi-research）
 
             ===================================================
             四、执行规范

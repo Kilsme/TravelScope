@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     id              VARCHAR(64)   PRIMARY KEY,                               -- 主键（UUID，兼容AgentScope）
     embedding       vector(1024),                                           -- 向量嵌入（通义千问 text-embedding-v3 1024维）
     doc_id          VARCHAR(64),                                            -- 文档ID（关联documents.id的字符串形式）
-    chunk_id        INTEGER,                                                -- 块序号（同一文档内的块序号）
+    chunk_id        VARCHAR(64),                                            -- 块标识（实测 AgentScope PgVectorStore 以 VARCHAR 写入，2026-09-18 修正）
     content         TEXT,                                                   -- 块文本内容
     payload         JSONB,                                                  -- 扩展元数据（自定义载荷）
     created_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP        -- 创建时间

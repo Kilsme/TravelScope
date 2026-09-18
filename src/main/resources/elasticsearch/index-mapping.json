@@ -23,7 +23,8 @@
         "ignore_above": 64
       },
       "chunk_id": {
-        "type": "integer"
+        "type": "keyword",
+        "ignore_above": 64
       },
       "title": {
         "type": "text",

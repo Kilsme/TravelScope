@@ -123,7 +123,9 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public Toolkit travelToolkit(TaskRegistry taskRegistry, TripRequirementStore tripRequirementStore) {
+    public Toolkit travelToolkit(TaskRegistry taskRegistry, TripRequirementStore tripRequirementStore,
+                                 com.travelscope.service.TaskResultCache taskResultCache,
+                                 com.travelscope.service.RagServiceImpl ragServiceImpl) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(weatherTool);
         toolkit.registerTool(hotelTool);
@@ -134,8 +136,11 @@ public class AgentConfig {
         toolkit.registerTool(new TaskTools(taskRegistry));
         // 需求状态机工具（v3 FR-S02）：intake-agent 判缺项/写回用，判断环节零模型调用
         toolkit.registerTool(new RequirementTools(tripRequirementStore));
+        // RAG 双路检索 + 任务结果缓存工具（FR-S06/S11/S14）：
+        // search_pois_with_rag（poi-research 双路召回）+ get/register_task_result（planner 缓存复用）
+        toolkit.registerTool(new com.travelscope.agent.tools.PoiRagTools(ragServiceImpl, taskResultCache));
         registerMcpClients(toolkit);
-        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + MCP(12306、飞常准)");
+        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + RAG双路/任务缓存 + MCP(12306、飞常准)");
         return toolkit;
     }
 
@@ -150,6 +155,19 @@ public class AgentConfig {
     public TripRequirementStore tripRequirementStore(
             org.springframework.data.redis.core.StringRedisTemplate stringRedisTemplate) {
         return new TripRequirementStore(stringRedisTemplate);
+    }
+
+    /**
+     * 任务结果缓存 Bean（FR-S14：子任务产出登记/复用，为 P7 局部回炉打底）
+     * <p>
+     * Redis key {@code taskresult:{userId}:{sessionId}:{taskType}}，
+     * TTL 按类型（POI/路线/酒店 30min / 天气 10min）；降级进程内存。
+     * </p>
+     */
+    @Bean
+    public com.travelscope.service.TaskResultCache taskResultCache(
+            org.springframework.data.redis.core.StringRedisTemplate stringRedisTemplate) {
+        return new com.travelscope.service.TaskResultCache(stringRedisTemplate);
     }
 
     /**

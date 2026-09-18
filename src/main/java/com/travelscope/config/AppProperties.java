@@ -150,6 +150,8 @@ public class AppProperties {
         private String fusion = "rrf";
         /** RRF 参数 k（仅当 fusion=rrf 时生效） */
         private int rrfK = 60;
+        /** 种子知识库开关（开发/检测用：启动时灌入内置攻略片段，幂等跳过已存在 doc） */
+        private boolean seedEnabled = false;
     }
 
     /**

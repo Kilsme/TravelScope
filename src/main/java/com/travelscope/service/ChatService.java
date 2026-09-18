@@ -61,6 +61,8 @@ public class ChatService {
     private final TaskWorkspaceService taskWorkspaceService;
     private final TripRequirementStore tripRequirementStore;
     private final LlmGateway llmGateway;
+    /** RAG 检索 topK（travelscope.rag.top-k，原硬编码 5） */
+    private final int ragTopK;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -68,7 +70,8 @@ public class ChatService {
                        ConversationService conversationService,
                        TaskWorkspaceService taskWorkspaceService,
                        TripRequirementStore tripRequirementStore,
-                       LlmGateway llmGateway) {
+                       LlmGateway llmGateway,
+                       com.travelscope.config.AppProperties appProperties) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -76,6 +79,7 @@ public class ChatService {
         this.taskWorkspaceService = taskWorkspaceService;
         this.tripRequirementStore = tripRequirementStore;
         this.llmGateway = llmGateway;
+        this.ragTopK = appProperties.getRag().getTopK();
     }
 
     /**
@@ -172,7 +176,9 @@ public class ChatService {
 
         String outgoing = userMessage;
         if (type == IntentType.RAG && ragService.isAvailable()) {
-            outgoing = augmentWithRag(userMessage, ragService.retrieve(userMessage, 5));
+            // topK 走 RagConfig 配置（原硬编码 5）
+            outgoing = augmentWithRag(userMessage,
+                    ragService.retrieve(userMessage, ragTopK));
         }
         // v3 FR-S02 代码层兜底：PLANNING 且需求未收齐时，向本轮用户消息前置 intake 委派指令。
         // 模型对提示词的委派遵循性有波动（实测约 50% 轮次 master 只回文本不委派），

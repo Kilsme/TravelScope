@@ -1,83 +1,79 @@
-# LLM Gateway 实现计划（FR-S09）
+# poi-research 双路检索 + TaskResultCache 实现计划（FR-S06/S11 + FR-S14）
 
-## 一、关键调研结论（决定方案形态）
+## 一、调研结论（决定实现形态）
 
-1. **装饰器可行且是框架认可的模式**：`Model` 接口仅 2 个抽象方法（`stream`/`getModelName`）+ 3 个 default 方法；框架自己的 `fallbackModel` 实现就是 `implements Model` 的包装器（`ReActAgent$2`）。**必须**：`implements Model`（勿继承 ChatModelBase——其 `stream` 是 `public final`）；全部 5 个方法委托；熔断/超时用 `Flux.defer`/`transformDeferred` 包在流上（冷流订阅时才生效）。
-2. **错误面**：DashScope 401（错 Key）与 invalid model 都抛 `DashScopeHttpException`（RuntimeException，nested 类）——**不实现 ModelHttpException，框架原生重试不认它**，这是自建 Resilience4j 层的正当性。
-3. **fallback 不能改 GenerateOptions.modelName**（DashScope 忽略它）——必须持有两个模型实例（qwen-plus + qwen-turbo）在装饰器内切换。框架原生 `fallbackModel` 只处理「首个信号是错误」，中途失败不切——我们的装饰器用 `onErrorResume` 做更强的中途 fallback（丢弃已发块重流）。
-4. **模型收口点**：master/planner/modelResolver/4 个声明式子 Agent 全部收敛到 `dashscopeChatModel` Bean 一个实例——**包一个 Bean 全链路生效**。L2/L3 意图分类（turbo/plus）也经这两个 Bean。
-5. **单用户=全局**：项目无认证，所有请求共享 guest userId——「单用户 Semaphore(2)」实际就是全站并发上限 2；检测标准 1 用 3 个并发 HTTP 请求即可验证。
-6. resilience4j 不在 Boot 3.3.5 BOM 中——需显式版本（2.2.0）。
-7. 前端 `case 'error'` 直接渲染文案——降级文案零前端改动。
+1. **pgvector 语义路 100% 用 AgentScope 原生组件**：`DashScopeTextEmbedding`（rag-simple jar，Mono<double[]> embed）+ `PgVectorStore.builder()`（jdbcUrl/tableName/dimensions/COSINE，kNN search）+ `SimpleKnowledge.retrieve(query, RetrieveConfig)`——schema.sql 的 document_chunks 表结构已兼容。
+2. **ES BM25 路必须自写**：原生 `ElasticsearchStore.search` 只做 kNN（字节码证据：仅 KnnSearch 调用，content 字段 index=false）；用 pom 已有的 `elasticsearch-java 9.0.2`（Rest5Client）自写 BM25 match 查询。
+3. **RRF 融合必须自写**：全库无融合 API；公式 `score = Σ 1/(rrfK + rank)`，RagConfig 已有 fusion/rrf-k/vector-weight/fulltext-weight 配置。
+4. **RagService 是零侵入替换点**（接口 isAvailable/retrieve 已就绪）；ES 配置段/index-mapping.json（ik_max_word/ik_smart + dense_vector 1024）已备但 IK 插件未装、索引未建、知识库空。
+5. **用户决策**：灌内置杭州攻略种子数据（检测标准 1/2 真实可验）；装 IK 插件（按原设计）。
 
-## 二、架构设计
+## 二、架构
 
 ```
-请求 → ChatService.streamChat
-         │ ChatService 层准入（对话粒度）
-         ├─ 全局 Semaphore(50) + 单用户 Semaphore(2)：tryAcquire(等待=配置超时)，超时/被拒 → SSE error 降级文案
-         ├─ 滑动窗口 QPS（全局，Resilience4j RateLimiter，每秒 N 个对话准入）
-         ├─ 快慢泳道（对话粒度）：TOOL_CALL/RAG/CHAT → 快（模型单次调用超时 5s）；PLANNING → 慢（60s）
-         │   （泳道超时参数通过 RuntimeContext ctx 键传递给模型装饰器——ctx 在 modelResolver 处不可见，
-         │    故泳道超时实现在「模型装饰器按模型实例」：主链 plus 30s/规划走同一 Bean——简化为：
-         │    对话粒度超时在 ChatService 层用 Mono/Flux.timeout 实现，快 5s 慢 60s，不侵入模型层）
-         ▼
-       Agent 全链路 → modelResolver → LlmGatewayModel（装饰器，模型调用粒度）
-         ├─ Resilience4j CircuitBreaker：30s 滑动窗口失败率>50% → OPEN 10s → HALF_OPEN 探测
-         ├─ 单次模型调用超时 30s（Flux.timeout，检测标准 3 用 15s 可配）
-         └─ 失败 fallback：log.warn("fallback → qwen-turbo") → 切 turbo 实例重流（onErrorResume，含中途失败）
-SSE error 兜底文案（ChatService.handleError / runAgent.onErrorResume 双路）
-```
+poi-research 收到任务（目的地+天数+偏好）
+  ├─ 第 0 步：调 search_pois_with_rag 工具（新）——双路检索入口
+  │    RagServiceImpl.dualRetrieve(query, topK)
+  │      ├─ 语义路：SimpleKnowledge.retrieve（DashScope embedding → pgvector kNN）→ List<Doc>（ranked）
+  │      ├─ 关键词路：EsBm25Client.search（自写，ik 分词 BM25 match）→ List<Hit>（ranked）
+  │      └─ RrfFusion.fuse（自写）：按 chunkId 去重，score=Σ w_i/(rrfK+rank_i)，输出融合 top-K
+  │         → 返回带来源标记（RAG / ES / RAG+ES）的片段列表
+  ├─ 高德补全：searchPois / searchNearbyAttractions 拿坐标/开放时间/评分（知识库片段缺的硬字段）
+  ├─ 多轮筛选：召回不足 → 换关键词重查（提示词驱动 + 日志留痕）
+  └─ 产出 poi_shortlist.md（POI 数量与天数挂钩：2 天 6~8 个）
 
-**职责切分**：对话粒度（Semaphore/QPS/泳道超时）在 **ChatService 层**（新 `LlmGateway` 组件，纯 Java+R4j，不依赖 AgentScope）；模型调用粒度（熔断/单次超时/fallback）在 **`LlmGatewayModel implements Model` 装饰器**（AgentConfig 包装 Bean）。两层解耦，各自可测。
+planning-agent / 各子 Agent 产出文件时
+  └─ TaskResultCache.register(userId, sessionId, taskType, content)   [POI/路线/酒店 30min，天气 10min]
+  └─ 二次规划同需求 → cache_hit=poi_shortlist → poi-research 不重跑，直接复用缓存内容写文件
+```
 
 ## 三、改动清单
 
-### 新建 4 个主代码文件
+### 新建 7 个主代码文件
 
-1. **`service/LlmGateway.java`**（对话准入层）：`tryAcquire(userId)` 返回 `AcquireResult{allowed, reason}`——全局 Semaphore(50) `tryAcquire(2s)` → 失败返回「当前排队人数较多，请稍后再试」；单用户 Semaphore(2) `tryAcquire(1s)` → 失败返回「您的请求处理中，请等上一条完成后再发」；全局 RateLimiter（滑动窗口，默认 10 QPS）→ 失败返回「请求过于频繁，请稍后再试」；`release(userId)` 在对话结束（done/error 回调）释放。埋点日志 `gateway_admit/reject reason=... latency=xms`。
-2. **`agent/LlmGatewayModel.java`**（模型装饰器）：`implements Model`，5 方法全委托；`stream()` = `Flus.defer` → 熔断 `transformDeferred(CircuitBreakerOperator)` → `Flux.timeout(单次30s)` → `onErrorResume(e → log.warn("fallback → qwen-turbo, reason={}") + fallbackModel.stream(...))`（fallback 再失败则原样抛出，由 ChatService SSE error 兜底）。能力方法委托 activeModel（AtomicReference，切换后反映 fallback——对齐 ReActAgent$2 模式并修其 supportsNativeStructuredOutputWithTools 缺陷）。构造参数 `(Model primary, Model fallback, CircuitBreaker cb, Duration timeout)`。
-3. **`config/AppProperties.java`**：新增 `LlmGatewayConfig` 嵌套类——`enabled=true / globalConcurrency=50 / perUserConcurrency=2 / globalQps=10 / acquireTimeoutMs=2000 / fastLaneTimeout=5s / slowLaneTimeout=60s / modelTimeout=30s / cb slidingWindowSize=10 / failureRateThreshold=50 / waitDurationOpen=10s / fallbackEnabled=true`。
-4. **`application.yml`**：`travelscope.llm-gateway` 段（显式写全，注释对齐 FR-S09）+ pom.xml 加 `resilience4j-reactor` + `resilience4j-circuitbreaker`（2.2.0，属性区+依赖区按现有分组风格）。
+1. **`service/RagServiceImpl.java`**（替换 Stub）：组合 `SimpleKnowledge`（pgvector 路）+ `EsBm25Client`（BM25 路）+ `RrfFusion`；`isAvailable()` = 两路至少一路客户端就绪（构造失败/不可达时降级为单路或不可用，照 Redis 降级风格首次 warn）；`retrieve(question, topK)` 走双路 RRF（RagConfig.mode 支持 dual/vector/fulltext）；同时提供 `dualRetrieveWithSource(query, topK)` 返回 `List<RetrievedFragment{content, source(RAG/ES/BOTH), score}>`（工具层用）。构建：`@Service`，构造注入 AppProperties + DataSource（jdbcUrl 从 spring.datasource 拼）。
+2. **`service/EsBm25Client.java`**：elasticsearch-java 9.0.2 Rest5Client；`search(String query, int topK)` → BM25 match（content 字段，ik_smart search_analyzer）+ `ensureIndex()`（幂等建索引，读 resources/elasticsearch/index-mapping.json）；连接失败静默降级（isAvailable=false 时不参与双路）。
+3. **`service/RrfFusion.java`**：纯静态工具——`fuse(List<Ranked>{id,content,score,source}...)` 按 rrfK 融合去重，权重 vector-weight/fulltext-weight 可选应用；带单测。
+4. **`agent/tools/PoiRagTools.java`**（新 @Tool 集，注册进共享 Toolkit）：
+   - `search_pois_with_rag(query, topK, ctx)`：调 RagServiceImpl.dualRetrieveWithSource，返回「片段 + 来源标记」文本（供 poi-research 第一轮召回与换词重查）
+   - `get_cached_task_result(taskType, sessionId, ctx)` / `register_task_result(taskType, content, sessionId, ctx)`：TaskResultCache 的工具面（planner/poi/route 调用；产出文件后 register，回炉/二次规划前 get）
+5. **`service/TaskResultCache.java`**：StringRedisTemplate，key=`taskresult:{userId}:{sessionId}:{taskType}`（v3 文档规范），value=产出内容+头部 task_id/时间戳元信息；TTL 按类型（POI 30min/路线 30min/酒店 30min/天气 10min）；命中打 `cache_hit={taskType}` 日志（检测标准 5 锚点）；照 TripRequirementStore 降级风格（首次 warn 后续 debug + 内存 fallback）；失效 API `invalidate(userId, sessionId, taskType|ALL)` 预留给 P7 按影响面失效。
+6. **`config/KnowledgeIngestRunner.java`**：`ApplicationRunner` + `@Profile("seed")` 或配置开关 `travelscope.rag.seed-enabled`（默认 false，检测时开）——内置 ~25 条杭州/热门城市攻略片段（每条含 POI 名称/坐标/开放时间/建议时长/推荐理由的文本），启动时切块→DashScope embedding→双写 document_chunks（经 SimpleKnowledge.addDocuments）+ ES（ensureIndex + bulk index，content 可检索）→ 幂等（存在 chunk 跳过）。
+7. **`dto/RetrievedFragment.java`**：content/source/score/chunkId record。
 
-### 修改 3 个文件
+### 修改 4 个文件
 
-5. **`AgentConfig.java`**：`dashscopeChatModel` Bean 改为返回**装饰后的 `LlmGatewayModel`**（返回类型改 `Model`，内部 build 真实 plus 实例 + 注入 turbo fallback + 从 `CircuitBreakerRegistry` 取/建熔断器；`@Primary` 保留）。下游影响：`travelMasterAgent`/`buildPlannerAgent`/`intentClassifier` 参数类型 `DashScopeChatModel` → `Model`（Builder 接受 Model）；`modelResolver(name -> model)` 同步。turbo Bean 保持裸实例（L2 轻量调用 + 作 fallback 目标，自身不套熔断——fallback 已是降级终点）。
-6. **`ChatService.java`**：构造器注入 `LlmGateway`；`streamChat` 在 `flatMapMany` 前 `gateway.tryAcquire(userId)`——被拒 → `Flux.just(error 事件带降级文案)` + 不跑 Agent；放行 → 正常链 + `handleError/handleComplete` 里 `gateway.release(userId)`；**泳道超时**：按 intent 分流——非 PLANNING 用 `.timeout(fastLane=5s)` 包 `runAgent` 返回的 Flux（超时 → onErrorResume 转 SSE error「查询超时，请稍后再试」），PLANNING 用 slowLane=60s。`onErrorResume` 文案统一走新降级文案（含熔断 OPEN 时的「模型服务暂时不可用，已自动降级重试中/请稍后再试」）。
-7. **`dto/ChatEvent.java`**：无需新事件类型（降级走 error 事件——检测标准明确「SSE error 兜底」）；仅在注释中补「error 含网关降级文案」。
+8. **`agent/PoiResearchAgent.java` SYS_PROMPT**：检索策略改为「第 1 步先调 search_pois_with_rag 双路召回（知识库游记攻略，带 RAG/ES 来源）→ 评估召回 → 不足换关键词重查该工具 → 高德 searchPois 补坐标/开放时间硬字段 → 筛选（来源标记必填：RAG 命中 or ES 命中 or 高德）」；产出格式加「来源: RAG(chunk=xx) / ES(keyword=xx) / searchPois」；开始前调 `get_cached_task_result(poi)` 命中则直接复用并标注缓存来源。
+9. **`agent/ItineraryAgent.java`**（planner 提示词）：spawn poi-research 前先调 `get_cached_task_result(poi)`——命中跳过 spawn（复用缓存内容写 poi_shortlist.md）；各子 Agent 完成后由 planner 统一 register（poi/route/weather/hotel 四类）。
+10. **`config/AgentConfig.java`**：travelToolkit 注册 `new PoiRagTools(ragService, taskResultCache, …)`；poi-research 声明 skills 加无（attraction-search 已有），无需 tools 白名单（默认继承全部）；新增 TaskResultCache Bean。
+11. **`service/RagServiceStub.java`**：保留类但去掉 @Service（Impl 接管；Stub 留作参考/测试）——或直接删除，采用**删除**（git 有历史）。ChatService L175 的 topK 硬编码顺手改 RagConfig.topK。
 
-### 测试（4 个新测试类，复刻现有 Fake/Counting 风格）
+### 测试（4 个新测试类，复刻现有风格）
 
-8. **`LlmGatewayTest`**（纯单测）：FakeCountingModel（implements Model 计数+可控失败）验证——单用户第 3 个并发被拒且有文案；全局 50 上限；QPS 限流；release 后可再进；acquire 超时。
-9. **`LlmGatewayModelTest`**（纯单测）：失败 → fallback 调用一次且日志「fallback → qwen-turbo」；中途失败也切；fallback 也失败 → 异常上抛；熔断器：连续失败达阈值 → OPEN（后续调用 CallNotPermittedException 快速失败）→ 等待 waitDuration → HALF_OPEN 放行探测（用 R4j 真实 CircuitBreaker，参数调小加速）。
-10. **`ChatServiceGatewayIntegrationTest`**：不起 Spring——手写最小桩（FakeAgent implements Agent? 太重）→ 改为**直接测 LlmGateway 的 SSE 语义**：AcquireResult 拒绝原因 → 降级文案映射断言（文案常量类）。
-11. **`LlmGatewayRealApiTest`**（API_KEY 门控）：真实 plus+turbo 经装饰器调一条消息（验证正常路径零回归）；错误 Key 实例（sk-invalid）验证 401 → fallback 到 turbo（正确 Key）成功返回（标准 3 变体）。
-12. 全量 `mvn test` 回归（现有 71+ 测试零破坏）。
+12. **`RrfFusionTest`**（纯单测）：双路去重融合/权重/rrfK 参数/单路退化/空输入。
+13. **`TaskResultCacheTest`**（ThrowingRedisTemplate 降级单测 + 6379 门控回环）：register/get 回环、TTL 差异（天气 10min vs POI 30min）、cache_hit 日志语义、invalidate、降级不阻断。
+14. **`PoiRagToolsTest`**：Fake RagService（可控返回）验证工具返回格式（来源标记）与 get/register 工具链。
+15. **`RagServiceImplTest`**（PG+ES 门控，检测环境跑）：双路真实检索 + RRF 融合 + 种子数据召回「杭州 西湖」类 query。
 
-## 四、E2E 检测标准实测方案
+## 四、环境与检测执行序
 
-| # | 操作 | 预期 |
-|---|---|---|
-| 1 | 同会话并发 curl 3 条消息（& 后台并发） | 第 3 条收到 SSE error「您的请求处理中…」明确提示，不白屏（前 2 条正常） |
-| 2 | 启动时 `API_KEY=sk-invalid` 覆盖（新进程 + test yml 属性）发消息 | 401 连续失败 → 30s 窗口内日志出现 CircuitBreaker OPEN（`gateway` 日志含 state transition）；OPEN 期间请求快速失败（无 30s 等待）；等 10s 后 HALF_OPEN 探测日志 |
-| 3 | 配置慢模型超时模拟（把 model-timeout 调到 2s + 用 qwen-plus 长回复消息触发超时）或错 Key 变体 | 日志出现 `fallback → qwen-turbo`；用户仍收到回复（fallback 成功时正常 delta/done） |
-| 4 | 规划慢泳道进行中（60s 档）同时发「/天气 北京」快泳道（5s 档） | 天气响应在数秒内返回（独立链路 + 快泳道 5s 超时保护），不被规划拖到 60s |
+1. 启动 PG → psql 跑 schema.sql（幂等，确保 documents/document_chunks/HNSW 就绪）
+2. 启动 ES 容器 → 装 IK 插件（elasticsearch-plugin install + restart，按 README）→ init-index.sh 建索引
+3. 启动 Redis → 应用（seed-enabled=true）→ Runner 自动灌种子数据（embedding 真实调 DashScope，~25 条）
+4. **检测标准 1~5**：
+   - 1. 规划「杭州 2 日游」→ 工作区 poi_shortlist.md 含 6~8 POI（坐标/开放时间/时长/理由）
+   - 2. 每个 POI 来源标记（RAG/ES/高德）
+   - 3. 召回不足日志可见换词重查（构造冷门 query 观察，或检查提示词多轮行为日志）
+   - 4. 2 天不给 20 个点（提示词规模约束 + 检查产出数量）
+   - 5. 同会话二次规划（需求未变）→ 日志 `cache_hit=poi_shortlist`、poi-research 无 spawn 调用记录
+5. 全量 mvn test 回归（85+ 测试零破坏）
+6. 文档：architecture.md（6.4 后新增 RAG 专节 + 工具表加 search_pois_with_rag/get_cached_task_result + poi-research 节更新）；fix-record 7.10 节（框架核验发现：ElasticsearchStore 纯 kNN 无 BM25、RRF 自写、seed 方案）
+7. 关闭全部后台程序
 
-（E2E 需启动 PG+Redis+应用；标准 2/3 通过临时属性/环境变量注入，不改动真实 .env）
+## 五、明确不做
 
-## 五、文档更新（检测后）
-
-- **architecture.md**：第 1 节图加 LlmGateway 组件；第 4 节补准入/泳道/超时流程；第 7 节补模型 Bean 装饰器说明（含「DashScopeHttpException 不触发框架重试」的核验结论）；第 9 节 error 事件补降级文案说明；新增第 13 节「LLM Gateway」或在第 7 节后插入专节（两层职责、参数表、降级矩阵）
-- **fix-record**：新增 7.9 节「LLM Gateway 落地」——记录框架核验发现（原生 fallbackModel 的首信号局限、DashScopeHttpException 不实现 ModelHttpException 的重试盲区、GenerateOptions.modelName 被忽略）、两层职责的设计理由、E2E 检测结果
-
-## 六、明确不做
-
-- SSE 新事件类型（降级走 error，前端零改动）
-- 按用户 QPS（单用户已有 Semaphore(2)，QPS 只做全局）
-- 线程池隔离（快慢泳道用超时+独立链路实现；真线程池隔离收益低复杂度高，P2）
-- AgentScope `fallbackModel`/`maxRetries` 原生 API（装饰器已覆盖且更强；避免双层重试叠加）
-- 修改 .env / 真实 API Key（标准 2/3 用进程级临时属性）
-
-## 七、执行顺序
-
-1. pom + AppProperties + yml → 2. LlmGateway + LlmGatewayModel → 3. AgentConfig/ChatService 接线 → 4. 编译 + 4 个测试类 + 全量回归 → 5. E2E 检测标准 1~4（启动依赖链）→ 6. 文档更新 → 7. 关闭全部后台程序（应用/Redis/PG/Docker Desktop 提示）
+- 文档上传管理（FR-A03 管理端，种子 Runner 只是数据通道）
+- P7 局部回炉的 ReviewerRetry 联动（TaskResultCache 只打底：register/get/invalidate API 就绪，回炉路由待 ReviewerRetryMiddleware 实装时接）
+- ES 向量路（ES 只做 BM25；向量在 pgvector——避免双写向量开销）
+- memory 版 InMemoryStore（不引入测试专用 store，Fake 注入即可）
+- spring-data-elasticsearch 版本混用风险处理：本次只用 elasticsearch-java 原生客户端，不触 spring-data API（保持现状不扩大）

@@ -185,9 +185,10 @@ spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更�
 
 - 意图三层级联已于 2026-09-16 落地（见 7.5 节）；四维校验与 Planner 工具直调
   已于同日定稿（见 7.7 节）；intake 混合形态已于 2026-09-17 补完（见 7.8 节）；
-  LLM Gateway（限流/熔断/快慢泳道/降级）已于 2026-09-17 落地（见 7.9 节）；
-  剩余待办：ReviewerRetryMiddleware 回炉拦截、SSE agent_status / review_score 事件、
-  RAG 双路检索
+  LLM Gateway 已于 2026-09-17 落地（见 7.9 节）；poi-research 双路检索与
+  TaskResultCache 已于 2026-09-18 落地（见 7.10 节）；
+  剩余待办：ReviewerRetryMiddleware 回炉拦截（TaskResultCache 的 P7 局部回炉联动）、
+  SSE agent_status / review_score 事件、poi 产出强制登记（当前依赖 planner 自觉）
 
 ### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
 
@@ -409,3 +410,43 @@ agent_spawn 委派 intake、禁止自己反问」，实测仍有一半轮次 mas
 **已知取舍**：fallback 粘滞切换（切 turbo 后本进程不自动回 plus，重启恢复）——
 避免主模型恢复瞬间反复抖动；单用户 Semaphore(2) 在无认证体系下即全站上限
 （guest 共享 userId），接入认证体系后自然恢复为真实单用户语义。
+
+### 7.10 poi-research 双路检索 + TaskResultCache 落地（2026-09-18 追记，FR-S06/S11/S14）
+
+> pgvector 语义 + ES BM25 双路召回、RRF 融合、任务结果缓存。设计细节见
+> `architecture.md` 第 12 节；本文记录框架核验发现、环境踩坑与一个 schema 级缺陷。
+
+**框架核验发现**（反编译 agentscope-extensions-rag-simple 2.0.3）：
+1. RAG 全家桶在 rag-simple 一个 jar（含 embedding/store/knowledge）；`agentscope-extensions-postgresql`
+   与 pgvector 无关（是 agent 状态存储）。
+2. **原生 ElasticsearchStore 只做 kNN**：search 仅 KnnSearch 调用，且自动建索引时
+   content 字段 index=false（不可检索）——**BM25 路必须自写**（用 pom 已有的
+   elasticsearch-java 9.0.2）。
+3. 全库无 fusion/rerank API——**RRF 自写**（RrfFusion，score=Σ 1/(rrfK+rank)）。
+4. 9.0.2 的 Rest5Client 是双层结构：`low_level.Rest5Client.builder(URI).build()` →
+   `new Rest5ClientTransport(rc, jsonpMapper)` → `new ElasticsearchClient(transport)`。
+
+**schema 级缺陷（实测触发）**：`document_chunks.chunk_id` 原定义为 INTEGER，但
+**PgVectorStore 实际以 VARCHAR 写入**（BatchUpdateException: 字段类型 integer 但表达式
+character varying）——schema.sql 注释声称「兼容 AgentScope PgVectorStore」实为不兼容。
+修复：PG 表 `ALTER COLUMN chunk_id TYPE VARCHAR(64)` + schema.sql + ES mapping
+（integer→keyword）三处同步，种子重灌通过（pgvector 22 条 + ES 22 条）。
+**教训：声称「兼容 X 框架」的 DDL 必须用真实写入路径验证，不能只看字段名对齐**。
+
+**环境踩坑（IK 插件安装）**：`elasticsearch-plugin install` 在 docker exec（无 tty）下
+卡在交互确认/解压异常（--batch 与 yes 管道均无效）；可靠路径是容器内 curl 下载 zip →
+解压到 `plugins/analysis-ik/` → 重启容器。**IK 装在容器层，容器重建即丢**——生产应做
+自定义镜像或 volume 挂载（README 已有挂载目录预留）。Git Bash curl 发中文 JSON 会
+编码损坏（Invalid UTF-8 start byte），必须用 `--data-binary @file` 文件体。
+
+**E2E 检测记录**（conv-44，杭州 2 日游）：poi_shortlist.md 产出 5 个 POI（数量与天数
+平衡）全带 RAG+ES/ES/RAG 来源标记；rag_retrieve 日志可见 4+ 轮换词重查（各路 5 条、
+融合 5 条、~560ms）；同会话二次规划 `cache_hit=poi` 且 poi-research 零重跑；planner 的
+hotel 缓存 miss→执行→register 闭环真实跑通。
+
+**已知遵循性缺口（记录待后续加固）**：①poi-research 完成后 register(poi) 依赖 planner
+自觉（提示词写在 planner），实测 planner 让 poi 干完活后自己没登记——检测时手工补登
+录验证了命中路径；后续可在 PoiRagTools 的 write_file 钩子层或 reviewer 流程强制登记。
+②master/planner 的多步流程存在分轮截断（一轮 maxIters 内做不完 4 步就收工汇报），
+需用户/上层指令推进——与 FR-S02 时的委派波动同源，代码层兜底（如 ChatService 注入）
+可按同模式扩展到「已登记 backlog 但未 spawn planner」等中间态。
