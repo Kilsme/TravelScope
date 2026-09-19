@@ -89,4 +89,14 @@ public class TaskTools {
             String reason) {
         return reason;
     }
+
+    /**
+     * Reviewer 回炉保险丝的纠正提示（ReviewerRetryMiddleware 拦截超限送审后重定向到此工具），Agent 不要主动调用
+     */
+    @Tool(description = "系统内部工具：质检送审超限被拦截时的纠正提示，不要主动调用")
+    public String review_retry_hint(
+            @ToolParam(name = "reason", description = "拦截原因")
+            String reason) {
+        return reason;
+    }
 }

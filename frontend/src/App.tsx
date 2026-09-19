@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Markdown from 'react-markdown'
 import './App.css'
 import { createConversation, listConversations, listMessages, streamChat } from './api/chat'
 import type { ChatMessage, ChatEvent, Conversation, IntentPayload } from './types'
@@ -96,6 +97,11 @@ function App() {
               cur.content += `${cur.content ? '\n\n' : ''}💬 ${event.data}`
               break
             }
+            case 'review_report': {
+              // reviewer 质检报告（FR-S08）：markdown 全文，消息尾部折叠区渲染
+              cur.reviewReport = event.data
+              break
+            }
             case 'done': {
               if (!cur.content && event.data) cur.content = event.data
               cur.streaming = false
@@ -186,8 +192,16 @@ function App() {
                     ))}
                   </div>
                 )}
-                <div className="bubble-content">{msg.content || (msg.streaming ? '思考中…' : '')}</div>
-                {msg.streaming && <span className="cursor">▌</span>}
+      <div className="bubble-content">{msg.content || (msg.streaming ? '思考中…' : '')}</div>
+      {msg.reviewReport && (
+        <details className="review-report">
+          <summary>📋 质检评分明细</summary>
+          <div className="review-report-body">
+            <Markdown>{msg.reviewReport}</Markdown>
+          </div>
+        </details>
+      )}
+      {msg.streaming && <span className="cursor">▌</span>}
               </div>
             </div>
           ))}

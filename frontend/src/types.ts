@@ -14,11 +14,13 @@ export interface ChatMessage {
   toolCalls?: string[]
   /** 前端临时状态：意图分类结果 */
   intent?: string
+  /** 前端临时状态：质检报告 markdown（review_report SSE 事件，折叠区渲染） */
+  reviewReport?: string
   streaming?: boolean
 }
 
 /** SSE 事件类型（与后端 ChatEvent 对应） */
-export type ChatEventType = 'intent' | 'delta' | 'tool' | 'clarify_question' | 'done' | 'error'
+export type ChatEventType = 'intent' | 'delta' | 'tool' | 'clarify_question' | 'review_report' | 'done' | 'error'
 
 export interface ChatEvent {
   event: ChatEventType

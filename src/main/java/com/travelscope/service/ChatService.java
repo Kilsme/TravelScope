@@ -334,6 +334,18 @@ public class ChatService {
     private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation, Long userId) {
         llmGateway.release(String.valueOf(userId));
         persistReply(conversation, userId, replyBuf);
+        // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
+        // （review_passed.md 优先，回炉超限场景退化为最近一次 review_report.md）
+        try {
+            String reviewMarkdown = readReviewMarkdown(String.valueOf(userId),
+                    SESSION_PREFIX + conversation.getId(), replyBuf.toString());
+            if (reviewMarkdown != null) {
+                emitter.send(SseEmitter.event().name(ChatEvent.TYPE_REVIEW_REPORT)
+                        .data(reviewMarkdown));
+            }
+        } catch (Exception ignored) {
+            // 报告事件失败不影响 done
+        }
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_DONE)
                     .data(replyBuf.toString()));
@@ -341,6 +353,36 @@ public class ChatService {
             // 客户端已断开
         }
         emitter.complete();
+    }
+
+    /**
+     * 读取本轮质检报告 markdown（检测标准 2 的数据源）：
+     * 回复含「已通过质量审阅」→ review_passed.md；含「已尽力」→ 最近一次 review_report.md。
+     * 回复无质检标注（纯查询/闲聊/未走到质检）返回 null 不推事件。
+     */
+    private String readReviewMarkdown(String userId, String agentSessionId, String reply) {
+        boolean passed = reply.contains("已通过质量审阅");
+        boolean bestEffort = reply.contains("已尽力");
+        if (!passed && !bestEffort) {
+            return null;
+        }
+        try {
+            java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
+            java.nio.file.Path target = passed
+                    ? dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED)
+                    : dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT);
+            if (java.nio.file.Files.exists(target)) {
+                return java.nio.file.Files.readString(target, java.nio.charset.StandardCharsets.UTF_8);
+            }
+            // 通过标注但 passed 文件缺失（防御）：退化读 report
+            java.nio.file.Path fallback = dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT);
+            if (passed && java.nio.file.Files.exists(fallback)) {
+                return java.nio.file.Files.readString(fallback, java.nio.charset.StandardCharsets.UTF_8);
+            }
+        } catch (Exception e) {
+            log.warn("读取质检报告失败（不推 review_report 事件）: {}", e.getMessage());
+        }
+        return null;
     }
 
     private void persistReply(Conversation conversation, Long userId, StringBuilder replyBuf) {

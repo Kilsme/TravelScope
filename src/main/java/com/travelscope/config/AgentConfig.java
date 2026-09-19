@@ -307,6 +307,22 @@ public class AgentConfig {
     }
 
     /**
+     * 质检评分模型 Bean（qwen-max，FR-S08：reviewer-agent 专用）
+     * <p>
+     * 评分模型与主链路 qwen-plus 分离（更强的评审能力且互不占额度）；
+     * 由 buildPlannerAgent 的 modelResolver 按 agent name 分流到 reviewer-agent。
+     * </p>
+     */
+    @Bean
+    public DashScopeChatModel dashscopeReviewerModel() {
+        return DashScopeChatModel.builder()
+                .apiKey(appProperties.getDashscope().getApiKey())
+                .modelName(appProperties.getDashscope().getReviewerModel())
+                .stream(true)
+                .build();
+    }
+
+    /**
      * 创建主 Agent（TravelMasterAgent）
      * <p>
      * 主 Agent 负责：
@@ -319,7 +335,9 @@ public class AgentConfig {
      */
     @Bean
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model dashscopeChatModel,
-                                          TaskRegistry taskRegistry) throws IOException {
+                                          DashScopeChatModel dashscopeReviewerModel,
+                                          TaskRegistry taskRegistry,
+                                          TaskWorkspaceService taskWorkspaceService) throws IOException {
         // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
         // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
         // ask_user 反问出口——ask_user 的工具结果经 SSE 层转为 clarify_question 事件推给前端）
@@ -348,10 +366,10 @@ public class AgentConfig {
                 .maxIters(TravelMasterAgent.MAX_ITERS)
                 // 责任链：意图路由（onSystemPrompt 注入本轮路由指令）
                 //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
-                //         + Reviewer 回炉（v3 骨架空壳透传，拦截逻辑待实现）
+                //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
                 .middlewares(List.of(new IntentRouterMiddleware(),
                         new PlanningGateMiddleware(taskRegistry),
-                        new ReviewerRetryMiddleware()))
+                        new ReviewerRetryMiddleware(taskWorkspaceService)))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
                 // 否则工具调用会挂起等待用户确认导致对话提前结束
                 .permissionContext(PermissionContextState.builder()
@@ -369,7 +387,7 @@ public class AgentConfig {
                         "规划 Agent（行程规划师，二级编排者）：直调工具获取天气/酒店/车票实时数据，"
                                 + "并行调度 poi-research 与 route-optimizer 两个子 Agent，"
                                 + "组装行程草案并经 reviewer-agent 质检闭环",
-                        name -> buildPlannerAgent(toolkit, dashscopeChatModel))
+                        name -> buildPlannerAgent(toolkit, dashscopeChatModel, dashscopeReviewerModel))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 声明式 + {} 工厂式[内含 {}/{}/{}])",
@@ -395,7 +413,8 @@ public class AgentConfig {
      * workspace / skillRepository / 权限模式与主 Agent 一致。
      * </p>
      */
-    private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model dashscopeChatModel) {
+    private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model dashscopeChatModel,
+                                           DashScopeChatModel dashscopeReviewerModel) {
         // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
         SubagentDeclaration poiResearch = SubagentDeclaration.builder()
                 .name(PoiResearchAgent.AGENT_NAME)
@@ -428,16 +447,27 @@ public class AgentConfig {
                         "get_cached_task_result"))
                 .build();
 
-        // 质检子 Agent：5 维评分 + 可调工具核验事实，产出 review_passed.md / review_report.md
+        // 质检子 Agent（FR-S08）：5 维评分 + 可调工具核验事实，产出 review_passed.md / review_report.md。
+        // 模型经 modelResolver 按 name 分流到 qwen-max（评分模型与主链路 qwen-plus 分离）；
+        // tools 白名单限定核验工具面（天气/路线/地理 + 文件 + 缓存登记）
         SubagentDeclaration reviewer = SubagentDeclaration.builder()
                 .name(ReviewerAgent.AGENT_NAME)
-                .description("质量审阅 Agent（质检员）：对 itinerary_draft.md 做 5 维评分"
-                        + "（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分），"
-                        + "可调工具核验事实，通过写 review_passed.md，不通过写 review_report.md")
+                .description("质量审阅 Agent（质检员，qwen-max 评分模型）：对 itinerary_draft.md 做 5 维评分"
+                        + "（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分，总分≥80 且无单维<12 通过），"
+                        + "调工具核验事实（重查距离/天气），通过写 review_passed.md 并自登记缓存，"
+                        + "不通过写 review_report.md（含改进建议供 planner 回炉）")
                 .inlineAgentsBody(ReviewerAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getModel())
+                .model(appProperties.getDashscope().getReviewerModel())
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
+                .tools(List.of(
+                        "getWeather",
+                        "getWeatherForecast",
+                        "getDrivingRoute",
+                        "getTransitRoute",
+                        "geocode",
+                        "register_task_result",
+                        "get_cached_task_result"))
                 .build();
 
         try {
@@ -445,7 +475,11 @@ public class AgentConfig {
                     .name(ItineraryAgent.AGENT_NAME)
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
                     .model(dashscopeChatModel)
-                    .modelResolver(name -> dashscopeChatModel)
+                    // 模型分流（FR-S08）：reviewer-agent 的声明 model ID 解析到 qwen-max，
+                    // 其余（poi/route/planner 自身）走主链路装饰模型——原一刀切 resolver 会把
+                    // 声明里的模型名无视掉，qwen-max 必须在这里分流才生效
+                    .modelResolver(name -> ReviewerAgent.AGENT_NAME.equals(name)
+                            ? dashscopeReviewerModel : dashscopeChatModel)
                     .toolkit(toolkit)
                     .maxIters(ItineraryAgent.MAX_ITERS)
                     .permissionContext(PermissionContextState.builder()

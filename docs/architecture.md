@@ -446,8 +446,16 @@ return HarnessAgent.builder()
   代登——poi 落地时 planner 代登实测翻车，见 fix-record 7.10/7.11）；声明挂 tools 白名单
   + route-planning 技能（路线工具手册：单位换算/两两策略）。已知行为特征：qwen-plus
   在长计算后倾向文本收尾跳过写文件——有效手段是「先写初版再修订」顺序（7.11 节发现②）
-- `ReviewerAgent`：5 维评分（各 20 分，总分 ≥80 且无单维 <12 通过）→ 可调工具核验事实 →
-  review_passed.md / review_report.md
+- `ReviewerAgent`（FR-S08 已落地，**qwen-max 评分模型**——planner 的 modelResolver 按
+  agent name 分流，首个按子 Agent 分流的 resolver）：5 维评分（各 20 分，总分 ≥80 且
+  无单维 <12 通过；最终回复首行输出机器标记 `REVIEW_RESULT: PASS|FAIL 总分=xx`）→
+  至少核验 1 项事实声明（真实调 getTransitRoute/getWeather 重算，核验记录写入报告）→
+  通过写 review_passed.md + 自登记缓存（review_passed 随 itinerary 类目）；不通过写
+  review_report.md（5 维三列表 + 核验记录 + 改进建议）。**回炉闭环**：planner 提示词
+  驱动（读建议→修订→重送 ≤2 次→超限「⚠️ 已尽力」收尾）；`ReviewerRetryMiddleware`
+  代码保险丝（第 4+ 次 spawn reviewer 改写为 review_retry_hint，杜绝无限循环；
+  review_passed.md 出现即重置计数；日志锚点 `review_retry count=N`）——框架无改写
+  文本回复钩子的实测替代方案（fix-record 7.12）。慢泳道 300s 承载全链
 
 ### 7.1 LLM Gateway（FR-S09，已落地：限流/熔断/快慢泳道/降级）
 
@@ -463,7 +471,8 @@ return HarnessAgent.builder()
 - **快慢泳道线程池隔离**：ChatService 持有两个 `Schedulers.newBoundedElastic` 专用池
   （fast-lane / slow-lane 各 10 线程），按意图把整条对话链调度到对应池——PLANNING 的
   同步 spawn 长阻塞只占慢池，查询类在快池独立执行互不拖拽；叠加对话级超时
-  （PLANNING 60s / 其余 25s，实测校准）
+  （PLANNING 300s——完整质检链含 reviewer 评分与 ≤2 次回炉，实测单段 30-60s；
+  其余 25s，实测校准）
 
 **模型调用层 `agent/LlmGatewayModel`**（`implements Model` 装饰器，AgentConfig 包装主模型 Bean）：
 
@@ -533,6 +542,7 @@ invalid model）不实现 ModelHttpException——框架原生重试不认它**�
 | `delta` | 文本增量 | 主 Agent 流式输出 |
 | `tool` | 工具名 / `工具名:SUCCESS` | 工具调用开始/结束（含 write_file、agent_spawn、create_task_backlog 等） |
 | `clarify_question` | 反问文本 | intake-agent 经 ask_user 工具发出的反问（v3 FR-S02，选择题式；前端以「💬 需要补充信息」气泡展示） |
+| `review_report` | 质检报告 markdown 全文 | 本轮回复含「已通过质量审阅/已尽力」标注时，ChatService 读协作目录 review_passed.md（优先）/review_report.md 推送（v3 FR-S08；前端以「📋 质检评分明细」details 折叠区 + react-markdown 渲染 5 维表格） |
 | `done` | 完整回复文本 | 事件流完成（助手回复已持久化） |
 | `error` | 错误消息 | Agent 执行异常 |
 

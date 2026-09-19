@@ -101,10 +101,10 @@ class LlmGatewayTest {
     }
 
     @Test
-    @DisplayName("泳道超时：PLANNING → 慢泳道（60s），其他 → 快泳道（25s）")
+    @DisplayName("泳道超时：PLANNING → 慢泳道（300s，覆盖质检+回炉全链），其他 → 快泳道（25s）")
     void testLaneTimeouts() {
         LlmGateway gateway = new LlmGateway(props(2, 50, 10));
-        assertEquals(java.time.Duration.ofSeconds(60), gateway.laneTimeout(true));
+        assertEquals(java.time.Duration.ofSeconds(300), gateway.laneTimeout(true));
         assertEquals(java.time.Duration.ofSeconds(25), gateway.laneTimeout(false));
     }
 

@@ -231,3 +231,32 @@
   background: #ef4444;
   color: #fff;
 }
+
+/* 质检报告折叠区（FR-S08 review_report 事件） */
+.review-report {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border, #d0d0d0);
+  padding-top: 8px;
+  font-size: 0.88em;
+}
+.review-report summary {
+  cursor: pointer;
+  color: #4a7dff;
+  user-select: none;
+}
+.review-report-body {
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.review-report-body table {
+  border-collapse: collapse;
+  margin: 6px 0;
+}
+.review-report-body th,
+.review-report-body td {
+  border: 1px solid #ccc;
+  padding: 3px 10px;
+}

@@ -64,6 +64,8 @@ travelscope:
   dashscope:
     api-key: ${API_KEY:}
     model: qwen-plus
+    # 质检评分模型（FR-S08：reviewer-agent 专用，与主链路 qwen-plus 分离）
+    reviewer-model: qwen-max
     embedding-model: text-embedding-v3
     embedding-dimensions: 1024
 
@@ -159,7 +161,9 @@ travelscope:
     global-qps: 10
     acquire-timeout-ms: 2000
     fast-lane-timeout-seconds: 25
-    slow-lane-timeout-seconds: 60
+    # 慢泳道 300s：完整规划链（planner 工具直调 + poi/route + reviewer 评分 + ≤2 次回炉）
+    # 单段实测 30-60s，60s 必然切断；仍在 spawn 同步 600s 上限内
+    slow-lane-timeout-seconds: 300
     model-timeout-seconds: 30
     cb-sliding-window-size: 10
     cb-failure-rate-threshold: 50

@@ -99,11 +99,20 @@ public class ItineraryAgent {
             - 每项格式：时间 | 活动/车次/航班 | 地点（与工具返回名称一致）| 费用
             - 末尾汇总：每日预算与总预算、天气与穿衣建议、注意事项与备选方案
 
-            第 4 步 spawn reviewer-agent 送审（任务说明中带上协作目录与需求摘要）：
-            - 通过（产出 review_passed.md）→ 把评分写入你的汇报，流程结束；
-              调 register_task_result(taskType=itinerary) 登记行程草案
-            - 不通过（产出 review_report.md）→ 按改进建议修订 itinerary_draft.md 后
-              重新送审；回炉最多 2 次，超限后带「当前最佳版本（已尽力）」说明结束
+            第 4 步 spawn reviewer-agent 送审（任务说明中带上协作目录与需求摘要；
+            reviewer 用 qwen-max 评分，其最终回复首行是 REVIEW_RESULT: PASS|FAIL 总分=xx）：
+            - 通过（REVIEW_RESULT: PASS / 产出 review_passed.md）→ 把评分写入你的汇报，
+              流程结束；调 register_task_result(taskType=itinerary) 登记行程草案
+            - 不通过（REVIEW_RESULT: FAIL / 产出 review_report.md）→ 回炉循环：
+              ① 读 review_report.md 的「改进建议」，逐条修订 itinerary_draft.md
+                （费用超预算→换更经济的酒店/交通/去掉付费景点；时间冲突→调整时段）
+              ② 修订完成后重新 spawn reviewer-agent 送审，任务说明中标注
+                「第 N 次送审」（N 从 2 开始计）
+              ③ 回炉最多 2 次。第 2 次修订后仍 FAIL → 不再送审，按当前版本收尾：
+                汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项；
+                仍需 register_task_result(taskType=itinerary) 登记当前版本
+              【硬性上限】第 3 次送审会被系统保险丝拦截（ReviewerRetryMiddleware），
+              不要尝试超过 2 次回炉后的再送审
             - 【局部回炉】review_report 只指出某段问题时，先查该段缓存
               （如 POI 合理性问题 → get_cached_task_result(route) 命中则只重排线，
               不必重跑 poi-research）

@@ -183,15 +183,13 @@ spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更�
 
 ### 7.4 后续迭代（未落地，见需求文档 v3 §9.2）
 
-- 意图三层级联已于 2026-09-16 落地（见 7.5 节）；四维校验与 Planner 工具直调
-  已于同日定稿（见 7.7 节）；intake 混合形态已于 2026-09-17 补完（见 7.8 节）；
-  LLM Gateway 已于 2026-09-17 落地（见 7.9 节）；poi-research 双路检索与
-  TaskResultCache 已于 2026-09-18 落地（见 7.10 节）；route-optimizer 已于
-  2026-09-19 落地（见 7.11 节）；
-  **首要待办：master/planner 分轮截断与子 Agent spawn 拒绝的代码层兜底**
-  （已确认影响 poi/route 生产可用性，7.11 发现①）；其余：ReviewerRetryMiddleware
-  回炉拦截（route/poi 缓存的局部回炉消费联动）、SSE agent_status / review_score 事件、
-  poi 产出强制登记
+- 意图三层级联（7.5）/四维校验与工具直调（7.7）/intake 混合形态（7.8）/LLM Gateway（7.9）/
+  poi 双路检索（7.10）/route-optimizer（7.11）/reviewer 质检闭环（7.12）分别于
+  2026-09-16~19 落地。
+- **首要待办：master/planner 分轮截断与子 Agent spawn 拒绝的代码层兜底**
+  （poi/route/reviewer 三轮 E2E 均复现，7.11/7.12 记录；子 Agent 能力均已经直验法证实，
+  卡点纯在委派层）；REVIEW_RESULT 解析处的 5 维阈值代码校验（7.12 发现③）。
+- 其余：SSE agent_status 事件、poi 产出强制登记（write_file 钩子）、review 缓存回炉联动失效
 
 ### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
 
@@ -495,3 +493,56 @@ planner 第 2 步改为 route 自登记 + 分轮自愈提示。104 测试 0 失�
 
 **遗留**：route-optimizer 经 planner 的生产链路（spawn→执行→登记）待「分轮截断代码层
 兜底」落地后复验；route 缓存的局部回炉消费路径（ReviewerRetry 联动）仍待 Reviewer。
+
+### 7.12 reviewer-agent 质检闭环落地（2026-09-19 追记，FR-S08）
+
+> qwen-max 评分模型 + 5 维评分 + review_passed/report 产出 + 回炉 ≤2 次（保险丝模式）
+> + 前端质检报告折叠区。设计见 `architecture.md`；本文记录三项关键决策与直验证据。
+
+**三项关键决策（用户确认）**：
+1. **回炉机制改为「Planner 提示词驱动 + 代码保险丝」**：原需求字面是「ReviewerRetryMiddleware
+   拦截 master 的返回用户回复替换为继续委派」——反编译确认框架无改写文本回复的中间件钩子
+   （MiddlewareBase 无 onReply）。落地：回炉循环写进 planner 提示词（读改进建议→修订→重送
+   ≤2 次→超限「⚠️ 已尽力」收尾）；ReviewerRetryMiddleware 做保险丝——第 4+ 次 spawn
+   reviewer 改写为 review_retry_hint 工具（PlanningGate GATE 同款模式），代码层杜绝无限循环。
+2. **modelResolver 按 name 分流**：原 planner 的 `name -> dashscopeChatModel` 一刀切会把
+   声明里的模型名无视（qwen-max 声明形同虚设）。改为 `name -> ReviewerAgent.AGENT_NAME
+   .equals(name) ? qwenMax : 主链路模型`——首个按子 Agent 分流的 resolver。
+3. **慢泳道 60→300s**：完整质检链（planner 工具直调 + poi/route + reviewer qwen-max +
+   ≤2 次回炉）实测单段 30-60s，60s 必然切断；300s 在 spawn 同步 600s 上限内。
+
+**改动**：DashScopeConfig.reviewerModel=qwen-max（新 Bean）；ReviewerAgent 提示词重写
+（review_passed.md 格式段、REVIEW_RESULT: PASS|FAIL 首行机器标记、通过自登记、
+至少核验 1 项事实声明、duration 秒换算）；ItineraryAgent 第 4 步回炉细化（第 N 次送审
+标注/已尽力收尾/局部回炉）；master 已尽力文案；TaskTools 加 review_retry_hint；
+SSE review_report 事件（ChatService.handleComplete 读协作目录 review 文件推送）；
+前端 react-markdown + details 折叠区（质检评分明细）。ReviewerRetryMiddlewareTest 6 用例
++ 全量 110 测试 0 失败。
+
+**E2E 检测记录（conv-52，超预算场景 500元/2人 杭州双日）**：
+- 标准 3 ✅（完整闭环）：初稿总费用 1140 → reviewer FAIL 总分 30（费用维 0 分，核验记录
+  灵隐寺→西溪公交 79.6min）→ 按改进建议修订（642 元，取消跨区段）→ 复审 **FAIL 78 分
+  （+48）**，qwen-max 对改进幅度给了合理评分；
+- 标准 5 ✅：三轮直验共 4 次真实 getTransitRoute 核验（79.6min/48min/46.2min vs 草案
+  声明），核验记录均写入报告；
+- 标准 1 ✅：宽裕预算（1500）复审 **PASS 总分 87**，review_passed.md 完整产出
+  （5 维表+核验声明）；「✅ 已通过质量审阅（评分 x/100）」文案链路（master 提示词）就绪；
+- 标准 2 ✅（链路层）：SSE review_report 事件 + 前端折叠区代码全链就绪（Vite 热更新加载，
+  tsc 0 错误）；因 master/planner 委派层不受控（分轮截断复现，见下），端到端页面级验证
+  待分轮兜底落地后复验；
+- 标准 4 ✅（逻辑层）：保险丝 6 单测（首审/回炉放行、第 4 次拦截改写、passed 重置、
+  会话隔离、混合批次选择性改写）；E2E 层因上述委派层问题未触达第 4 次真实送审。
+
+**发现与遗留**：
+1. **planner 委派层分轮截断再次复现**（7.11 发现①）：本轮多轮指令推进中 planner 反复
+   陷入 update_task_status 轮询/「正在执行」话术后停摆，master 越级 spawn 被意图级联
+   误判快泳道 25s 切断（「继续执行…」被判非 PLANNING——L2 单标签看不到会话上下文的
+   已知局限叠加）。**reviewer 直验法（7.11 发现③）再次成为验证通道**：qwen-max 评分、
+   工具核验、文件产出、评分上升闭环全部经直验证实。「分轮截断代码层兜底」仍是首要待办。
+2. **qwen-max 收尾跳工具**：通过分支 register_task_result 自登记再次被文本收尾顶掉
+   （与 route-optimizer 同款行为特征）；「先写文件再核验」顺序对 write_file 有效
+   （三轮直验全部落盘成功）但对第三个后续动作（登记）仍不稳——佐证 7.11 发现②的
+   「收尾动作不能排在长计算之后」，多步收尾需要代码层强制（如 write_file 钩子）。
+3. **阈值校验依赖模型自觉的边界**：直验中出现 POI 合理性 10 分（<12）但总分 87 仍 PASS
+   的越界判定——「无单维<12」由提示词约束但无代码校验；后续可在 REVIEW_RESULT 解析处
+   加代码层复核（解析 5 维分数强制校验阈值）。

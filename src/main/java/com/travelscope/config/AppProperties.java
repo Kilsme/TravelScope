@@ -53,6 +53,8 @@ public class AppProperties {
         private String apiKey;
         /** 对话模型名称 */
         private String model = "qwen-plus";
+        /** 质检评分模型（FR-S08：reviewer-agent 专用，与主链路分离） */
+        private String reviewerModel = "qwen-max";
         /** Embedding 模型名称 */
         private String embeddingModel = "text-embedding-v3";
         /** Embedding 维度 */
@@ -217,7 +219,10 @@ public class AppProperties {
          *  多轮推理链实测 5s 会误杀，25s 仍与慢泳道 60s 保持数量级差异） */
         private int fastLaneTimeoutSeconds = 25;
         /** 慢泳道超时（秒）：PLANNING 意图的对话级超时 */
-        private int slowLaneTimeoutSeconds = 60;
+        /** 慢泳道超时（秒）：PLANNING 意图的对话级超时（300s——完整链路 = planner 直调工具
+         *  + poi/route 子任务 + reviewer qwen-max 评分 + ≤2 次回炉，实测单段 30-60s，
+         *  60s 必然切断；仍在 spawn 同步 600s 上限内） */
+        private int slowLaneTimeoutSeconds = 300;
         /** 模型单次调用超时（秒，LlmGatewayModel 装饰器） */
         private int modelTimeoutSeconds = 30;
         /** 熔断：滑动窗口大小（次） */

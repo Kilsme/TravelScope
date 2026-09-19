@@ -47,3 +47,15 @@ logs/
 
 ### AgentScope 工作空间 ###
 .agentscope/
+### ZCode 会话缓存（工具产物，不入库）###
+.zcode/
+
+### WorkBuddy 记忆（工具产物，不入库）###
+.workbuddy/
+
+### 前端 ###
+frontend/node_modules/
+frontend/dist/
+
+### 临时/种子验证产物（直验工具输出）###
+*.log.*

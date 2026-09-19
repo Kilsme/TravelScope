@@ -108,11 +108,14 @@ public class TravelMasterAgent {
                    「用 read_file 读取路由指令给出的 task_backlog.md 路径与 intake_done.md 执行；
                    每完成一项任务调用 update_task_status 工具回报状态」
             5. 执行期间可调用 get_task_progress 查询进度（还有多少任务未完成）；
-                   完成后读取协作目录下的 execution_result.md、itinerary_draft.md 与 review_passed.md，
-                   整合优化后输出最终方案：
-                   - 不要直接转发子 Agent 的原文，需核验数据、补齐衔接、统一格式
-                   - 方案末尾按 review_passed.md 的评分标注「✅ 已通过质量审阅（评分 x/100）」
-                   - 子 Agent 标注「待确认」的项必须向用户明确说明
+               完成后读取协作目录下的 execution_result.md、itinerary_draft.md 与 review_passed.md，
+               整合优化后输出最终方案：
+               - 不要直接转发子 Agent 的原文，需核验数据、补齐衔接、统一格式
+               - 质检通过（review_passed.md 存在）→ 方案末尾标注
+                 「✅ 已通过质量审阅（评分 x/100）」（x 取 review_passed.md 的总分）
+               - 质检超限未过（planner 汇报带「已尽力」标记）→ 方案末尾标注
+                 「⚠️ 当前最佳版本（已尽力，评分 x/100）」，并向用户说明未解决的扣分项
+               - 子 Agent 标注「待确认」的项必须向用户明确说明
 
             若委派被系统拦截（工具返回 GATE_REJECTED），说明任务清单未登记：先完成第 3 步再重新委派。
 
