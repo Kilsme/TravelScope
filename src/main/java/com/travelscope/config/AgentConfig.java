@@ -408,15 +408,24 @@ public class AgentConfig {
                 .skills(List.of("attraction-search"))
                 .build();
 
-        // 路线调优子 Agent：读候选清单迭代排线，产出 route_plan.md
+        // 路线调优子 Agent：读候选清单迭代排线，产出 route_plan.md（FR-S07）。
+        // tools 白名单限定排线所需（路线工具/文件/缓存登记——登记由 route-optimizer 自完成，
+        // 不依赖 planner 代登：poi 落地时 planner 代登实测翻车，见 fix-record 7.10/7.11）
         SubagentDeclaration routeOptimizer = SubagentDeclaration.builder()
                 .name(RouteOptimizerAgent.AGENT_NAME)
                 .description("路线调优 Agent（排线员）：读 poi_shortlist.md，两两调路线工具算通勤，"
-                        + "就近聚类分日 + 迭代调整再算，产出 route_plan.md")
+                        + "就近聚类分日 + 迭代调整再算，产出 route_plan.md 并自行登记缓存")
                 .inlineAgentsBody(RouteOptimizerAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getModel())
                 .maxIters(RouteOptimizerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
+                .skills(List.of("route-planning"))
+                .tools(List.of(
+                        "getDrivingRoute",
+                        "getTransitRoute",
+                        "geocode",
+                        "register_task_result",
+                        "get_cached_task_result"))
                 .build();
 
         // 质检子 Agent：5 维评分 + 可调工具核验事实，产出 review_passed.md / review_report.md

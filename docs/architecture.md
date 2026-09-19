@@ -439,7 +439,13 @@ return HarnessAgent.builder()
   intake_done）→ 执行流程（①直调工具 ②同回合并行 spawn ③组装 + POI 坐标核验 ④spawn reviewer
   送审，不通过回炉 ≤2 次）→ 执行规范 → 汇报格式
 - `PoiResearchAgent`：多轮换词重查 → poi_shortlist.md（RAG 双路 TODO 待 FR-S11）
-- `RouteOptimizerAgent`：两两算通勤 → 就近聚类分日 → 迭代调整 → route_plan.md
+- `RouteOptimizerAgent`（FR-S07 已落地）：读 poi_shortlist（坐标 `经度,纬度` 直接作工具入参）
+  → 两两调 getTransitRoute/getDrivingRoute（duration 秒/distance 米，写前换算分钟）
+  → 就近聚类分日（硬性禁折返）+ 开放时间排序 → 迭代检验调整（route_plan.md「调优过程」
+  小节留痕）→ **收尾自登记** register_task_result(route)（登记职责在产出者，不依赖 planner
+  代登——poi 落地时 planner 代登实测翻车，见 fix-record 7.10/7.11）；声明挂 tools 白名单
+  + route-planning 技能（路线工具手册：单位换算/两两策略）。已知行为特征：qwen-plus
+  在长计算后倾向文本收尾跳过写文件——有效手段是「先写初版再修订」顺序（7.11 节发现②）
 - `ReviewerAgent`：5 维评分（各 20 分，总分 ≥80 且无单维 <12 通过）→ 可调工具核验事实 →
   review_passed.md / review_report.md
 

@@ -1,79 +1,67 @@
-# poi-research 双路检索 + TaskResultCache 实现计划（FR-S06/S11 + FR-S14）
+# route-optimizer 落地计划（FR-S07）
 
-## 一、调研结论（决定实现形态）
+## 一、现状与缺口（调研结论）
 
-1. **pgvector 语义路 100% 用 AgentScope 原生组件**：`DashScopeTextEmbedding`（rag-simple jar，Mono<double[]> embed）+ `PgVectorStore.builder()`（jdbcUrl/tableName/dimensions/COSINE，kNN search）+ `SimpleKnowledge.retrieve(query, RetrieveConfig)`——schema.sql 的 document_chunks 表结构已兼容。
-2. **ES BM25 路必须自写**：原生 `ElasticsearchStore.search` 只做 kNN（字节码证据：仅 KnnSearch 调用，content 字段 index=false）；用 pom 已有的 `elasticsearch-java 9.0.2`（Rest5Client）自写 BM25 match 查询。
-3. **RRF 融合必须自写**：全库无融合 API；公式 `score = Σ 1/(rrfK + rank)`，RagConfig 已有 fusion/rrf-k/vector-weight/fulltext-weight 配置。
-4. **RagService 是零侵入替换点**（接口 isAvailable/retrieve 已就绪）；ES 配置段/index-mapping.json（ik_max_word/ik_smart + dense_vector 1024）已备但 IK 插件未装、索引未建、知识库空。
-5. **用户决策**：灌内置杭州攻略种子数据（检测标准 1/2 真实可验）；装 IK 插件（按原设计）。
+**已存在**：RouteOptimizerAgent 常量类（提示词骨架完整：调优目标三条/工作流程/格式/约束）、AgentConfig 声明（SHARED 工作区）、planner 提示词第 2 步（查 route 缓存→spawn→登记）、TaskWorkspaceService.FILE_ROUTE_PLAN 常量、TaskResultCache.ROUTE 类型——**但全链路从未真实跑通**（workspace 无任何 route_plan.md，上轮 E2E 只推进到 poi_shortlist）。
 
-## 二、架构
+**七个缺口**（本轮全部修复）：
+1. 提示词未提 **duration 单位是秒**（工具原样返回高德秒值，格式样例却写"15 分钟"——不换算会全错）
+2. 声明缺 skills/tools 白名单（对比 poi 有 attraction-search）
+3. 提示词引用 attraction-search 作工具事实源，但该技能文件不含路线工具内容
+4. **register(route) 依赖 planner 自觉**——poi 同款模式已实测翻车（7.10 节缺口①：planner 让 poi 干完活自己没登记）
+5. planner 分轮截断风险（7.10 节缺口②）
+6. poi_shortlist 的开放时间/时长是非结构化文本（嵌在引用片段里）
+7. 坐标格式 `经度,纬度` 与路线工具入参天然对齐（无需处理，记录确认）
 
-```
-poi-research 收到任务（目的地+天数+偏好）
-  ├─ 第 0 步：调 search_pois_with_rag 工具（新）——双路检索入口
-  │    RagServiceImpl.dualRetrieve(query, topK)
-  │      ├─ 语义路：SimpleKnowledge.retrieve（DashScope embedding → pgvector kNN）→ List<Doc>（ranked）
-  │      ├─ 关键词路：EsBm25Client.search（自写，ik 分词 BM25 match）→ List<Hit>（ranked）
-  │      └─ RrfFusion.fuse（自写）：按 chunkId 去重，score=Σ w_i/(rrfK+rank_i)，输出融合 top-K
-  │         → 返回带来源标记（RAG / ES / RAG+ES）的片段列表
-  ├─ 高德补全：searchPois / searchNearbyAttractions 拿坐标/开放时间/评分（知识库片段缺的硬字段）
-  ├─ 多轮筛选：召回不足 → 换关键词重查（提示词驱动 + 日志留痕）
-  └─ 产出 poi_shortlist.md（POI 数量与天数挂钩：2 天 6~8 个）
+## 二、改动清单（4 个文件，全部小改）
 
-planning-agent / 各子 Agent 产出文件时
-  └─ TaskResultCache.register(userId, sessionId, taskType, content)   [POI/路线/酒店 30min，天气 10min]
-  └─ 二次规划同需求 → cache_hit=poi_shortlist → poi-research 不重跑，直接复用缓存内容写文件
-```
+### 1. `agent/RouteOptimizerAgent.java` —— SYS_PROMPT 重写（核心）
 
-## 三、改动清单
+- **工具格式说明**：明确 `getDrivingRoute/getTransitRoute 返回 duration 单位为秒、distance 单位为米——写进 route_plan 前换算为分钟/公里`；坐标入参格式 `经度,纬度`（与 poi_shortlist 一致直接用）
+- **迭代日志锚点（检测标准 4）**：要求每次「检验→调整」在 route_plan.md 的「调优过程」小节留痕：`迭代 1：初排后检验发现 河坊街→灵隐寺→西湖 存在折返（通勤 48 分钟）→ 调整为 西湖→灵隐寺→河坊街`；同时推理文本中的排序/算距/调整过程自然留在 AgentTrace 日志
+- **自登记（修缺口 4）**：产出 route_plan.md 后**自己调** `register_task_result(taskType=route, content=全文)`——route-optimizer 有该工具（共享 Toolkit），登记职责从 planner 下沉到产出者，不依赖 planner 自觉
+- **开放时间提取**：从 poi_shortlist 的引用文本中提取开放时间/建议时长（非结构化→排序依据），提取不到的标「时间待确认」并按默认 09:00-17:00 处理
+- **分日策略具体化**：给出可操作的聚类方法（按坐标经度/纬度粗分组或按行政区域），避免模型空谈"就近聚类"
+- **修正工具事实源引用**：删掉"以 attraction-search 为准"（与路线工具无关），工具细节直接内联在提示词
 
-### 新建 7 个主代码文件
+### 2. `agent/ItineraryAgent.java` —— planner 第 2 步微调
 
-1. **`service/RagServiceImpl.java`**（替换 Stub）：组合 `SimpleKnowledge`（pgvector 路）+ `EsBm25Client`（BM25 路）+ `RrfFusion`；`isAvailable()` = 两路至少一路客户端就绪（构造失败/不可达时降级为单路或不可用，照 Redis 降级风格首次 warn）；`retrieve(question, topK)` 走双路 RRF（RagConfig.mode 支持 dual/vector/fulltext）；同时提供 `dualRetrieveWithSource(query, topK)` 返回 `List<RetrievedFragment{content, source(RAG/ES/BOTH), score}>`（工具层用）。构建：`@Service`，构造注入 AppProperties + DataSource（jdbcUrl 从 spring.datasource 拼）。
-2. **`service/EsBm25Client.java`**：elasticsearch-java 9.0.2 Rest5Client；`search(String query, int topK)` → BM25 match（content 字段，ik_smart search_analyzer）+ `ensureIndex()`（幂等建索引，读 resources/elasticsearch/index-mapping.json）；连接失败静默降级（isAvailable=false 时不参与双路）。
-3. **`service/RrfFusion.java`**：纯静态工具——`fuse(List<Ranked>{id,content,score,source}...)` 按 rrfK 融合去重，权重 vector-weight/fulltext-weight 可选应用；带单测。
-4. **`agent/tools/PoiRagTools.java`**（新 @Tool 集，注册进共享 Toolkit）：
-   - `search_pois_with_rag(query, topK, ctx)`：调 RagServiceImpl.dualRetrieveWithSource，返回「片段 + 来源标记」文本（供 poi-research 第一轮召回与换词重查）
-   - `get_cached_task_result(taskType, sessionId, ctx)` / `register_task_result(taskType, content, sessionId, ctx)`：TaskResultCache 的工具面（planner/poi/route 调用；产出文件后 register，回炉/二次规划前 get）
-5. **`service/TaskResultCache.java`**：StringRedisTemplate，key=`taskresult:{userId}:{sessionId}:{taskType}`（v3 文档规范），value=产出内容+头部 task_id/时间戳元信息；TTL 按类型（POI 30min/路线 30min/酒店 30min/天气 10min）；命中打 `cache_hit={taskType}` 日志（检测标准 5 锚点）；照 TripRequirementStore 降级风格（首次 warn 后续 debug + 内存 fallback）；失效 API `invalidate(userId, sessionId, taskType|ALL)` 预留给 P7 按影响面失效。
-6. **`config/KnowledgeIngestRunner.java`**：`ApplicationRunner` + `@Profile("seed")` 或配置开关 `travelscope.rag.seed-enabled`（默认 false，检测时开）——内置 ~25 条杭州/热门城市攻略片段（每条含 POI 名称/坐标/开放时间/建议时长/推荐理由的文本），启动时切块→DashScope embedding→双写 document_chunks（经 SimpleKnowledge.addDocuments）+ ES（ensureIndex + bulk index，content 可检索）→ 幂等（存在 chunk 跳过）。
-7. **`dto/RetrievedFragment.java`**：content/source/score/chunkId record。
+route 段落改为：spawn route-optimizer（先查 route 缓存，命中复用）；**登记由 route-optimizer 自完成**（提示词已约束），planner 只需在读到 route_plan.md 后继续第 3 步——去掉 planner 侧的 register(route) 指令（避免双重登记），并补一句"若 route_plan.md 未生成且 route 缓存未命中，重新 spawn route-optimizer"（分轮截断的自愈提示）。
 
-### 修改 4 个文件
+### 3. `config/AgentConfig.java` —— route-optimizer 声明补白名单
 
-8. **`agent/PoiResearchAgent.java` SYS_PROMPT**：检索策略改为「第 1 步先调 search_pois_with_rag 双路召回（知识库游记攻略，带 RAG/ES 来源）→ 评估召回 → 不足换关键词重查该工具 → 高德 searchPois 补坐标/开放时间硬字段 → 筛选（来源标记必填：RAG 命中 or ES 命中 or 高德）」；产出格式加「来源: RAG(chunk=xx) / ES(keyword=xx) / searchPois」；开始前调 `get_cached_task_result(poi)` 命中则直接复用并标注缓存来源。
-9. **`agent/ItineraryAgent.java`**（planner 提示词）：spawn poi-research 前先调 `get_cached_task_result(poi)`——命中跳过 spawn（复用缓存内容写 poi_shortlist.md）；各子 Agent 完成后由 planner 统一 register（poi/route/weather/hotel 四类）。
-10. **`config/AgentConfig.java`**：travelToolkit 注册 `new PoiRagTools(ragService, taskResultCache, …)`；poi-research 声明 skills 加无（attraction-search 已有），无需 tools 白名单（默认继承全部）；新增 TaskResultCache Bean。
-11. **`service/RagServiceStub.java`**：保留类但去掉 @Service（Impl 接管；Stub 留作参考/测试）——或直接删除，采用**删除**（git 有历史）。ChatService L175 的 topK 硬编码顺手改 RagConfig.topK。
+`.tools(List.of("getDrivingRoute", "getTransitRoute", "geocode", "read_file", "write_file", "register_task_result", "get_cached_task_result"))`——限定排线所需工具面（对齐 intake 的 tools 模式；防误调 searchPois 等越权）。
 
-### 测试（4 个新测试类，复刻现有风格）
+### 4. `resources/skills/` —— 新增 `route-planning/SKILL.md`
 
-12. **`RrfFusionTest`**（纯单测）：双路去重融合/权重/rrfK 参数/单路退化/空输入。
-13. **`TaskResultCacheTest`**（ThrowingRedisTemplate 降级单测 + 6379 门控回环）：register/get 回环、TTL 差异（天气 10min vs POI 30min）、cache_hit 日志语义、invalidate、降级不阻断。
-14. **`PoiRagToolsTest`**：Fake RagService（可控返回）验证工具返回格式（来源标记）与 get/register 工具链。
-15. **`RagServiceImplTest`**（PG+ES 门控，检测环境跑）：双路真实检索 + RRF 融合 + 种子数据召回「杭州 西湖」类 query。
+路线工具使用手册（getDrivingRoute/getTransitRoute 参数与返回格式、秒/米单位说明、两两调用策略）——route-optimizer 声明挂 `.skills(List.of("route-planning"))`，作为工具细节的事实源（填补缺口 3，与 poi 的 attraction-search 对称）。
 
-## 四、环境与检测执行序
+## 三、测试（无新单测——逻辑全在提示词与声明层）
 
-1. 启动 PG → psql 跑 schema.sql（幂等，确保 documents/document_chunks/HNSW 就绪）
-2. 启动 ES 容器 → 装 IK 插件（elasticsearch-plugin install + restart，按 README）→ init-index.sh 建索引
-3. 启动 Redis → 应用（seed-enabled=true）→ Runner 自动灌种子数据（embedding 真实调 DashScope，~25 条）
-4. **检测标准 1~5**：
-   - 1. 规划「杭州 2 日游」→ 工作区 poi_shortlist.md 含 6~8 POI（坐标/开放时间/时长/理由）
-   - 2. 每个 POI 来源标记（RAG/ES/高德）
-   - 3. 召回不足日志可见换词重查（构造冷门 query 观察，或检查提示词多轮行为日志）
-   - 4. 2 天不给 20 个点（提示词规模约束 + 检查产出数量）
-   - 5. 同会话二次规划（需求未变）→ 日志 `cache_hit=poi_shortlist`、poi-research 无 spawn 调用记录
-5. 全量 mvn test 回归（85+ 测试零破坏）
-6. 文档：architecture.md（6.4 后新增 RAG 专节 + 工具表加 search_pois_with_rag/get_cached_task_result + poi-research 节更新）；fix-record 7.10 节（框架核验发现：ElasticsearchStore 纯 kNN 无 BM25、RRF 自写、seed 方案）
-7. 关闭全部后台程序
+- 现有 104 测试全量回归（确认提示词改动/白名单无编译与行为破坏）
+- E2E 为主要验证（检测标准 1~4）
+
+## 四、E2E 检测标准 1~4 执行方案
+
+环境：PG → Docker Redis+ES → 应用（seed 已在库）→ curl。
+
+| # | 操作 | 验证 |
+|---|---|---|
+| 1 | 复用 conv-44（poi_shortlist 已在）或新会话完整规划 | `route_plan.md` 生成：读文件断言分日结构 + 表格含通勤方式/时长列 |
+| 2 | 读 route_plan.md 中各 POI 坐标（对照 poi_shortlist） | 人工/脚本验证同日 POI 坐标聚簇（无城东→城西→城东折返） |
+| 3 | route_plan.md 每日总通勤 + 日志 duration 换算 | 各日 Σ通勤 ≤ 90 分钟 |
+| 4 | 日志 grep route-optimizer 的推理轨迹 + route_plan.md 的调优过程小节 | 可见「排序→算距→发现不顺→调整」至少一次迭代 |
+
+E2E 推进策略（吸取上轮教训）：分轮截断时用同会话「继续」指令推进 planner；若 planner 仍不 spawn route，用明确指令「委派 route-optimizer 排线」直达。
 
 ## 五、明确不做
 
-- 文档上传管理（FR-A03 管理端，种子 Runner 只是数据通道）
-- P7 局部回炉的 ReviewerRetry 联动（TaskResultCache 只打底：register/get/invalidate API 就绪，回炉路由待 ReviewerRetryMiddleware 实装时接）
-- ES 向量路（ES 只做 BM25；向量在 pgvector——避免双写向量开销）
-- memory 版 InMemoryStore（不引入测试专用 store，Fake 注入即可）
-- spring-data-elasticsearch 版本混用风险处理：本次只用 elasticsearch-java 原生客户端，不触 spring-data API（保持现状不扩大）
+- Reviewer 回炉联动（route 缓存的局部回炉消费路径，待 ReviewerRetryMiddleware 落地）
+- planner 分轮截断的代码层兜底（7.10 节缺口②的系统修复——影响面是全流程非 route 单点，单独需求处理）
+- 通勤计算的代码层强校验（如 middleware 拦截 write_file 校验 ≤90min——过度工程，提示词+检测先行）
+
+## 六、文档与收尾
+
+- architecture.md：第 7 节 poi/route 提示词描述同步（工具白名单、自登记模式）；第 12 节 TaskResultCache 描述补 route 自登记差异
+- fix-record：7.11 节「route-optimizer 落地」——记录自登记 vs planner 登记的决策（poi 翻车教训的直接应用）、单位换算缺口、E2E 检测结果
+- 检测完成后关闭全部后台程序（应用/Docker Redis+ES/PG 服务）

@@ -87,8 +87,10 @@ public class ItineraryAgent {
             - poi-research 完成后：读 poi_shortlist.md 全文，
               调 register_task_result(taskType=poi, content=全文) 登记
             - route-optimizer：读 poi_shortlist.md 排线 → 产出 {协作目录}/route_plan.md
-              （先查 get_cached_task_result(taskType=route)，命中复用跳过 spawn；
-               完成后 register_task_result(taskType=route) 登记）
+              （先查 get_cached_task_result(taskType=route)，命中则复用跳过 spawn；
+               route 缓存的登记由 route-optimizer 自己完成，你无需代登）
+            - 【自愈】若 poi_shortlist.md 已存在但 route_plan.md 未生成且 route 缓存未命中，
+              重新 spawn route-optimizer（不要跳过排线直接组装行程）
 
             第 3 步 收齐组装 {协作目录}/itinerary_draft.md：
             - 依据 route_plan.md 的分日顺序 + 你的天气/酒店/大交通数据，形成完整行程

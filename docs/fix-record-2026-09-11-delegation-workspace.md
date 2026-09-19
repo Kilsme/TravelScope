@@ -186,9 +186,12 @@ spawn 必然被误杀（此时清单必然未登记）。因此门禁逻辑更�
 - 意图三层级联已于 2026-09-16 落地（见 7.5 节）；四维校验与 Planner 工具直调
   已于同日定稿（见 7.7 节）；intake 混合形态已于 2026-09-17 补完（见 7.8 节）；
   LLM Gateway 已于 2026-09-17 落地（见 7.9 节）；poi-research 双路检索与
-  TaskResultCache 已于 2026-09-18 落地（见 7.10 节）；
-  剩余待办：ReviewerRetryMiddleware 回炉拦截（TaskResultCache 的 P7 局部回炉联动）、
-  SSE agent_status / review_score 事件、poi 产出强制登记（当前依赖 planner 自觉）
+  TaskResultCache 已于 2026-09-18 落地（见 7.10 节）；route-optimizer 已于
+  2026-09-19 落地（见 7.11 节）；
+  **首要待办：master/planner 分轮截断与子 Agent spawn 拒绝的代码层兜底**
+  （已确认影响 poi/route 生产可用性，7.11 发现①）；其余：ReviewerRetryMiddleware
+  回炉拦截（route/poi 缓存的局部回炉消费联动）、SSE agent_status / review_score 事件、
+  poi 产出强制登记
 
 ### 7.5 意图三层级联落地（2026-09-16 追记，FR-S01）
 
@@ -450,3 +453,45 @@ hotel 缓存 miss→执行→register 闭环真实跑通。
 ②master/planner 的多步流程存在分轮截断（一轮 maxIters 内做不完 4 步就收工汇报），
 需用户/上层指令推进——与 FR-S02 时的委派波动同源，代码层兜底（如 ChatService 注入）
 可按同模式扩展到「已登记 backlog 但未 spawn planner」等中间态。
+
+### 7.11 route-optimizer 落地（2026-09-19 追记，FR-S07）
+
+> 读 poi_shortlist → 两两调路线工具 → 就近聚类分日 + 开放时间排序 → 迭代纠错 →
+> route_plan.md。设计见 `architecture.md`；本文记录 E2E 揭示的三个真实发现与
+> 「子 Agent 直验法」——它们对 Reviewer/后续子 Agent 落地有直接复用价值。
+
+**改动**：RouteOptimizerAgent 提示词重写（duration 秒/distance 米换算说明、迭代留痕
+要求、收尾自登记 register_task_result、开放时间非结构化提取、坐标格式确认）；
+声明补 tools 白名单 + route-planning 技能（新 SKILL.md，路线工具手册）；
+planner 第 2 步改为 route 自登记 + 分轮自愈提示。104 测试 0 失败。
+
+**E2E 检测结果**（conv-46 杭州 2 日游）：
+- 标准 1✅ route_plan.md 生成（分日 + 通勤方式/时长列 + 每日主题）
+- 标准 2✅ 坐标聚簇（Day1 市中心簇 120.13-120.15 / Day2 城西簇，无折返）
+- 标准 3✅ 单日通勤 Day1=50min、Day2=80min，均 ≤90
+- 标准 4 部分✅ 两两路线计算真实发生（多轮直验日志共 20+ 次 getTransitRoute 调用，
+  覆盖全部 POI 对）；调优过程小节存在（「初排即满足」）——显式「调整」迭代未触发
+  （初排质量已达标，属于达标路径而非失败）
+
+**三个真实发现（按严重程度）**：
+1. **planner 持续拒绝 spawn 子 Agent（分轮截断的顽固形态）**：多轮指令推进中 planner
+   要么自己 searchPois 代劳、要么以「必须依据系统架构」拒绝执行并陷入
+   get_task_progress 轮询循环；master 越级 spawn route-optimizer 时因不在其注册表
+   落到框架兜底 general-purpose-subagent。同步 spawn 30s 超时自动转后台后任务还可能
+   停滞（boundedElastic 占用叠加）。**这是 7.10 缺口②的放大，已确认影响 poi/route
+   两个子 Agent 的生产可用性——代码层兜底（ChatService 注入模式扩展到中间态检测）
+   升级为 Reviewer 落地前的首要事项**。
+2. **qwen-plus「算完即文本收尾」行为**：路线计算完成后模型倾向输出「已完成分析，
+   现在总结…」文本结束，跳过 write_file/register——两次提示词强化（⚠️任务完成
+   唯一标准/先写后算顺序）均未能完全压制。有效手段是把「写文件」提前到第一步
+   （初版先行、后续 edit_file 修订），文件从第一步就存在。**教训：多步工具链的
+   收尾动作（写文件/登记）不能排在长计算之后——qwen-plus 的完成倾向会在中途触发**。
+3. **子 Agent 直验法（本轮方法论沉淀）**：planner 委派层不可控时，用一次性 Java main
+   直接构建目标子 Agent（同 SYS_PROMPT + 生产同款工具集 + ReActAgent.builder）绕过
+   委派层验证子 Agent 自身能力——本轮 route-optimizer 的提示词/工具链/格式产出全部
+   经此法验证。两个坑：裸 `new Toolkit()` 缺 FilesystemTool（harness 的 read/write_file
+   提供者，需手动挂 LocalFilesystem）；LocalFilesystem 根不带 `{userId}/` 前缀
+   （harness 自动拼、裸的不会——写入落错层，验证时需注意路径差）。
+
+**遗留**：route-optimizer 经 planner 的生产链路（spawn→执行→登记）待「分轮截断代码层
+兜底」落地后复验；route 缓存的局部回炉消费路径（ReviewerRetry 联动）仍待 Reviewer。
