@@ -260,3 +260,77 @@
   border: 1px solid #ccc;
   padding: 3px 10px;
 }
+
+/* ==================== 登录页 / 管理端 ==================== */
+.login-page {
+  display: flex; align-items: center; justify-content: center; height: 100vh; background: #f5f6fa;
+}
+.login-card {
+  background: #fff; padding: 40px; border-radius: 12px; border: 1px solid #e5e8ef;
+  width: 360px; display: flex; flex-direction: column; gap: 16px;
+}
+.login-card h2 { margin: 0; text-align: center; color: #2c3e50; }
+.login-card label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: #555; }
+.login-card input {
+  padding: 10px; border: 1px solid #d5dbe6; border-radius: 8px; font-size: 14px;
+}
+.login-card input:focus { outline: none; border-color: #3b82f6; }
+.login-card button {
+  padding: 11px; background: #3b82f6; color: #fff; border: none; border-radius: 8px;
+  font-size: 15px; cursor: pointer;
+}
+.login-card button:disabled { opacity: 0.6; cursor: not-allowed; }
+.login-error { color: #ef4444; font-size: 13px; text-align: center; }
+
+.admin-layout { display: flex; height: 100vh; }
+.admin-sidebar {
+  width: 220px; background: #1e2a3a; color: #dde3ec; display: flex; flex-direction: column;
+}
+.admin-brand { padding: 20px 16px; font-weight: 600; border-bottom: 1px solid #2a3a50; }
+.admin-nav { flex: 1; padding: 12px 0; }
+.admin-nav a {
+  display: block; padding: 12px 16px; color: #dde3ec; text-decoration: none; font-size: 14px;
+}
+.admin-nav a:hover { background: #2a3a50; }
+.admin-nav a.active { background: #34495e; color: #fff; border-left: 3px solid #3b82f6; }
+.admin-user { padding: 16px; border-top: 1px solid #2a3a50; display: flex; flex-direction: column; gap: 10px; }
+.admin-nickname { font-size: 14px; color: #7d8ba1; }
+.admin-logout {
+  padding: 8px; background: transparent; color: #dde3ec; border: 1px solid #2a3a50;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.admin-logout:hover { background: #2a3a50; }
+
+.admin-main { flex: 1; overflow-y: auto; padding: 28px; background: #f5f6fa; }
+.admin-page h2 { margin: 0 0 20px; color: #2c3e50; font-size: 22px; }
+.admin-filters { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
+.admin-filters label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #555; }
+.admin-filters input, .admin-filters select {
+  padding: 8px; border: 1px solid #d5dbe6; border-radius: 6px; font-size: 13px;
+}
+.admin-filters button, .admin-upload button {
+  padding: 8px 18px; background: #3b82f6; color: #fff; border: none; border-radius: 6px;
+  cursor: pointer; font-size: 14px;
+}
+.admin-upload { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
+.admin-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; }
+.admin-table th, .admin-table td { border: 1px solid #e5e8ef; padding: 10px 14px; text-align: left; font-size: 13px; }
+.admin-table th { background: #f8fafc; color: #555; font-weight: 600; }
+.admin-empty { text-align: center; color: #999; padding: 24px; }
+.admin-error { color: #ef4444; margin-bottom: 12px; font-size: 13px; }
+.admin-message { color: #16a34a; margin-bottom: 12px; font-size: 13px; }
+.admin-actions { display: flex; gap: 8px; }
+
+.badge { padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+.badge-admin { background: #fef3c7; color: #92400e; }
+.badge-user { background: #e0e7ff; color: #3730a3; }
+.badge-on { background: #dcfce7; color: #166534; }
+.badge-off { background: #fee2e2; color: #991b1b; }
+.status-uploaded { background: #dbeafe; color: #1e40af; }
+.status-parsing { background: #fef3c7; color: #92400e; }
+.status-parsed { background: #dcfce7; color: #166534; }
+.status-failed { background: #fee2e2; color: #991b1b; }
+
+.btn-danger { padding: 5px 12px; background: #ef4444; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.btn-primary { padding: 5px 12px; background: #3b82f6; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.btn-ghost { padding: 5px 12px; background: transparent; color: #555; border: 1px solid #d5dbe6; border-radius: 5px; cursor: pointer; font-size: 12px; }

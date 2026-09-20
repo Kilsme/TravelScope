@@ -49,11 +49,18 @@ public class Message {
     @Column(name = "model_name", length = 128)
     private String modelName;
 
+    /** 消息消耗 token 数（FR-A01 Token 用量聚合数据源；user 消息计输入，assistant 计主链输出+意图分类） */
+    @Column(name = "token_count")
+    private Integer tokenCount;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
     @PrePersist
     void onCreate() {
         this.createdAt = LocalDateTime.now();
+        if (this.tokenCount == null) {
+            this.tokenCount = 0;
+        }
     }
 }

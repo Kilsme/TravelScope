@@ -23,7 +23,8 @@ import reactor.core.publisher.Mono;
  * 未写入意图属性（如分类失败回退）时不追加任何指令，主 Agent 按自身提示词自主路由。
  * </p>
  */
-public class IntentRouterMiddleware implements MiddlewareBase {
+public class
+IntentRouterMiddleware implements MiddlewareBase {
 
     /** RuntimeContext 中意图类别的属性键（值为 IntentType.name()） */
     public static final String CTX_INTENT_KEY = "travelscope.intent";
