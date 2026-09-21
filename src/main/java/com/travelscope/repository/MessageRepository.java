@@ -46,8 +46,8 @@ public interface MessageRepository extends JpaRepository<Message, Long> {
                 COALESCE(SUM(m.token_count), 0) AS totalTokens
             FROM messages m
             WHERE (:userId IS NULL OR m.user_id = :userId)
-              AND (:dateFrom IS NULL OR CAST(m.created_at AS DATE) >= :dateFrom)
-              AND (:dateTo IS NULL OR CAST(m.created_at AS DATE) <= :dateTo)
+              AND (CAST(:dateFrom AS DATE) IS NULL OR CAST(m.created_at AS DATE) >= CAST(:dateFrom AS DATE))
+              AND (CAST(:dateTo AS DATE) IS NULL OR CAST(m.created_at AS DATE) <= CAST(:dateTo AS DATE))
             GROUP BY m.user_id, COALESCE(m.model_name, 'unknown'), CAST(m.created_at AS DATE)
             ORDER BY usageDate DESC, m.user_id, modelName
             """, nativeQuery = true)

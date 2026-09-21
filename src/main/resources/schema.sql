@@ -205,7 +205,7 @@ COMMENT ON COLUMN document_chunks.created_at IS '创建时间';
 -- 初始化：创建默认管理员用户（密码: admin123，BCrypt加密）
 -- ============================================================================
 INSERT INTO users (username, password, nickname, role, status)
-SELECT 'admin', '$2a$10$N.ZOn9G6/YLFixA4MgRk.u0SSaQgEq5T7lPfJ3xKwF9QN6IcKjK5G', '管理员', 'admin', 1
+SELECT 'admin', '$2a$10$fVs0gHHOT/aJctFwfzit0efOZI8xknzWUJV0dxFE7M7hdCUlgj3ea', '管理员', 'admin', 1
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'admin');
 
 -- ============================================================================
