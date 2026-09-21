@@ -364,6 +364,11 @@ public class AgentConfig {
                 .modelResolver(name -> dashscopeChatModel)
                 .toolkit(toolkit)
                 .maxIters(TravelMasterAgent.MAX_ITERS)
+                // 挂起的工具调用自动补错误结果继续（2026-09-21）：长规划链路被泳道超时/客户端断开/
+                // 同会话并发打断后，会话状态残留 pending tool_use（无 result）——默认 false 时该会话
+                // 后续每条消息都抛 IllegalStateException（Pending tool calls exist without results），
+                // 会话永久卡死。开启后框架自动为 pending 调用生成错误结果，对话可继续。
+                .enablePendingToolRecovery(true)
                 // 责任链：意图路由（onSystemPrompt 注入本轮路由指令）
                 //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
                 //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
@@ -482,6 +487,8 @@ public class AgentConfig {
                             ? dashscopeReviewerModel : dashscopeChatModel)
                     .toolkit(toolkit)
                     .maxIters(ItineraryAgent.MAX_ITERS)
+                    // 挂起工具调用自动补错误结果（与 master 同款，防链路打断后 spawn 卡死）
+                    .enablePendingToolRecovery(true)
                     .permissionContext(PermissionContextState.builder()
                             .mode(PermissionMode.BYPASS)
                             .build())

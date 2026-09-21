@@ -40,12 +40,15 @@ public class RequirementTools {
 
     /**
      * 解析主会话 ID（状态键的会话维度）：
-     * ① 参数为 conv- 前缀 → 直接信任（master/planning-agent 显式传值）
+     * ① 参数为合法主会话格式（conv-数字）→ 直接信任（master/planning-agent 显式传值）。
+     *    刻意要求「conv-数字」而不仅 conv- 前缀——实测 intake 偶尔把参数填成框架生成的
+     *    UUID 会话号（conv-05c5fa75-…，同样以 conv- 开头），骗过前缀检查后状态写进
+     *    孤儿键，主会话键上字段丢失（2026-09-21 E2E 复现）。
      * ② 否则从 ctx 的协作目录键解析（tasks/conv-29 → conv-29；intake-agent 子代理继承 master 注入）
      * ③ 都没有 → 回退参数原值（保持旧行为，日志可查）
      */
     private static String resolveSessionId(String sessionId, RuntimeContext ctx) {
-        if (sessionId != null && sessionId.startsWith("conv-")) {
+        if (isMainSessionId(sessionId)) {
             return sessionId;
         }
         Object collabDir = ctx.get(CTX_COLLAB_DIR_KEY);
@@ -53,10 +56,21 @@ public class RequirementTools {
             String dir = String.valueOf(collabDir);
             int idx = dir.lastIndexOf('/');
             if (idx >= 0 && idx < dir.length() - 1) {
-                return dir.substring(idx + 1);
+                String parsed = dir.substring(idx + 1);
+                if (isMainSessionId(parsed)) {
+                    return parsed;
+                }
             }
         }
+        if (sessionId != null && !sessionId.isBlank()) {
+            log.warn("sessionId 参数非主会话格式（{}），已回退 ctx 协作目录/原值解析", sessionId);
+        }
         return sessionId;
+    }
+
+    /** 主会话 ID 格式：conv- + 纯数字（conversations 表主键） */
+    private static boolean isMainSessionId(String sessionId) {
+        return sessionId != null && sessionId.matches("conv-\\d+");
     }
 
     /**
@@ -105,10 +119,15 @@ public class RequirementTools {
                     + "（缺项标注「待确认」）并返回「信息已收齐（部分待确认）」。";
         }
         // 返回值经 ToolResultTextDelta 流向 SSE 层：分号前是用户可见的反问（clarify_question 事件截取），
-        // 分号后是给 LLM 的轮次提示（不出现在事件里）
+        // 分号后是给 LLM 的轮次提示（不出现在事件里）。附带已收集字段摘要是失忆修复 Fix 4：
+        // 硬提醒 intake「这些字段已经问过了，绝不能再问」——防止无视 get_missing_fields
+        // 重复追问已答过的目的地/出发城市（2026-09-21 实测复现过）
         return question + ";;[intake]反问已发送给用户（第 " + s.clarifyCycles + "/"
                 + TripRequirementStore.MAX_CLARIFY_CYCLES
-                + " 轮），等待用户下轮回答后由主 Agent 重新委派你继续";
+                + " 轮），等待用户下轮回答后由主 Agent 重新委派你继续。"
+                + "当前已收集: " + s.collectedDescription()
+                + "。已收集的字段绝不能再次反问；下轮继续时先 update_requirement_state 写回新信息，"
+                + "再 get_missing_fields 确认剩余缺项";
     }
 
     /**

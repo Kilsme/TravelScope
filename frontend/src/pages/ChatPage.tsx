@@ -30,8 +30,23 @@ function ChatPage() {
   }, [])
 
   useEffect(() => {
-    refreshConversations()
-  }, [refreshConversations])
+    // 挂载时自动选中最近会话：activeId 为 null 时发消息会触发后端自动新建会话，
+    // 而 SSE 流不回传新会话 ID → activeId 永远为 null → 每条消息各建一个会话
+    // （意图缓存/需求状态机/Agent 记忆全部按会话隔离，等于每条消息全部失忆）
+    ;(async () => {
+      try {
+        const list = await listConversations()
+        setConversations(list)
+        if (list.length > 0) {
+          setActiveId(list[0].id) // 列表按 updatedAt 倒序，[0] 即最近会话
+          const history = await listMessages(list[0].id)
+          setMessages(history.map((m) => ({ id: m.id, role: m.role, content: m.content })))
+        }
+      } catch (e) {
+        console.error('加载会话列表失败', e)
+      }
+    })()
+  }, [])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -63,12 +78,35 @@ function ChatPage() {
     setStreaming(true)
     abortRef.current = false
 
+    // 无激活会话时先显式新建并锁定 ID：否则后端自动建会话但 SSE 不回传 ID，
+    // activeId 保持 null，下一条消息又会新建一个会话（跨轮上下文全部丢失）
+    let convId = activeId
+    if (convId == null) {
+      try {
+        const conv = await createConversation()
+        convId = conv.id
+        setActiveId(conv.id)
+        await refreshConversations()
+      } catch (e) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const cur = { ...next[next.length - 1] }
+          cur.content += `\n\n⚠️ ${e instanceof Error ? e.message : '创建会话失败'}`
+          cur.streaming = false
+          next[next.length - 1] = cur
+          return next
+        })
+        setStreaming(false)
+        return
+      }
+    }
+
     const userMsg: ChatMessage = { role: 'user', content: text }
     const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, toolCalls: [] }
     setMessages((prev) => [...prev, userMsg, assistantMsg])
 
     try {
-      await streamChat(activeId, text, (event: ChatEvent) => {
+      await streamChat(convId, text, (event: ChatEvent) => {
         if (abortRef.current) return false
         setMessages((prev) => {
           const next = [...prev]

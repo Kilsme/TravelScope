@@ -7,6 +7,7 @@ import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
 import com.travelscope.dto.ChatEvent;
 import com.travelscope.dto.IntentResult;
+import com.travelscope.dto.TripRequirementState;
 import com.travelscope.entity.Conversation;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
@@ -63,6 +64,9 @@ public class ChatService {
     private final LlmGateway llmGateway;
     /** RAG 检索 topK（travelscope.rag.top-k，原硬编码 5） */
     private final int ragTopK;
+    /** 对话历史渲染器（travelscope.chat-history.*；enabled=false 时 render 返回空串） */
+    private final ChatHistoryRenderer chatHistoryRenderer;
+    private final boolean historyEnabled;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -80,6 +84,10 @@ public class ChatService {
         this.tripRequirementStore = tripRequirementStore;
         this.llmGateway = llmGateway;
         this.ragTopK = appProperties.getRag().getTopK();
+        this.chatHistoryRenderer = new ChatHistoryRenderer(
+                appProperties.getChatHistory().getRounds(),
+                appProperties.getChatHistory().getMaxCharsPerMessage());
+        this.historyEnabled = appProperties.getChatHistory().isEnabled();
     }
 
     /**
@@ -152,6 +160,28 @@ public class ChatService {
         if (result != null && result.toIntentType() == IntentType.RAG) {
             log.info("意图=RAG，知识库可用: {}（不可用时由路由指令回退为直接回答）", ragService.isAvailable());
         }
+        // 收集期意图保护（失忆修复 Fix 3）：intake 正在反问等回答时，用户的短回答
+        // （如「长春」「三天」）不含 L0 延续词、单条消息 L2 也判不出 PLANNING → 被判 CHAT
+        // → 脱离规划流（master 只回通用文本）。这里在代码层覆盖：需求状态机处于 COLLECTING
+        // 且分类为 CHAT → 强制 PLANNING（回流 intake 更新状态机）。TOOL_CALL/RAG 不覆盖
+        // （用户明确要查天气/查票时正常放行）。
+        if (result != null && result.toIntentType() == IntentType.CHAT) {
+            String reqSessionId = SESSION_PREFIX + conversationId;
+            TripRequirementState state = tripRequirementStore.get(String.valueOf(userId), reqSessionId);
+            // COLLECTING 且已开始收集（有任一已收集字段或已反问过）才覆盖——
+            // 全新会话的真闲聊不应被拉进规划流
+            boolean collecting = state != null
+                    && state.status == TripRequirementState.Status.COLLECTING
+                    && (state.missingFields().size() < TripRequirementState.REQUIRED_FIELDS.size()
+                    || state.clarifyCycles > 0);
+            if (collecting) {
+                log.info("intent_override=PLANNING reason=requirement_collecting 会话={} 原判定=CHAT"
+                                + "（已收集: {}，反问第 {} 轮）", reqSessionId,
+                        state.collectedDescription(), state.clarifyCycles);
+                return new com.travelscope.dto.IntentResult(IntentType.PLANNING.name(),
+                        "收集期意图保护：需求收集进行中，短回答按 PLANNING 处理");
+            }
+        }
         return result;
     }
 
@@ -192,6 +222,16 @@ public class ChatService {
                         + "；sessionId: " + agentSessionIdForReq
                         + "。禁止自己反问用户。\n\n【用户消息】" + userMessage;
                 log.info("注入 intake 委派指令（需求未收齐）: 会话={}", agentSessionIdForReq);
+            }
+        }
+        // 对话历史注入（失忆修复 Fix 2，全部意图生效）：近 N 轮 messages 表历史前置——
+        // 用户短回答（如「长春」）时 master 仍能看到之前聊过什么；同时兜底框架
+        // InMemory 记忆在进程重启后丢失的场景。末条为本轮消息，render 内部已排除。
+        if (historyEnabled) {
+            String historyBlock = chatHistoryRenderer.render(
+                    conversationService.listMessages(conversation.getId()));
+            if (!historyBlock.isBlank()) {
+                outgoing = historyBlock + "\n【本轮用户消息】\n" + outgoing;
             }
         }
 

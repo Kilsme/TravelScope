@@ -47,6 +47,20 @@ public class AppProperties {
     /** LLM Gateway 配置（FR-S09） */
     private LlmGatewayConfig llmGateway = new LlmGatewayConfig();
 
+    /** 对话历史注入配置（多轮上下文，2026-09-21 失忆修复） */
+    private ChatHistoryConfig chatHistory = new ChatHistoryConfig();
+
+    /** 对话历史注入配置：把近 N 轮 messages 表历史前置到发给主 Agent 的本轮消息 */
+    @Data
+    public static class ChatHistoryConfig {
+        /** 是否注入对话历史（false = 只发本轮消息，旧行为） */
+        private boolean enabled = true;
+        /** 保留最近几轮（1 轮 = 1 user + 1 assistant） */
+        private int rounds = 3;
+        /** 每条历史消息截断长度（字符） */
+        private int maxCharsPerMessage = 400;
+    }
+
     @Data
     public static class DashScopeConfig {
         /** 通义千问 API Key */

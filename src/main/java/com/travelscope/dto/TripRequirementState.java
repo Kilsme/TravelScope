@@ -86,7 +86,10 @@ public class TripRequirementState {
         return sb.toString();
     }
 
-    private String collectedDescription() {
+    /**
+     * 已收集字段的摘要（「目的地=长春; 天数=3」形式；供日志与 ask_user 附带提醒复用）
+     */
+    public String collectedDescription() {
         List<String> parts = new ArrayList<>();
         if (!isBlank(destination)) {
             parts.add("目的地=" + destination);
