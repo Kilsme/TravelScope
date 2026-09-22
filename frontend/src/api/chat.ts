@@ -4,7 +4,12 @@ import { apiFetch } from './auth'
 const BASE = '/api/chat'
 
 /**
- * 手写 SSE 解析：按空行分块，取 event: 与 data: 字段
+ * 手写 SSE 解析：按空行分块，取 event: 与 data: 字段。
+ * <p>
+ * 标准 SSE 语义：一个事件块内可以有多个 data: 行，内容为各行去前缀后 join("\n")——
+ * Spring SseEmitter 对含换行的 payload 正是这样拆行发送的。此前用单行正则只取第一个
+ * data: 行，多行内容的后续行整段丢失且带字面 "data:" 前缀渲染进正文（实测 bug）。
+ * </p>
  */
 async function* parseSse(reader: ReadableStreamDefaultReader<Uint8Array>) {
   const decoder = new TextDecoder()
@@ -16,11 +21,13 @@ async function* parseSse(reader: ReadableStreamDefaultReader<Uint8Array>) {
     const parts = buf.split('\n\n')
     buf = parts.pop()!
     for (const part of parts) {
-      const event = /^event:\s*(.+)$/m.exec(part)?.[1]
-      const data = /^data:\s?([\s\S]*)$/m.exec(part)?.[1] ?? ''
-      if (event) {
-        yield { event, data } as ChatEvent
-      }
+      const lines = part.split('\n')
+      const event = lines.map((l) => /^event:\s?(.*)$/.exec(l)?.[1]).find(Boolean)
+      if (!event) continue
+      const dataLines = lines
+        .map((l) => /^data:\s?(.*)$/.exec(l)?.[1] ?? (l.startsWith('data:') ? '' : null))
+        .filter((l): l is string => l !== null)
+      yield { event, data: dataLines.join('\n') } as ChatEvent
     }
   }
 }

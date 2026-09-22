@@ -170,6 +170,116 @@
   color: #047857;
 }
 
+/* ==================== Agent 活动流（过程/结果分离，2026-09-22） ==================== */
+/* 气泡下方的小字活动流：委派/工具调用/思考摘要在这里滚动，正文只留最终结果 */
+.activity-wrap {
+  align-self: flex-start;
+  margin-left: 4px;
+  width: 76%;
+}
+
+.activity-stream {
+  margin-top: -8px;
+  padding: 6px 10px;
+  background: #f6f7fa;
+  border: 1px solid #e8ebf1;
+  border-radius: 8px;
+}
+
+.activity-toggle {
+  all: unset;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a94a6;
+  user-select: none;
+}
+
+.activity-items {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: Consolas, monospace;
+  color: #6b7688;
+}
+
+.activity-item.faded {
+  opacity: 0.45; /* 旧条目淡出，视觉焦点保持在最新活动 */
+}
+
+.activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.activity-dot.dot-running {
+  background: #f59e0b;
+  animation: blink 1s infinite;
+}
+
+.activity-dot.dot-success {
+  background: #10b981;
+}
+
+.activity-dot.dot-failed {
+  background: #ef4444;
+}
+
+.activity-dot.dot-thinking {
+  background: #6366f1;
+}
+
+.activity-agent {
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.activity-action {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Markdown 正文渲染（最终方案含标题/表格） */
+.bubble .markdown-body :first-child {
+  margin-top: 0;
+}
+
+.bubble .markdown-body :last-child {
+  margin-bottom: 0;
+}
+
+.bubble .markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.bubble .markdown-body th,
+.bubble .markdown-body td {
+  border: 1px solid #e5e8ef;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.bubble .markdown-body th {
+  background: #f6f7fa;
+}
+
+.bubble-content.phase-hint {
+  color: #8a94a6;
+}
+
 .cursor {
   animation: blink 1s infinite;
   color: #3b82f6;

@@ -236,19 +236,54 @@ public class ChatService {
         }
 
         UserMessage msg = new UserMessage(outgoing);
-        // 快慢泳道（FR-S09）：PLANNING → 慢泳道 60s；其余（CHAT/TOOL_CALL/RAG/null）→ 快泳道 5s。
+        // 快慢泳道（FR-S09）：PLANNING → 慢泳道 300s；其余（CHAT/TOOL_CALL/RAG/null）→ 快泳道。
         // 查询类不被进行中的长规划拖慢（独立链路 + 各自超时保护），超时 → SSE error 兜底文案
         Duration laneTimeout = llmGateway.laneTimeout(type == IntentType.PLANNING);
+        boolean planning = type == IntentType.PLANNING;
+        // THINKING 聚合句发射通道（accumulateThinking → Sinks.Many → mergeWith 回 SSE 流）：
+        // 主流 doFinally 时 emitComplete——mergeWith 等两条流都完成才结束，Flux.create+轮询线程
+        // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送
+        reactor.core.publisher.Sinks.Many<ChatEvent> thinkingSink =
+                reactor.core.publisher.Sinks.many().unicast().onBackpressureBuffer();
+        this.thinkingEmitter = payload -> thinkingSink.tryEmitNext(
+                ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
+        this.thinkingBuf.setLength(0);
+        this.thinkingFull.setLength(0);
         return travelMasterAgent.streamEvents(msg, ctx)
                 // 主 Agent 自身事件 + intake-agent 转发的 ask_user 反问（转 clarify_question）
                 .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))
                 .doOnNext(event -> {
+                    // 过程/结果分离（2026-09-22）：PLANNING 轮 master 的过程文本不进 replyBuf——
+                    // replyBuf 只保留给最终方案（done/入库），过程叙述按句聚合后进活动流
                     if (event instanceof TextBlockDeltaEvent e) {
-                        replyBuf.append(e.getDelta());
+                        if (!planning) {
+                            replyBuf.append(e.getDelta());
+                        } else {
+                            accumulateThinking(e.getDelta());
+                        }
+                    }
+                    // intake 反问文本进 replyBuf：反问轮无最终方案文件，done/入库需要内容
+                    if (event instanceof ToolResultTextDeltaEvent e && isClarifyEvent(e)) {
+                        String delta = e.getDelta();
+                        int cut = delta != null ? delta.indexOf(";;") : -1;
+                        if (cut > 0) {
+                            replyBuf.append(delta, 0, cut);
+                        }
                     }
                 })
-                .mapNotNull(this::toChatEvent)
+                .mapNotNull(event -> toChatEvent(event, planning))
                 .timeout(laneTimeout)
+                .doFinally(signal -> {
+                    // 残留缓冲 flush + 关闭 THINKING 通道（mergeWith 需两流都 complete）
+                    if (planning && !thinkingBuf.isEmpty()) {
+                        String rest = thinkingBuf.toString().strip();
+                        thinkingBuf.setLength(0);
+                        if (!rest.isEmpty()) {
+                            emitThinking(rest);
+                        }
+                    }
+                    thinkingSink.tryEmitComplete();
+                })
                 .onErrorResume(e -> {
                     if (e instanceof java.util.concurrent.TimeoutException) {
                         log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
@@ -259,7 +294,9 @@ public class ChatService {
                     log.error("Agent 执行异常: conversationId={}", conversation.getId(), e);
                     return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
                             sseFallbackMessage(e)));
-                });
+                })
+                // THINKING 聚合句与主事件流合并（主流 complete 时 sink 同步关闭）
+                .mergeWith(thinkingSink.asFlux());
     }
 
     /**
@@ -287,8 +324,18 @@ public class ChatService {
 
     /**
      * AgentEvent → SSE 事件映射（非推送事件返回 null 被过滤）
+     * <p>
+     * 过程/结果分离（2026-09-22 改造）：
+     * <ul>
+     *   <li>工具调用 → {@code agent_status} 事件（结构化 JSON：agent/action/state），
+     *       前端以气泡下方小字活动流渲染，不再发 tool 裸字符串</li>
+     *   <li>master 文本：非 PLANNING 意图 → delta（正文流式，旧行为）；
+     *       PLANNING 意图 → agent_status 的 THINKING 摘要（过程叙述进活动流，正文留给最终方案）</li>
+     *   <li>done 的最终方案文本在 handleComplete 生成（PLANNING 轮从协作目录整合）</li>
+     * </ul>
+     * </p>
      */
-    private ChatEvent toChatEvent(AgentEvent event) {
+    private ChatEvent toChatEvent(AgentEvent event, boolean planning) {
         if (event instanceof ToolResultTextDeltaEvent e && isClarifyEvent(e)) {
             // 截取 ;; 前的反问本身（其后是给 LLM 的轮次提示，不推给用户）
             String delta = e.getDelta();
@@ -299,19 +346,98 @@ public class ChatService {
                     : ChatEvent.of(ChatEvent.TYPE_CLARIFY_QUESTION, question);
         }
         if (event instanceof TextBlockDeltaEvent e) {
-            return ChatEvent.of(ChatEvent.TYPE_DELTA, e.getDelta());
+            if (!planning) {
+                return ChatEvent.of(ChatEvent.TYPE_DELTA, e.getDelta());
+            }
+            return null; // PLANNING 轮过程文本经 thinkingStatus 缓冲聚合后按句推送（见 doOnNext）
         }
         if (event instanceof ToolCallStartEvent e) {
-            return ChatEvent.of(ChatEvent.TYPE_TOOL, e.getToolCallName());
+            // 注：agent_spawn 的 Start 事件在门禁 onActing（能拿到入参）之前发射，
+            // toolUseId→agent_id 注册来不及——显示工具名本身，前端可见「委派」动作发生
+            return agentStatus(e.getSource(), e.getToolCallName(), "RUNNING");
         }
         if (event instanceof ToolResultEndEvent e) {
-            return ChatEvent.of(ChatEvent.TYPE_TOOL,
-                    e.getToolCallName() + ":" + (e.getState() != null ? e.getState().name() : "UNKNOWN"));
+            String state = e.getState() != null ? e.getState().name() : "UNKNOWN";
+            return agentStatus(e.getSource(), e.getToolCallName(), state);
         }
         if (event instanceof AgentEndEvent) {
             return null; // 结束事件在流完成回调中统一处理
         }
         return null;
+    }
+
+    /**
+     * 构造 agent_status 事件（payload JSON：agent/action/state）
+     *
+     * @param source 事件源（null = 主 Agent；"conv-x/intake-agent" 形态解析出子代理名）
+     */
+    private ChatEvent agentStatus(String source, String action, String state) {
+        String agent = "travel-master";
+        if (source != null && source.contains("/")) {
+            agent = source.substring(source.lastIndexOf('/') + 1);
+        }
+        JSONObject payload = new JSONObject();
+        payload.put("agent", agent);
+        payload.put("action", action);
+        payload.put("state", state);
+        return ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload.toJSONString());
+    }
+
+    /**
+     * PLANNING 轮 master 过程思考的聚合缓冲：流式 delta 分片很小（几个字），
+     * 直接逐条发活动流会被切碎——攒到句读（。！？\n）或 80 字上限才作为一条 THINKING 推送。
+     * thinkingFull 留全文副本：master 同轮直调工具后直接输出完整方案文本（未走 planner
+     * 产文件路径）时，它是唯一的结果载体（handleComplete 兜底取用）。
+     */
+    private final StringBuilder thinkingBuf = new StringBuilder();
+    private final StringBuilder thinkingFull = new StringBuilder();
+
+    private void accumulateThinking(String delta) {
+        if (delta == null || delta.isBlank()) {
+            return;
+        }
+        thinkingBuf.append(delta);
+        thinkingFull.append(delta);
+        // 按句读切段推送
+        int idx;
+        while ((idx = endOfSentence(thinkingBuf)) >= 0) {
+            String sentence = thinkingBuf.substring(0, idx).strip();
+            thinkingBuf.delete(0, idx);
+            if (!sentence.isEmpty()) {
+                emitThinking(sentence);
+            }
+        }
+        // 超长无句读（模型连续输出无标点文本）：80 字硬切
+        if (thinkingBuf.length() >= 80) {
+            String chunk = thinkingBuf.toString().strip();
+            thinkingBuf.setLength(0);
+            emitThinking(chunk);
+        }
+    }
+
+    /** 找到第一个句读结束位置（含标点）；无则 -1 */
+    private static int endOfSentence(StringBuilder buf) {
+        for (int i = 0; i < buf.length(); i++) {
+            char c = buf.charAt(i);
+            if (c == '。' || c == '！' || c == '？' || c == '\n' || c == ';' || c == '；') {
+                return i + 1;
+            }
+        }
+        return -1;
+    }
+
+    /** 当前会话的 THINKING 事件发射器（runAgent 装配时注入，把聚合句塞回 SSE 流） */
+    private java.util.function.Consumer<String> thinkingEmitter = s -> { };
+
+    private void emitThinking(String sentence) {
+        if (sentence.length() > 60) {
+            sentence = sentence.substring(0, 60) + "…";
+        }
+        JSONObject payload = new JSONObject();
+        payload.put("agent", "travel-master");
+        payload.put("action", sentence);
+        payload.put("state", "THINKING");
+        thinkingEmitter.accept(payload.toJSONString());
     }
 
     /**
@@ -373,6 +499,29 @@ public class ChatService {
 
     private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation, Long userId) {
         llmGateway.release(String.valueOf(userId));
+        // 过程/结果分离（2026-09-22）：PLANNING 轮 replyBuf 为空（过程文本未进缓冲），
+        // 最终方案从协作目录整合生成——itinerary_draft.md 优先，缺则 execution_result.md；
+        // 两者都无（规划中途结束/仅反问轮）保持原样（可能为空，前端显示活动流即可）
+        String reply = replyBuf.toString();
+        if (reply.isBlank()) {
+            String assembled = assemblePlanningReply(String.valueOf(userId),
+                    SESSION_PREFIX + conversation.getId());
+            if (assembled == null) {
+                // 兜底：master 同轮直调工具后直接输出了完整方案文本（未走 planner 产
+                // itinerary_draft 的路径）——THINKING 全文副本就是方案本体（>300 字才算方案，
+                // 少于则是纯过程叙述如反问轮）
+                String full = thinkingFull.toString().strip();
+                if (full.length() > 300) {
+                    assembled = full;
+                    log.info("PLANNING 最终方案取自 master 当轮输出（无协作产物文件）: {} 字符", full.length());
+                }
+            }
+            if (assembled != null) {
+                reply = assembled;
+                replyBuf.setLength(0);
+                replyBuf.append(reply);
+            }
+        }
         persistReply(conversation, userId, replyBuf);
         // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
         // （review_passed.md 优先，回炉超限场景退化为最近一次 review_report.md）
@@ -393,6 +542,36 @@ public class ChatService {
             // 客户端已断开
         }
         emitter.complete();
+    }
+
+    /**
+     * PLANNING 轮最终方案整合（过程/结果分离改造的数据源）：
+     * itinerary_draft.md 优先（planner 产出的完整方案）；缺失时退化 execution_result.md；
+     * 都无返回 null（本轮没走到方案产出，如反问轮/中途失败——正文为空，活动流已展示过程）。
+     */
+    private String assemblePlanningReply(String userId, String agentSessionId) {
+        try {
+            java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
+            java.nio.file.Path draft = dir.resolve(TaskWorkspaceService.FILE_ITINERARY_DRAFT);
+            if (java.nio.file.Files.exists(draft)) {
+                String content = java.nio.file.Files.readString(draft, java.nio.charset.StandardCharsets.UTF_8);
+                if (!content.isBlank()) {
+                    log.info("PLANNING 最终方案取自 itinerary_draft.md: 会话={}, {} 字符", agentSessionId, content.length());
+                    return content;
+                }
+            }
+            java.nio.file.Path execution = dir.resolve(TaskWorkspaceService.FILE_EXECUTION_RESULT);
+            if (java.nio.file.Files.exists(execution)) {
+                String content = java.nio.file.Files.readString(execution, java.nio.charset.StandardCharsets.UTF_8);
+                if (!content.isBlank()) {
+                    log.info("PLANNING 最终方案取自 execution_result.md: 会话={}, {} 字符", agentSessionId, content.length());
+                    return content;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("读取协作目录整合最终方案失败: {}", e.getMessage());
+        }
+        return null;
     }
 
     /**

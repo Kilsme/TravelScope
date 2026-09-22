@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
-import type { ChatMessage, ChatEvent, Conversation, IntentPayload } from '../types'
+import type { AgentActivity, ChatMessage, ChatEvent, Conversation, IntentPayload } from '../types'
 
 const INTENT_LABELS: Record<string, string> = {
   CHAT: '💬 闲聊咨询',
@@ -10,6 +10,57 @@ const INTENT_LABELS: Record<string, string> = {
   PLANNING: '🗺️ 行程规划',
   RAG: '📚 知识库问答',
   UNKNOWN: '❓ 未识别',
+}
+
+/** 活动流状态 → 圆点样式（RUNNING 黄 / SUCCESS 绿 / FAILED 红 / THINKING 蓝） */
+const ACTIVITY_DOT: Record<string, string> = {
+  RUNNING: 'dot-running',
+  SUCCESS: 'dot-success',
+  FAILED: 'dot-failed',
+  THINKING: 'dot-thinking',
+}
+
+/** 活动流子代理名 → 中文可读名 */
+const AGENT_LABELS: Record<string, string> = {
+  'travel-master': '主规划',
+  'intake-agent': '需求收集',
+  'planning-agent': '行程规划',
+  'poi-research': '景点调研',
+  'route-optimizer': '路线优化',
+  'reviewer-agent': '质量评审',
+}
+
+/**
+ * Agent 活动流小字区（2026-09-22 过程/结果分离改造）：
+ * 气泡下方灰色小字流式滚动（最近 4 条，更旧的淡出），点击标题栏折叠。
+ * 过程叙述（委派/工具调用/思考摘要）在这里展示，正文只留最终结果。
+ */
+function ActivityStream({ activities }: { activities: AgentActivity[] }) {
+  const [collapsed, setCollapsed] = useState(false)
+  if (!activities || activities.length === 0) return null
+  // RUNNING 条目若已有同名 SUCCESS/FAILED 后续条目，则隐藏中间 RUNNING（减噪）
+  const resolved = new Set(
+    activities.filter((a) => a.state === 'SUCCESS' || a.state === 'FAILED').map((a) => a.action),
+  )
+  const visible = activities.filter((a) => !(a.state === 'RUNNING' && resolved.has(a.action)))
+  return (
+    <div className={`activity-stream ${collapsed ? 'collapsed' : ''}`}>
+      <button className="activity-toggle" onClick={() => setCollapsed((c) => !c)}>
+        ⚙️ Agent 活动（{visible.length}）{collapsed ? ' ▸' : ' ▾'}
+      </button>
+      {!collapsed && (
+        <div className="activity-items">
+          {visible.slice(-4).map((a, i, arr) => (
+            <div key={i} className={`activity-item ${i < arr.length - 1 ? 'faded' : ''}`}>
+              <span className={`activity-dot ${ACTIVITY_DOT[a.state] ?? 'dot-thinking'}`} />
+              <span className="activity-agent">{AGENT_LABELS[a.agent] ?? a.agent}</span>
+              <span className="activity-action">{a.action}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function ChatPage() {
@@ -102,7 +153,7 @@ function ChatPage() {
     }
 
     const userMsg: ChatMessage = { role: 'user', content: text }
-    const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, toolCalls: [] }
+    const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, activities: [] }
     setMessages((prev) => [...prev, userMsg, assistantMsg])
 
     try {
@@ -127,7 +178,19 @@ function ChatPage() {
               break
             }
             case 'tool': {
-              cur.toolCalls = [...(cur.toolCalls ?? []), event.data]
+              // 兼容旧事件（后端已废弃为 agent_status，防御性保留）
+              cur.activities = [...(cur.activities ?? []), { agent: 'tool', action: event.data, state: 'RUNNING' }]
+              break
+            }
+            case 'agent_status': {
+              // Agent 活动流（2026-09-22 过程/结果分离）：工具调用/子代理委派/过程思考
+              // 累积到气泡下方的小字活动流，不进正文
+              try {
+                const a = JSON.parse(event.data) as AgentActivity
+                cur.activities = [...(cur.activities ?? []), a]
+              } catch {
+                /* 忽略解析失败 */
+              }
               break
             }
             case 'clarify_question': {
@@ -146,7 +209,7 @@ function ChatPage() {
               break
             }
             case 'error': {
-              cur.content += `\n\n⚠️ ${event.data}`
+              cur.content += `${cur.content ? '\n\n' : ''}⚠️ ${event.data}`
               cur.streaming = false
               break
             }
@@ -221,26 +284,35 @@ function ChatPage() {
                 {msg.intent && (
                   <span className="intent-badge">{INTENT_LABELS[msg.intent] ?? msg.intent}</span>
                 )}
-                {msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <div className="tool-chips">
-                    {msg.toolCalls.map((tool, i) => (
-                      <span key={i} className={`tool-chip ${tool.includes(':') ? 'done' : 'running'}`}>
-                        🛠 {tool.replace(':', ' · ')}
-                      </span>
-                    ))}
-                  </div>
+                {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 → 阶段占位 */}
+                {msg.role === 'assistant' ? (
+                  msg.content ? (
+                    <div className="bubble-content markdown-body">
+                      <Markdown>{msg.content}</Markdown>
+                    </div>
+                  ) : msg.streaming ? (
+                    <div className="bubble-content phase-hint">
+                      {msg.intent === 'PLANNING' ? '🗺 正在为您规划行程，过程见下方活动流…' : '思考中…'}
+                    </div>
+                  ) : null
+                ) : (
+                  <div className="bubble-content">{msg.content}</div>
                 )}
-      <div className="bubble-content">{msg.content || (msg.streaming ? '思考中…' : '')}</div>
-      {msg.reviewReport && (
-        <details className="review-report">
-          <summary>📋 质检评分明细</summary>
-          <div className="review-report-body">
-            <Markdown>{msg.reviewReport}</Markdown>
-          </div>
-        </details>
-      )}
-      {msg.streaming && <span className="cursor">▌</span>}
+                {msg.streaming && <span className="cursor">▌</span>}
+                {msg.reviewReport && (
+                  <details className="review-report">
+                    <summary>📋 质检评分明细</summary>
+                    <div className="review-report-body">
+                      <Markdown>{msg.reviewReport}</Markdown>
+                    </div>
+                  </details>
+                )}
               </div>
+              {msg.role === 'assistant' && msg.activities && msg.activities.length > 0 && (
+                <div className="activity-wrap">
+                  <ActivityStream activities={msg.activities} />
+                </div>
+              )}
             </div>
           ))}
           <div ref={bottomRef} />
