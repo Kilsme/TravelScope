@@ -1,0 +1,446 @@
+.app {
+  display: flex;
+  height: 100%;
+}
+
+/* ==================== 侧边栏 ==================== */
+.sidebar {
+  width: 260px;
+  background: #1e2a3a;
+  color: #dde3ec;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.new-chat-btn {
+  margin: 16px;
+  padding: 10px;
+  border: 1px dashed #5a6b82;
+  border-radius: 8px;
+  background: transparent;
+  color: #dde3ec;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.new-chat-btn:hover {
+  background: #2a3a50;
+}
+
+.conversation-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 16px;
+}
+
+.conversation-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.conversation-item:hover {
+  background: #2a3a50;
+}
+
+.conversation-item.active {
+  background: #34495e;
+}
+
+.conversation-title {
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conversation-time {
+  font-size: 11px;
+  color: #7d8ba1;
+  margin-top: 3px;
+}
+
+/* ==================== 聊天区 ==================== */
+.chat-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-header {
+  padding: 14px 24px;
+  background: #fff;
+  border-bottom: 1px solid #e5e8ef;
+  font-size: 16px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.message-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+.empty-hint {
+  text-align: center;
+  margin-top: 18vh;
+  color: #8a94a6;
+}
+
+.empty-hint h2 {
+  margin-bottom: 10px;
+  color: #5a6b82;
+}
+
+/* ==================== 消息气泡 ==================== */
+.message-row {
+  display: flex;
+  margin-bottom: 16px;
+}
+
+.message-row.user {
+  justify-content: flex-end;
+}
+
+.message-row.assistant {
+  justify-content: flex-start;
+}
+
+.bubble {
+  max-width: 76%;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble.user {
+  background: #3b82f6;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.bubble.assistant {
+  background: #fff;
+  color: #2c3e50;
+  border: 1px solid #e5e8ef;
+  border-bottom-left-radius: 4px;
+}
+
+.intent-badge {
+  display: inline-block;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #eef2ff;
+  color: #6366f1;
+  margin-bottom: 8px;
+}
+
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-chip {
+  font-size: 11px;
+  font-family: Consolas, monospace;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.tool-chip.running {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.tool-chip.done {
+  background: #d1fae5;
+  color: #047857;
+}
+
+/* ==================== Agent 活动流（过程/结果分离，2026-09-22） ==================== */
+/* 气泡下方的小字活动流：委派/工具调用/思考摘要在这里滚动，正文只留最终结果 */
+.activity-wrap {
+  align-self: flex-start;
+  margin-left: 4px;
+  width: 76%;
+}
+
+.activity-stream {
+  margin-top: -8px;
+  padding: 6px 10px;
+  background: #f6f7fa;
+  border: 1px solid #e8ebf1;
+  border-radius: 8px;
+}
+
+.activity-toggle {
+  all: unset;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a94a6;
+  user-select: none;
+}
+
+.activity-items {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-family: Consolas, monospace;
+  color: #6b7688;
+}
+
+.activity-item.faded {
+  opacity: 0.45; /* 旧条目淡出，视觉焦点保持在最新活动 */
+}
+
+.activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.activity-dot.dot-running {
+  background: #f59e0b;
+  animation: blink 1s infinite;
+}
+
+.activity-dot.dot-success {
+  background: #10b981;
+}
+
+.activity-dot.dot-failed {
+  background: #ef4444;
+}
+
+.activity-dot.dot-thinking {
+  background: #6366f1;
+}
+
+.activity-agent {
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.activity-action {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Markdown 正文渲染（最终方案含标题/表格） */
+.bubble .markdown-body :first-child {
+  margin-top: 0;
+}
+
+.bubble .markdown-body :last-child {
+  margin-bottom: 0;
+}
+
+.bubble .markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.bubble .markdown-body th,
+.bubble .markdown-body td {
+  border: 1px solid #e5e8ef;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.bubble .markdown-body th {
+  background: #f6f7fa;
+}
+
+.bubble-content.phase-hint {
+  color: #8a94a6;
+}
+
+.cursor {
+  animation: blink 1s infinite;
+  color: #3b82f6;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ==================== 输入区 ==================== */
+.input-area {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px;
+  background: #fff;
+  border-top: 1px solid #e5e8ef;
+}
+
+.input-area textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid #d5dbe6;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input-area textarea:focus {
+  border-color: #3b82f6;
+}
+
+.send-btn,
+.stop-btn {
+  align-self: flex-end;
+  padding: 10px 22px;
+  border: none;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.send-btn {
+  background: #3b82f6;
+  color: #fff;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.stop-btn {
+  background: #ef4444;
+  color: #fff;
+}
+
+/* 质检报告折叠区（FR-S08 review_report 事件） */
+.review-report {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border, #d0d0d0);
+  padding-top: 8px;
+  font-size: 0.88em;
+}
+.review-report summary {
+  cursor: pointer;
+  color: #4a7dff;
+  user-select: none;
+}
+.review-report-body {
+  margin-top: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.review-report-body table {
+  border-collapse: collapse;
+  margin: 6px 0;
+}
+.review-report-body th,
+.review-report-body td {
+  border: 1px solid #ccc;
+  padding: 3px 10px;
+}
+
+/* ==================== 登录页 / 管理端 ==================== */
+.login-page {
+  display: flex; align-items: center; justify-content: center; height: 100vh; background: #f5f6fa;
+}
+.login-card {
+  background: #fff; padding: 40px; border-radius: 12px; border: 1px solid #e5e8ef;
+  width: 360px; display: flex; flex-direction: column; gap: 16px;
+}
+.login-card h2 { margin: 0; text-align: center; color: #2c3e50; }
+.login-card label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: #555; }
+.login-card input {
+  padding: 10px; border: 1px solid #d5dbe6; border-radius: 8px; font-size: 14px;
+}
+.login-card input:focus { outline: none; border-color: #3b82f6; }
+.login-card button {
+  padding: 11px; background: #3b82f6; color: #fff; border: none; border-radius: 8px;
+  font-size: 15px; cursor: pointer;
+}
+.login-card button:disabled { opacity: 0.6; cursor: not-allowed; }
+.login-error { color: #ef4444; font-size: 13px; text-align: center; }
+
+.admin-layout { display: flex; height: 100vh; }
+.admin-sidebar {
+  width: 220px; background: #1e2a3a; color: #dde3ec; display: flex; flex-direction: column;
+}
+.admin-brand { padding: 20px 16px; font-weight: 600; border-bottom: 1px solid #2a3a50; }
+.admin-nav { flex: 1; padding: 12px 0; }
+.admin-nav a {
+  display: block; padding: 12px 16px; color: #dde3ec; text-decoration: none; font-size: 14px;
+}
+.admin-nav a:hover { background: #2a3a50; }
+.admin-nav a.active { background: #34495e; color: #fff; border-left: 3px solid #3b82f6; }
+.admin-user { padding: 16px; border-top: 1px solid #2a3a50; display: flex; flex-direction: column; gap: 10px; }
+.admin-nickname { font-size: 14px; color: #7d8ba1; }
+.admin-logout {
+  padding: 8px; background: transparent; color: #dde3ec; border: 1px solid #2a3a50;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.admin-logout:hover { background: #2a3a50; }
+
+.admin-main { flex: 1; overflow-y: auto; padding: 28px; background: #f5f6fa; }
+.admin-page h2 { margin: 0 0 20px; color: #2c3e50; font-size: 22px; }
+.admin-filters { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
+.admin-filters label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #555; }
+.admin-filters input, .admin-filters select {
+  padding: 8px; border: 1px solid #d5dbe6; border-radius: 6px; font-size: 13px;
+}
+.admin-filters button, .admin-upload button {
+  padding: 8px 18px; background: #3b82f6; color: #fff; border: none; border-radius: 6px;
+  cursor: pointer; font-size: 14px;
+}
+.admin-upload { display: flex; gap: 12px; align-items: center; margin-bottom: 20px; }
+.admin-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; }
+.admin-table th, .admin-table td { border: 1px solid #e5e8ef; padding: 10px 14px; text-align: left; font-size: 13px; }
+.admin-table th { background: #f8fafc; color: #555; font-weight: 600; }
+.admin-empty { text-align: center; color: #999; padding: 24px; }
+.admin-error { color: #ef4444; margin-bottom: 12px; font-size: 13px; }
+.admin-message { color: #16a34a; margin-bottom: 12px; font-size: 13px; }
+.admin-actions { display: flex; gap: 8px; }
+
+.badge { padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }
+.badge-admin { background: #fef3c7; color: #92400e; }
+.badge-user { background: #e0e7ff; color: #3730a3; }
+.badge-on { background: #dcfce7; color: #166534; }
+.badge-off { background: #fee2e2; color: #991b1b; }
+.status-uploaded { background: #dbeafe; color: #1e40af; }
+.status-parsing { background: #fef3c7; color: #92400e; }
+.status-parsed { background: #dcfce7; color: #166534; }
+.status-failed { background: #fee2e2; color: #991b1b; }
+
+.btn-danger { padding: 5px 12px; background: #ef4444; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.btn-primary { padding: 5px 12px; background: #3b82f6; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
+.btn-ghost { padding: 5px 12px; background: transparent; color: #555; border: 1px solid #d5dbe6; border-radius: 5px; cursor: pointer; font-size: 12px; }

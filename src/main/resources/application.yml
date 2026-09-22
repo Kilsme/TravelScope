@@ -1,0 +1,198 @@
+## ============================================================================
+## TravelScope - 智能旅游助手 主配置文件
+## ============================================================================
+
+spring:
+  application:
+    name: TravelScope
+
+  # ======================== 数据源配置（PostgreSQL） ========================
+  datasource:
+    url: jdbc:postgresql://localhost:5432/travelscope?stringtype=unspecified&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      idle-timeout: 30000
+      max-lifetime: 1800000
+      connection-timeout: 30000
+
+  # ======================== JPA / Hibernate 配置 ========================
+  jpa:
+    hibernate:
+      ddl-auto: none  # 使用 SQL 脚本手动建表
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc.lob.non_contextual_creation: true
+
+  # ======================== Redis 配置 ========================
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: root123456
+      database: 0
+      timeout: 5000
+      lettuce:
+        pool:
+          max-active: 20
+          max-idle: 10
+          min-idle: 5
+          max-wait: 3000
+
+  # ======================== 文件上传配置 ========================
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+
+# ======================== 服务端口配置 ========================
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+# ======================== 应用统一配置 ========================
+## 所有第三方 API Key 通过环境变量 / 高级设置注入，不在配置文件中硬编码
+travelscope:
+  # ---- 通义千问（DashScope）模型配置 ----
+  dashscope:
+    api-key: ${API_KEY:}
+    model: qwen-plus
+    # 质检评分模型（FR-S08：reviewer-agent 专用，与主链路 qwen-plus 分离）
+    reviewer-model: qwen-max
+    embedding-model: text-embedding-v3
+    embedding-dimensions: 1024
+
+  # ---- 高德地图 API 配置 ----
+  amap:
+    web-api-key: ${AMAP_WEB_API_KEY:}
+    base-url: https://restapi.amap.com/v3
+
+  # ---- 和风天气 API 配置 ----
+  weather:
+    # 和风天气 API Host，不含 https:// 前缀，如 devapi.qweather.com 或 xxx.re.qweatherapi.com
+    api-host: ${WEATHER_API_HOST:}
+    api-key: ${WEATHER_API_KEY:}
+
+  # ---- MinIO 对象存储配置 ----
+  minio:
+    endpoint: http://localhost:9000
+    access-key: root
+    secret-key: root123456
+    bucket-name: travelscope-docs
+
+  # ---- AgentScope 配置 ----
+  agentscope:
+    workspace-path: .agentscope/workspace
+    vector-store-table: document_chunks
+    embedding-dimensions: 1024
+
+  # ---- Elasticsearch 配置 ----
+  # 用于 RAG 全文检索（BM25），与 pgvector 向量检索组成双路检索
+  elasticsearch:
+    # ES 服务地址
+    url: http://localhost:9200
+    # 索引名称（文档块全文索引）
+    index-name: document_chunks_fulltext
+    # 向量维度（与 pgvector 保持一致）
+    dimensions: 1024
+    # 用户名（开发环境未启用安全认证，留空）
+    username: ""
+    # 密码（开发环境未启用安全认证，留空）
+    password: ""
+    # 是否禁用 SSL 验证（开发环境用）
+    disable-ssl-verification: false
+
+  # ---- RAG 双路检索配置 ----
+  rag:
+    # 检索模式: dual - 双路检索 / vector - 仅向量 / fulltext - 仅全文
+    mode: dual
+    # 向量检索权重（0~1，双路融合时使用）
+    vector-weight: 0.7
+    # 全文检索权重（0~1，双路融合时使用）
+    fulltext-weight: 0.3
+    # 返回结果数量
+    top-k: 5
+    # 融合算法: rrf - Reciprocal Rank Fusion / weighted - 加权分数
+    fusion: rrf
+    # RRF 参数（仅当 fusion=rrf 时生效）
+    rrf-k: 60
+
+  # ---- 意图三层级联配置（FR-S01）----
+  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 qwen-turbo 单标签 → L3 IntentClassifier 兜底
+  # 上层命中即短路；规则表为空时代码内置同款默认规则
+  intent-cascade:
+    enabled: true
+    l0-enabled: true
+    l0-ttl-minutes: 30
+    l0-max-message-length: 20
+    l2-enabled: true
+    l2-model: qwen-turbo
+    l2-cache-enabled: true
+    l2-cache-ttl-minutes: 60
+    # L1 规则表（按序首个命中生效；规划类自然语言刻意不进 L1，交由 L2/L3 语义判定）
+    l1-rules:
+      - pattern: "^(你好|您好|嗨|哈喽|hi|hello|在吗)[?？!！。~～\\s]*$"
+        intent: CHAT
+      - pattern: "^/规划"
+        intent: PLANNING
+      - pattern: "^/天气"
+        intent: TOOL_CALL
+      - pattern: "(查询|查一下|查查).{0,12}(火车票|高铁票|动车票|车票|机票|航班)"
+        intent: TOOL_CALL
+      - pattern: "(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)"
+        intent: TOOL_CALL
+
+  # ---- LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）----
+  # 对话准入层（ChatService→LlmGateway）：全局并发 50 + 单用户并发 2 + 全局 QPS 10
+  # 快泳道（CHAT/TOOL_CALL/RAG）5s / 慢泳道（PLANNING）60s 对话级超时
+  # 模型调用层（LlmGatewayModel 装饰器）：熔断（窗口 10 次/失败率 50%/OPEN 10s）
+  # + 单次调用超时 30s + 失败 fallback → qwen-turbo + SSE error 兜底文案
+  llm-gateway:
+    enabled: true
+    global-concurrency: 50
+    per-user-concurrency: 2
+    global-qps: 10
+    acquire-timeout-ms: 2000
+    fast-lane-timeout-seconds: 25
+    # 慢泳道 300s：完整规划链（planner 工具直调 + poi/route + reviewer 评分 + ≤2 次回炉）
+    # 单段实测 30-60s，60s 必然切断；仍在 spawn 同步 600s 上限内
+    slow-lane-timeout-seconds: 300
+    model-timeout-seconds: 30
+    cb-sliding-window-size: 10
+    cb-failure-rate-threshold: 50
+    cb-minimum-number-of-calls: 5
+    cb-wait-duration-open-seconds: 10
+    fallback-enabled: true
+
+# ======================== 日志配置 ========================
+logging:
+  level:
+    root: INFO
+    com.travelscope: DEBUG
+    io.agentscope: INFO
+    org.hibernate.SQL: DEBUG
+    org.hibernate.type.descriptor.sql.BasicBinder: TRACE
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/travelscope.log
+    max-size: 50MB
+    max-history: 30
+
+# ======================== Actuator 端点配置 ========================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, env
+  endpoint:
+    health:
+      show-details: always

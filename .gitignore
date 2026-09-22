@@ -1,0 +1,64 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+.kotlin
+
+### IntelliJ IDEA ###
+.idea/modules.xml
+.idea/jarRepositories.xml
+.idea/compiler.xml
+.idea/libraries/
+*.iws
+*.iml
+*.ipr
+
+### Eclipse ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Mac OS ###
+.DS_Store
+
+### 环境变量 ###
+.env
+
+### 日志 ###
+logs/
+*.log
+
+### AgentScope 工作空间 ###
+.agentscope/
+### ZCode 会话缓存（工具产物，不入库）###
+.zcode/
+
+### WorkBuddy 记忆（工具产物，不入库）###
+.workbuddy/
+
+### 前端 ###
+frontend/node_modules/
+frontend/dist/
+
+### 临时/种子验证产物（直验工具输出）###
+*.log.*
+
+### 项目文档（需求/架构/修复记录/学习手册，不入库）###
+docs/
