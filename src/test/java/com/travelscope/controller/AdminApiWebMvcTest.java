@@ -78,6 +78,10 @@ class AdminApiWebMvcTest {
     @MockBean
     private ConversationService conversationService;
 
+    // AdminController 的过载降级状态查询依赖（2026-09-23 并发改造新增）
+    @MockBean
+    private com.travelscope.service.LoadShedService loadShedService;
+
     private static User adminUser() {
         User u = new User();
         u.setId(1L);

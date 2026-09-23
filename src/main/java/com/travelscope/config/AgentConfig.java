@@ -337,7 +337,8 @@ public class AgentConfig {
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model dashscopeChatModel,
                                           DashScopeChatModel dashscopeReviewerModel,
                                           TaskRegistry taskRegistry,
-                                          TaskWorkspaceService taskWorkspaceService) throws IOException {
+                                          TaskWorkspaceService taskWorkspaceService,
+                                          io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
         // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
         // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
         // ask_user 反问出口——ask_user 的工具结果经 SSE 层转为 clarify_question 事件推给前端）
@@ -382,7 +383,10 @@ public class AgentConfig {
                         .build())
                 .workspace(appProperties.getAgentscope().getWorkspacePath())
                 .skillRepository(new ClasspathSkillRepository("skills"))
-                .stateStore(new InMemoryAgentStateStore())
+                // 会话状态存储（2026-09-23 并发改造）：RedisAgentStateStore（Bean 由
+                // RedisStateStoreConfig 提供，Redis 不可用自动降级 InMemory）——2000 用户下
+                // 状态不占应用堆 + 进程重启不失忆；替代原先直接 new InMemoryAgentStateStore()
+                .stateStore(travelAgentStateStore)
                 // 子 Agent 一：intake-agent（声明式叶子，需求收集）
                 .subagent(intakeSubAgent)
                 // 子 Agent 二：planning-agent（subagentFactory 工厂手工构建非叶子二级编排者，

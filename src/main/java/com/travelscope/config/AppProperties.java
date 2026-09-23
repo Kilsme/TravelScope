@@ -50,6 +50,9 @@ public class AppProperties {
     /** 对话历史注入配置（多轮上下文，2026-09-21 失忆修复） */
     private ChatHistoryConfig chatHistory = new ChatHistoryConfig();
 
+    /** 过载降级配置（2026-09-23 并发改造：弹性降级优先） */
+    private LoadShedConfig loadShed = new LoadShedConfig();
+
     /** 对话历史注入配置：把近 N 轮 messages 表历史前置到发给主 Agent 的本轮消息 */
     @Data
     public static class ChatHistoryConfig {
@@ -59,6 +62,19 @@ public class AppProperties {
         private int rounds = 3;
         /** 每条历史消息截断长度（字符） */
         private int maxCharsPerMessage = 400;
+    }
+
+    /** 过载降级配置：堆使用率 + 网关剩余并发双指标，GREEN/YELLOW/RED 三级 */
+    @Data
+    public static class LoadShedConfig {
+        /** 是否启用（false = 只走 LlmGateway 原有准入，无降级） */
+        private boolean enabled = true;
+        /** YELLOW 阈值：JVM 堆使用率超过即降级（0~1） */
+        private double heapYellowThreshold = 0.75;
+        /** RED 阈值：JVM 堆使用率超过即全面拒绝（0~1） */
+        private double heapRedThreshold = 0.90;
+        /** YELLOW 阈值：网关全局剩余许可占比低于即降级（0~1） */
+        private double permitsYellowRatio = 0.10;
     }
 
     @Data

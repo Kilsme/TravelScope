@@ -37,10 +37,30 @@ public class AdminController {
 
     private final UserAdminService userAdminService;
     private final TokenUsageService tokenUsageService;
+    private final com.travelscope.service.LoadShedService loadShedService;
 
-    public AdminController(UserAdminService userAdminService, TokenUsageService tokenUsageService) {
+    public AdminController(UserAdminService userAdminService, TokenUsageService tokenUsageService,
+                           com.travelscope.service.LoadShedService loadShedService) {
         this.userAdminService = userAdminService;
         this.tokenUsageService = tokenUsageService;
+        this.loadShedService = loadShedService;
+    }
+
+    // ==================== 过载状态（2026-09-23 并发改造） ====================
+
+    /**
+     * 过载降级状态查询（GREEN/YELLOW/RED + 原因 + 网关剩余并发）——运维观测接口
+     */
+    @GetMapping("/load-status")
+    public ResponseEntity<Map<String, Object>> loadStatus(HttpServletRequest request) {
+        ResponseEntity<?> forbidden = requireAdmin(request);
+        if (forbidden != null) {
+            return ResponseEntity.status(forbidden.getStatusCode()).build();
+        }
+        Map<String, Object> body = new HashMap<>();
+        body.put("level", loadShedService.getLevel().name());
+        body.put("reason", loadShedService.getLastReason());
+        return ResponseEntity.ok(body);
     }
 
     // ==================== 用户管理（FR-A02） ====================
