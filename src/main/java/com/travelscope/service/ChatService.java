@@ -67,6 +67,10 @@ public class ChatService {
     /** 对话历史渲染器（travelscope.chat-history.*；enabled=false 时 render 返回空串） */
     private final ChatHistoryRenderer chatHistoryRenderer;
     private final boolean historyEnabled;
+    /** 应用配置（泳道超时等运行时读取） */
+    private final com.travelscope.config.AppProperties appProperties;
+    /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
+    private final LoadShedService loadShedService;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -75,6 +79,7 @@ public class ChatService {
                        TaskWorkspaceService taskWorkspaceService,
                        TripRequirementStore tripRequirementStore,
                        LlmGateway llmGateway,
+                       LoadShedService loadShedService,
                        com.travelscope.config.AppProperties appProperties) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
@@ -88,6 +93,8 @@ public class ChatService {
                 appProperties.getChatHistory().getRounds(),
                 appProperties.getChatHistory().getMaxCharsPerMessage());
         this.historyEnabled = appProperties.getChatHistory().isEnabled();
+        this.appProperties = appProperties;
+        this.loadShedService = loadShedService;
     }
 
     /**
@@ -98,18 +105,28 @@ public class ChatService {
      * @param userMessage  用户消息原文
      * @return SSE 发射器
      */
-    /** 快泳道专用调度池（FR-S09 线程池隔离）：查询类对话独立于慢泳道，规划的长阻塞不拖慢查询 */
+    /** 快泳道专用调度池（FR-S09 线程池隔离）：查询类对话独立于慢泳道，规划的长阻塞不拖慢查询。
+     *  2026-09-23 并发改造：10 → 32（2000 在线 / 200~300 并发对话基线；LoadShed 兜底极端情况） */
     private final reactor.core.scheduler.Scheduler fastLaneScheduler =
-            reactor.core.scheduler.Schedulers.newBoundedElastic(10, 10_000, "fast-lane", 60, true);
-    /** 慢泳道专用调度池：PLANNING 长任务（同步 spawn 阻塞等待子 Agent）在此排队 */
+            reactor.core.scheduler.Schedulers.newBoundedElastic(32, 10_000, "fast-lane", 60, true);
+    /** 慢泳道专用调度池：PLANNING 长任务（同步 spawn 阻塞等待子 Agent）在此排队。
+     *  同上：10 → 32 */
     private final reactor.core.scheduler.Scheduler slowLaneScheduler =
-            reactor.core.scheduler.Schedulers.newBoundedElastic(10, 10_000, "slow-lane", 60, true);
+            reactor.core.scheduler.Schedulers.newBoundedElastic(32, 10_000, "slow-lane", 60, true);
 
     public SseEmitter streamChat(Conversation conversation, Long userId, String userMessage) {
         conversationService.saveUserMessage(conversation, userId, userMessage);
 
-        SseEmitter emitter = new SseEmitter(0L);
+        // SSE 超时（并发改造 2026-09-23）：初始即给慢泳道档（泳道 300s + 30s 缓冲）——
+        // 此前 0L 永不超时，客户端异常断开时连接与缓冲泄漏（onTimeout 永不触发）。
+        // Spring 6.0 SseEmitter 无运行时改超时 API（构造后不可变），快对话提前 complete
+        // 即回收，330s 只是 PLANNING 轮的兜底上限
+        SseEmitter emitter = new SseEmitter(Duration.ofSeconds(
+                appProperties.getLlmGateway().getSlowLaneTimeoutSeconds() + 30).toMillis());
         StringBuilder replyBuf = new StringBuilder();
+        // THINKING 全文副本（PLANNING 轮 master 当轮输出的兜底来源）——每轮局部变量，
+        // 并发轮次互不干扰（2026-09-23 串话修复：原为单例实例字段，并发 PLANNING 轮互相覆盖）
+        StringBuilder thinkingFull = new StringBuilder();
 
         // LLM Gateway 准入（FR-S09）：全局/单用户并发 + QPS；被拒 → SSE error 降级文案（不白屏）
         LlmGateway.AcquireResult admission = llmGateway.tryAcquire(String.valueOf(userId));
@@ -127,18 +144,37 @@ public class ChatService {
         Disposable disposable = Mono
                 .fromCallable(() -> resolveIntent(userMessage, userId, conversation.getId()))
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(intent -> Flux.concat(
+                .flatMapMany(intent -> {
+                    // 过载降级准入（2026-09-23）：意图明确后判定——YELLOW 只挡新 PLANNING
+                    // （慢泳道内存大头），快请求继续服务；RED 挡全部新对话。
+                    // 注意：此时网关槽位已持有，拒绝路径须 release
+                    boolean planningIntent = intent != null && intent.toIntentType() == IntentType.PLANNING;
+                    String shed = loadShedService.tryAdmit(planningIntent);
+                    if (shed != null) {
+                        llmGateway.release(String.valueOf(userId));
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name(ChatEvent.TYPE_INTENT).data(toIntentPayload(intent)));
+                            emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR).data(shed));
+                        } catch (Exception ignored) {
+                            // 客户端已断开
+                        }
+                        emitter.complete();
+                        return Flux.<ChatEvent>empty();
+                    }
+                    return Flux.concat(
                         Flux.just(toIntentEvent(intent)),
-                        runAgent(conversation, userId, userMessage, intent, replyBuf))
+                        runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull))
                         // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
                         // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
                         // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
                         .subscribeOn(intent != null && intent.toIntentType() == IntentType.PLANNING
-                                ? slowLaneScheduler : fastLaneScheduler))
+                                ? slowLaneScheduler : fastLaneScheduler);
+                })
                 .subscribe(
                         event -> sendEvent(emitter, event),
                         error -> handleError(emitter, replyBuf, conversation, userId, error),
-                        () -> handleComplete(emitter, replyBuf, conversation, userId));
+                        () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull));
 
         emitter.onTimeout(disposable::dispose);
         emitter.onError(t -> disposable.dispose());
@@ -189,7 +225,7 @@ public class ChatService {
      * 运行主 Agent 并把事件流映射为 SSE 事件
      */
     private Flux<ChatEvent> runAgent(Conversation conversation, Long userId, String userMessage,
-                                     IntentResult intent, StringBuilder replyBuf) {
+                                     IntentResult intent, StringBuilder replyBuf, StringBuilder thinkingFull) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(String.valueOf(userId))
                 .sessionId(SESSION_PREFIX + conversation.getId())
@@ -242,13 +278,13 @@ public class ChatService {
         boolean planning = type == IntentType.PLANNING;
         // THINKING 聚合句发射通道（accumulateThinking → Sinks.Many → mergeWith 回 SSE 流）：
         // 主流 doFinally 时 emitComplete——mergeWith 等两条流都完成才结束，Flux.create+轮询线程
-        // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送
+        // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送。
+        // 全部为方法局部变量（2026-09-23 串话修复：原实例字段在并发 PLANNING 轮互相覆盖）
         reactor.core.publisher.Sinks.Many<ChatEvent> thinkingSink =
                 reactor.core.publisher.Sinks.many().unicast().onBackpressureBuffer();
-        this.thinkingEmitter = payload -> thinkingSink.tryEmitNext(
+        StringBuilder thinkingBuf = new StringBuilder();
+        java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
                 ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
-        this.thinkingBuf.setLength(0);
-        this.thinkingFull.setLength(0);
         return travelMasterAgent.streamEvents(msg, ctx)
                 // 主 Agent 自身事件 + intake-agent 转发的 ask_user 反问（转 clarify_question）
                 .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))
@@ -259,7 +295,7 @@ public class ChatService {
                         if (!planning) {
                             replyBuf.append(e.getDelta());
                         } else {
-                            accumulateThinking(e.getDelta());
+                            accumulateThinking(e.getDelta(), thinkingBuf, thinkingFull, thinkingEmitter);
                         }
                     }
                     // intake 反问文本进 replyBuf：反问轮无最终方案文件，done/入库需要内容
@@ -279,7 +315,7 @@ public class ChatService {
                         String rest = thinkingBuf.toString().strip();
                         thinkingBuf.setLength(0);
                         if (!rest.isEmpty()) {
-                            emitThinking(rest);
+                            emitThinking(rest, thinkingEmitter);
                         }
                     }
                     thinkingSink.tryEmitComplete();
@@ -388,11 +424,13 @@ public class ChatService {
      * 直接逐条发活动流会被切碎——攒到句读（。！？\n）或 80 字上限才作为一条 THINKING 推送。
      * thinkingFull 留全文副本：master 同轮直调工具后直接输出完整方案文本（未走 planner
      * 产文件路径）时，它是唯一的结果载体（handleComplete 兜底取用）。
+     * <p>
+     * 全部状态经参数传递（2026-09-23 串话修复）——本方法无实例字段依赖，并发轮次天然隔离。
+     * </p>
      */
-    private final StringBuilder thinkingBuf = new StringBuilder();
-    private final StringBuilder thinkingFull = new StringBuilder();
-
-    private void accumulateThinking(String delta) {
+    private static void accumulateThinking(String delta, StringBuilder thinkingBuf,
+                                           StringBuilder thinkingFull,
+                                           java.util.function.Consumer<String> thinkingEmitter) {
         if (delta == null || delta.isBlank()) {
             return;
         }
@@ -404,14 +442,14 @@ public class ChatService {
             String sentence = thinkingBuf.substring(0, idx).strip();
             thinkingBuf.delete(0, idx);
             if (!sentence.isEmpty()) {
-                emitThinking(sentence);
+                emitThinking(sentence, thinkingEmitter);
             }
         }
         // 超长无句读（模型连续输出无标点文本）：80 字硬切
         if (thinkingBuf.length() >= 80) {
             String chunk = thinkingBuf.toString().strip();
             thinkingBuf.setLength(0);
-            emitThinking(chunk);
+            emitThinking(chunk, thinkingEmitter);
         }
     }
 
@@ -426,10 +464,8 @@ public class ChatService {
         return -1;
     }
 
-    /** 当前会话的 THINKING 事件发射器（runAgent 装配时注入，把聚合句塞回 SSE 流） */
-    private java.util.function.Consumer<String> thinkingEmitter = s -> { };
-
-    private void emitThinking(String sentence) {
+    /** THINKING 事件发射（runAgent 装配的 sink 通道，参数传递无共享状态） */
+    private static void emitThinking(String sentence, java.util.function.Consumer<String> thinkingEmitter) {
         if (sentence.length() > 60) {
             sentence = sentence.substring(0, 60) + "…";
         }
@@ -453,10 +489,15 @@ public class ChatService {
     }
 
     private ChatEvent toIntentEvent(IntentResult intent) {
+        return ChatEvent.of(ChatEvent.TYPE_INTENT, toIntentPayload(intent));
+    }
+
+    /** intent 事件的 JSON payload（LoadShed 拒绝路径也要先推意图，前端才渲染标签） */
+    private String toIntentPayload(IntentResult intent) {
         JSONObject payload = new JSONObject();
         payload.put("intent", intent != null && intent.intent != null ? intent.intent : "UNKNOWN");
         payload.put("reason", intent != null && intent.reason != null ? intent.reason : "");
-        return ChatEvent.of(ChatEvent.TYPE_INTENT, payload.toJSONString());
+        return payload.toJSONString();
     }
 
     private void sendEvent(SseEmitter emitter, ChatEvent event) {
@@ -497,7 +538,8 @@ public class ChatService {
         emitter.complete();
     }
 
-    private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation, Long userId) {
+    private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
+                                Long userId, StringBuilder thinkingFull) {
         llmGateway.release(String.valueOf(userId));
         // 过程/结果分离（2026-09-22）：PLANNING 轮 replyBuf 为空（过程文本未进缓冲），
         // 最终方案从协作目录整合生成——itinerary_draft.md 优先，缺则 execution_result.md；

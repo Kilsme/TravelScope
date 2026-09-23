@@ -13,7 +13,9 @@ spring:
     password: root
     driver-class-name: org.postgresql.Driver
     hikari:
-      maximum-pool-size: 20
+      # 2026-09-23 并发改造：20 → 30（2000 在线 / 峰值并发对话的入库写放大；
+      # SSE 长连接不占连接，30 是 8C16G + PG 默认 max_connections=100 的安全值）
+      maximum-pool-size: 30
       minimum-idle: 5
       idle-timeout: 30000
       max-lifetime: 1800000
@@ -56,6 +58,13 @@ server:
   port: 8080
   servlet:
     context-path: /api
+  # 2026-09-23 并发改造：显式声明（与默认一致，防 Spring Boot 升级漂移）——
+  # 2000 SSE 长连接在 max-connections 内；线程 200 承载 Tomcat 侧请求调度
+  tomcat:
+    threads:
+      max: 200
+    max-connections: 8192
+    accept-count: 100
 
 # ======================== 应用统一配置 ========================
 ## 所有第三方 API Key 通过环境变量 / 高级设置注入，不在配置文件中硬编码
@@ -150,16 +159,20 @@ travelscope:
         intent: TOOL_CALL
 
   # ---- LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）----
-  # 对话准入层（ChatService→LlmGateway）：全局并发 50 + 单用户并发 2 + 全局 QPS 10
-  # 快泳道（CHAT/TOOL_CALL/RAG）5s / 慢泳道（PLANNING）60s 对话级超时
+  # 对话准入层（ChatService→LlmGateway）：全局并发 + 单用户并发 2 + 全局 QPS
+  # 【容量基线（2026-09-23 并发改造）】：单机 8C16G 安全上限约 200~300 并发对话；
+  # global-concurrency 按「在线人数 × 10~15% 同时活跃」估算——2000 在线配 200~300。
+  # 真实上限同时受 DashScope 账号配额钳制，超出配额会触发熔断/fallback，按实际配额调整。
+  # 叠加 LoadShedService 三级过载降级（GREEN/YELLOW/RED，见 service/LoadShedService）兜底。
+  # 快泳道（CHAT/TOOL_CALL/RAG）25s / 慢泳道（PLANNING）300s 对话级超时
   # 模型调用层（LlmGatewayModel 装饰器）：熔断（窗口 10 次/失败率 50%/OPEN 10s）
   # + 单次调用超时 30s + 失败 fallback → qwen-turbo + SSE error 兜底文案
   llm-gateway:
     enabled: true
-    global-concurrency: 50
+    global-concurrency: 200
     per-user-concurrency: 2
-    global-qps: 10
-    acquire-timeout-ms: 2000
+    global-qps: 100
+    acquire-timeout-ms: 3000
     fast-lane-timeout-seconds: 25
     # 慢泳道 300s：完整规划链（planner 工具直调 + poi/route + reviewer 评分 + ≤2 次回炉）
     # 单段实测 30-60s，60s 必然切断；仍在 spawn 同步 600s 上限内
@@ -170,6 +183,15 @@ travelscope:
     cb-minimum-number-of-calls: 5
     cb-wait-duration-open-seconds: 10
     fallback-enabled: true
+
+  # ---- 过载降级配置（2026-09-23 并发改造：弹性降级优先策略）----
+  # 三级：GREEN 正常 → YELLOW（堆>75% 或网关剩余<10%）：拒绝新 PLANNING，快请求正常
+  #      → RED（堆>90% 或网关耗尽）：所有新对话拒绝，进行中的不中断
+  load-shed:
+    enabled: true
+    heap-yellow-threshold: 0.75
+    heap-red-threshold: 0.90
+    permits-yellow-ratio: 0.10
 
 # ======================== 日志配置 ========================
 logging:

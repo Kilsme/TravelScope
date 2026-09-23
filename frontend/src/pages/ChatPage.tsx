@@ -1,8 +1,36 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
 import type { AgentActivity, ChatMessage, ChatEvent, Conversation, IntentPayload } from '../types'
+
+/**
+ * Markdown 渲染前预处理（去 AI 味符号，2026-09-23）：
+ * 1. 清理不成对的 **（流式截断时常见——半截加粗渲染成字面星号）：
+ *    按段落统计 ** 出现次数，奇数个则把该段落所有 ** 去掉
+ * 2. 压缩 3 个以上连续空行为最多 2 个（模型爱输出大片空白）
+ * 3. 行内孤立的单个 * 不处理（列表项语法依赖它）
+ */
+export function sanitizeMarkdown(text: string): string {
+  if (!text) return text
+  return text
+    .split(/\n{2,}/)
+    .map((para) => {
+      const count = (para.match(/\*\*/g) || []).length
+      if (count % 2 !== 0) {
+        return para.replace(/\*\*/g, '')
+      }
+      return para
+    })
+    .join('\n\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+}
+
+/** Markdown 渲染（统一 GFM 插件 + sanitize——表格/删除线解析，去掉流式脏符号） */
+function Md({ text }: { text: string }) {
+  return <Markdown remarkPlugins={[remarkGfm]}>{sanitizeMarkdown(text)}</Markdown>
+}
 
 const INTENT_LABELS: Record<string, string> = {
   CHAT: '💬 闲聊咨询',
@@ -288,7 +316,7 @@ function ChatPage() {
                 {msg.role === 'assistant' ? (
                   msg.content ? (
                     <div className="bubble-content markdown-body">
-                      <Markdown>{msg.content}</Markdown>
+                      <Md text={msg.content} />
                     </div>
                   ) : msg.streaming ? (
                     <div className="bubble-content phase-hint">
@@ -303,7 +331,7 @@ function ChatPage() {
                   <details className="review-report">
                     <summary>📋 质检评分明细</summary>
                     <div className="review-report-body">
-                      <Markdown>{msg.reviewReport}</Markdown>
+                      <Md text={msg.reviewReport} />
                     </div>
                   </details>
                 )}

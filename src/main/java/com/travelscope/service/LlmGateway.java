@@ -119,6 +119,42 @@ public class LlmGateway {
                 : Duration.ofSeconds(config.getFastLaneTimeoutSeconds());
     }
 
+    /**
+     * 全局剩余许可（LoadShedService 采样用）：剩余量与总量的比值即「并发水位」。
+     * <p>信号量 permits 只增不减地反映当前并发对话数（tryAcquire/release 对称维护），
+     * 无需额外计数器。</p>
+     */
+    public int availableGlobalPermits() {
+        return config.isEnabled() ? globalSemaphore.availablePermits() : Integer.MAX_VALUE;
+    }
+
+    /** 全局并发总量（LoadShedService 计算剩余占比用） */
+    public int totalGlobalPermits() {
+        return config.getGlobalConcurrency();
+    }
+
+    /**
+     * 清理空闲用户的单用户信号量（@Scheduled 每 10 分钟调用，2026-09-23 并发改造）：
+     * 许可全部归还（=该用户当前无进行中对话）的条目直接移除——2000 用户下 Map
+     * 无限缓涨（每条约几十字节，量小但属慢性泄漏）。
+     * <p>竞态说明：remove 与并发 tryAcquire 的 computeIfAbsent 竞争最坏情况是各自建一个
+     * 信号量对象（旧对象仍被在途对话 release，无 permits 泄漏到全局；新对话用新对象从
+     * 满额开始）——可接受的弱一致。</p>
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 600_000, initialDelay = 600_000)
+    public void cleanupIdleUserSemaphores() {
+        if (!config.isEnabled()) {
+            return;
+        }
+        int before = perUserSemaphores.size();
+        perUserSemaphores.entrySet().removeIf(e ->
+                e.getValue().availablePermits() >= config.getPerUserConcurrency());
+        int removed = before - perUserSemaphores.size();
+        if (removed > 0) {
+            log.debug("单用户信号量清理: 移除 {} 个空闲条目（剩余 {}）", removed, perUserSemaphores.size());
+        }
+    }
+
     private AcquireResult reject(String reason, String message, long start) {
         log.warn("gateway_reject reason={} latency={}ms 文案={}", reason, elapsedMs(start), message);
         return new AcquireResult(false, reason, message);
