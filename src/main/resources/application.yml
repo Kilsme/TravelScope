@@ -193,6 +193,29 @@ travelscope:
     heap-red-threshold: 0.90
     permits-yellow-ratio: 0.10
 
+  # ---- 对话历史注入 + 记忆摘要（2026-09-29 失忆修复）----
+  # 每轮发给模型 = 记忆摘要块（conversations.summary，每满 10 轮后台增量折叠一次）
+  #               + 最近 10 轮 messages 历史（每条截 400 字）+ 本轮用户消息
+  # 修复前：只注入最近 3 轮，第 4 轮以前的内容模型彻底看不到（数据在库里但没喂给模型）
+  chat-history:
+    enabled: true
+    # 滑动窗口：最近 N 轮（1 轮 = 1 user + 1 assistant）原文注入
+    rounds: 10
+    max-chars-per-message: 400
+    # 滚动记忆摘要：窗口外的更早轮次折叠成摘要长期携带
+    summary:
+      enabled: true
+      # 每满 10 轮（消息数差 ≥ 20）后台异步折叠一次
+      interval-rounds: 10
+      # 摘要存储/注入最大长度（字符）
+      max-chars: 1500
+      # 折叠输入单条截断 / 总量上限（超出按比例收紧单条）
+      input-max-chars-per-message: 600
+      input-total-max-chars: 30000
+      # 摘要生成模型（每 10 轮一次的低成本辅助调用，与 L2 意图分类同级定位）
+      model: qwen-turbo
+      timeout-seconds: 30
+
 # ======================== 日志配置 ========================
 logging:
   level:

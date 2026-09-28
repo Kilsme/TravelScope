@@ -9,6 +9,7 @@ import com.travelscope.dto.ChatEvent;
 import com.travelscope.dto.IntentResult;
 import com.travelscope.dto.TripRequirementState;
 import com.travelscope.entity.Conversation;
+import com.travelscope.entity.Message;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
 import io.agentscope.core.event.AgentEvent;
@@ -67,6 +68,8 @@ public class ChatService {
     /** 对话历史渲染器（travelscope.chat-history.*；enabled=false 时 render 返回空串） */
     private final ChatHistoryRenderer chatHistoryRenderer;
     private final boolean historyEnabled;
+    /** 会话记忆摘要（2026-09-29 失忆修复：每满 10 轮后台增量折叠，随窗口一起注入） */
+    private final ConversationSummaryService conversationSummaryService;
     /** 应用配置（泳道超时等运行时读取） */
     private final com.travelscope.config.AppProperties appProperties;
     /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
@@ -80,6 +83,7 @@ public class ChatService {
                        TripRequirementStore tripRequirementStore,
                        LlmGateway llmGateway,
                        LoadShedService loadShedService,
+                       ConversationSummaryService conversationSummaryService,
                        com.travelscope.config.AppProperties appProperties) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
@@ -91,10 +95,12 @@ public class ChatService {
         this.ragTopK = appProperties.getRag().getTopK();
         this.chatHistoryRenderer = new ChatHistoryRenderer(
                 appProperties.getChatHistory().getRounds(),
-                appProperties.getChatHistory().getMaxCharsPerMessage());
+                appProperties.getChatHistory().getMaxCharsPerMessage(),
+                appProperties.getChatHistory().getSummary().getMaxChars());
         this.historyEnabled = appProperties.getChatHistory().isEnabled();
         this.appProperties = appProperties;
         this.loadShedService = loadShedService;
+        this.conversationSummaryService = conversationSummaryService;
     }
 
     /**
@@ -260,15 +266,23 @@ public class ChatService {
                 log.info("注入 intake 委派指令（需求未收齐）: 会话={}", agentSessionIdForReq);
             }
         }
-        // 对话历史注入（失忆修复 Fix 2，全部意图生效）：近 N 轮 messages 表历史前置——
+        // 对话历史注入（失忆修复 Fix 2，全部意图生效）：记忆摘要 + 近 N 轮 messages 表历史前置——
         // 用户短回答（如「长春」）时 master 仍能看到之前聊过什么；同时兜底框架
         // InMemory 记忆在进程重启后丢失的场景。末条为本轮消息，render 内部已排除。
+        // 2026-09-29：窗口 3 → 10 轮，窗口外更早轮次由滚动记忆摘要长期携带。
         if (historyEnabled) {
-            String historyBlock = chatHistoryRenderer.render(
-                    conversationService.listMessages(conversation.getId()));
+            List<Message> messages = conversationService.listMessages(conversation.getId());
+            // summary.enabled=false 时按配置退回纯窗口模式（不注入库里已有的摘要）
+            String summary = appProperties.getChatHistory().getSummary().isEnabled()
+                    ? conversation.getSummary() : null;
+            String historyBlock = chatHistoryRenderer.render(messages, summary,
+                    conversation.getSummaryCoveredMessages() == null ? 0 : conversation.getSummaryCoveredMessages());
             if (!historyBlock.isBlank()) {
                 outgoing = historyBlock + "\n【本轮用户消息】\n" + outgoing;
             }
+            // 缺口自愈：折叠失败/存量旧会话（covered 落后于窗口起点）时补折——
+            // maybeSummarizeAsync 内部有到期判定与防重，异步不阻塞本轮
+            conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
         }
 
         UserMessage msg = new UserMessage(outgoing);
@@ -529,6 +543,8 @@ public class ChatService {
         log.error("对话处理异常: conversationId={}", conversation.getId(), error);
         llmGateway.release(String.valueOf(userId));
         persistReply(conversation, userId, replyBuf);
+        // 部分回复也已落库计入消息总数，同样检查摘要是否到期
+        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
                     .data(sseFallbackMessage(error)));
@@ -565,6 +581,8 @@ public class ChatService {
             }
         }
         persistReply(conversation, userId, replyBuf);
+        // 记忆摘要到期检查（每满 10 轮后台折叠一次，fire-and-forget 不阻塞 done 事件）
+        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
         // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
         // （review_passed.md 优先，回炉超限场景退化为最近一次 review_report.md）
         try {

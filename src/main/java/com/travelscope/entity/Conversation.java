@@ -40,6 +40,14 @@ public class Conversation {
     @Column(nullable = false, length = 20)
     private String status = "active";
 
+    /** 会话记忆摘要（2026-09-29 失忆修复：每满 10 轮把窗口外历史增量折叠，注入模型作长期上下文） */
+    @Column(columnDefinition = "text")
+    private String summary;
+
+    /** 摘要已覆盖的 messages 条数（增量折叠进度，见 ConversationSummaryService） */
+    @Column(name = "summary_covered_messages", nullable = false)
+    private Integer summaryCoveredMessages = 0;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
