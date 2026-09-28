@@ -59,9 +59,34 @@ public class AppProperties {
         /** 是否注入对话历史（false = 只发本轮消息，旧行为） */
         private boolean enabled = true;
         /** 保留最近几轮（1 轮 = 1 user + 1 assistant） */
-        private int rounds = 3;
+        private int rounds = 10;
         /** 每条历史消息截断长度（字符） */
         private int maxCharsPerMessage = 400;
+        /** 滚动记忆摘要（2026-09-29 失忆修复：窗口外历史折叠进 conversations.summary） */
+        private SummaryConfig summary = new SummaryConfig();
+    }
+
+    /**
+     * 记忆摘要配置（增量折叠）：每满 {@code intervalRounds} 轮，把 messages[covered..T)
+     * 折叠进已有摘要（qwen-turbo 后台异步），随滑动窗口一起注入模型——第 N 轮之前
+     * 聊过什么不再对模型不可见。
+     */
+    @Data
+    public static class SummaryConfig {
+        /** 是否启用记忆摘要（false = 只注入滑动窗口，无长期记忆） */
+        private boolean enabled = true;
+        /** 每满多少轮折叠一次（消息数差 ≥ intervalRounds×2 触发） */
+        private int intervalRounds = 10;
+        /** 摘要存储/注入的最大长度（字符） */
+        private int maxChars = 1500;
+        /** 折叠输入时单条消息截断长度（字符） */
+        private int inputMaxCharsPerMessage = 600;
+        /** 折叠输入总量上限（字符）——超出时按比例收紧单条截断（存量长会话首折兜底） */
+        private int inputTotalMaxChars = 30000;
+        /** 摘要生成模型 */
+        private String model = "qwen-turbo";
+        /** 摘要生成调用超时（秒） */
+        private int timeoutSeconds = 30;
     }
 
     /** 过载降级配置：堆使用率 + 网关剩余并发双指标，GREEN/YELLOW/RED 三级 */

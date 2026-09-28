@@ -130,6 +130,22 @@ public class ConversationService {
         conversationRepository.save(conversation);
     }
 
+    /**
+     * 更新会话记忆摘要与覆盖进度（2026-09-29 失忆修复：增量折叠落库）
+     * <p>
+     * 事务内重读实体再写入——调用方（后台折叠任务）持有的可能是请求域的陈旧实体，
+     * 直接 save 会用旧字段覆盖标题等其他列。
+     * </p>
+     */
+    @Transactional
+    public void updateSummary(Long conversationId, String summary, int coveredMessages) {
+        conversationRepository.findById(conversationId).ifPresent(conversation -> {
+            conversation.setSummary(summary);
+            conversation.setSummaryCoveredMessages(coveredMessages);
+            conversationRepository.save(conversation);
+        });
+    }
+
     // ==================== FR-A01 Token 估算（轻量近似，真实链路采集的可测近似） ====================
 
     /** 意图分类每次调用的固定 token 成本（L2 turbo ~80 / L3 plus ~200，取保守均值） */

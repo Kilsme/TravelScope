@@ -307,6 +307,25 @@ public class AgentConfig {
     }
 
     /**
+     * 记忆摘要生成模型 Bean（qwen-turbo，2026-09-29 失忆修复）
+     * <p>
+     * ConversationSummaryService 每满 10 轮后台折叠一次会话历史的低成本低延迟辅助调用，
+     * 与意图级联 L2 同级定位。独立实例而非复用 turbo Bean：GenerateOptions.modelName
+     * 被 DashScopeChatModel 忽略，换模型必须持独立实例（见 LlmGatewayModel 注释），
+     * 模型名走 chat-history.summary.model 独立配置。裸模型不经 LlmGateway 装饰——
+     * 后台任务不占对话准入槽位、不影响主链路熔断统计。
+     * </p>
+     */
+    @Bean
+    public DashScopeChatModel conversationSummaryModel() {
+        return DashScopeChatModel.builder()
+                .apiKey(appProperties.getDashscope().getApiKey())
+                .modelName(appProperties.getChatHistory().getSummary().getModel())
+                .stream(true)
+                .build();
+    }
+
+    /**
      * 质检评分模型 Bean（qwen-max，FR-S08：reviewer-agent 专用）
      * <p>
      * 评分模型与主链路 qwen-plus 分离（更强的评审能力且互不占额度）；

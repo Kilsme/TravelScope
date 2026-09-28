@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     title           VARCHAR(256)  NOT NULL DEFAULT '新会话',                  -- 会话标题
     agent_type      VARCHAR(64)   NOT NULL DEFAULT 'travel_assistant',      -- Agent类型
     status          VARCHAR(20)   NOT NULL DEFAULT 'active',                -- 状态: active / archived
-    summary         TEXT,                                                   -- 会话摘要（用于上下文压缩）
+    summary         TEXT,                                                   -- 会话记忆摘要（每满10轮把窗口外历史增量折叠）
+    summary_covered_messages INTEGER NOT NULL DEFAULT 0,                    -- 记忆摘要已覆盖的消息条数（增量折叠进度）
     metadata        JSONB,                                                  -- 扩展元数据
     created_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,        -- 创建时间
     updated_at      TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP       -- 更新时间
@@ -76,10 +77,16 @@ COMMENT ON COLUMN conversations.user_id IS '用户ID（关联users表）';
 COMMENT ON COLUMN conversations.title IS '会话标题';
 COMMENT ON COLUMN conversations.agent_type IS 'Agent类型: travel_assistant-旅游助手';
 COMMENT ON COLUMN conversations.status IS '状态: active-活跃 archived-已归档';
-COMMENT ON COLUMN conversations.summary IS '会话摘要（用于上下文压缩）';
+COMMENT ON COLUMN conversations.summary IS '会话记忆摘要（每满10轮把窗口外历史增量折叠，注入模型作长期上下文）';
+COMMENT ON COLUMN conversations.summary_covered_messages IS '记忆摘要已覆盖的消息条数（增量折叠进度）';
 COMMENT ON COLUMN conversations.metadata IS '扩展元数据（JSON格式）';
 COMMENT ON COLUMN conversations.created_at IS '创建时间';
 COMMENT ON COLUMN conversations.updated_at IS '更新时间';
+
+-- 记忆摘要列升级（2026-09-29 失忆修复）：存量库补列，幂等可重复执行
+-- （CREATE TABLE IF NOT EXISTS 不会给已存在的表加列，存量库需执行以下语句）
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary_covered_messages INTEGER NOT NULL DEFAULT 0;
 
 -- ============================================================================
 -- 3. 消息表 (messages)
