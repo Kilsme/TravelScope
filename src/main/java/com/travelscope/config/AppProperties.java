@@ -240,6 +240,14 @@ public class AppProperties {
         private boolean l2CacheEnabled = true;
         /** L2 文本缓存 TTL（分钟） */
         private int l2CacheTtlMinutes = 60;
+        /** 分类上下文注入开关（2026-09-29 失忆修复：messages + 记忆摘要构建上下文随消息送 L2/L3） */
+        private boolean contextEnabled = true;
+        /** 上下文取最近几轮原文（1 轮 = 1 user + 1 assistant） */
+        private int contextRounds = 2;
+        /** 上下文单条消息截断长度（字符） */
+        private int contextMaxCharsPerMessage = 200;
+        /** 上下文中记忆摘要截断长度（字符） */
+        private int contextSummaryMaxChars = 600;
     }
 
     /** L1 单条规则：正则模式 + 意图标签（CHAT/TOOL_CALL/PLANNING/RAG） */
