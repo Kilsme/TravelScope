@@ -145,6 +145,14 @@ travelscope:
     l2-model: qwen-turbo
     l2-cache-enabled: true
     l2-cache-ttl-minutes: 60
+    # 分类上下文注入（2026-09-29 失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块
+    # 随消息送 L2/L3 语义判定——「长春」这类对 intake 反问的裸名词短回答在语境下判
+    # PLANNING，不再被判 CHAT 脱离规划流；带上下文时旁路 L2 全局文本缓存（防投毒）
+    context-enabled: true
+    # 上下文取最近几轮原文（1 轮 = 1 user + 1 assistant）
+    context-rounds: 2
+    context-max-chars-per-message: 200
+    context-summary-max-chars: 600
     # L1 规则表（按序首个命中生效；规划类自然语言刻意不进 L1，交由 L2/L3 语义判定）
     l1-rules:
       - pattern: "^(你好|您好|嗨|哈喽|hi|hello|在吗)[?？!！。~～\\s]*$"
@@ -241,3 +249,9 @@ management:
   endpoint:
     health:
       show-details: always
+  health:
+    # ES 健康指示器禁用：Boot 3.3.5 actuator 与 ES Java 客户端 9.0.2 方法签名不兼容
+    # （HealthResponse.activeShardsPercentAsNumber 抛 NoSuchMethodError，且反应式流挂起
+    #  拖死整个 /actuator/health 聚合响应）；ES 状态由 docker healthcheck + 直连 9200 兜底
+    elasticsearch:
+      enabled: false

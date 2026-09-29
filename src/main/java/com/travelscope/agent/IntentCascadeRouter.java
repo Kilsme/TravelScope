@@ -40,7 +40,7 @@ public class IntentCascadeRouter {
      */
     @FunctionalInterface
     public interface LlmClassifier {
-        IntentResult classify(String userMessage, String userId, String sessionId);
+        IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId);
     }
 
     /**
@@ -84,12 +84,18 @@ public class IntentCascadeRouter {
 
     /**
      * 级联分类入口（上层命中即短路返回）
+     * <p>
+     * 2026-09-29 失忆修复 Fix 4：contextBlock（messages + 记忆摘要构建的对话上下文）
+     * 仅送 L2/L3 语义层——L0/L1 是确定性快速层不消费上下文；有上下文时旁路 L2 文本
+     * 缓存（同文本在不同会话语境下正确意图可能不同，且上下文逐轮变化键必 miss）。
+     * </p>
      *
+     * @param contextBlock 对话上下文块（ChatService 从 messages 表 + 记忆摘要构建；null/空白 = 无上下文）
      * @return 分类结果；全层失败返回 null（ChatService 保持既有容错：主 Agent 自主路由）
      */
-    public IntentResult classify(String userMessage, String userId, String sessionId) {
+    public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
         if (!config.isEnabled()) {
-            return viaL3(userMessage, userId, sessionId, System.nanoTime());
+            return viaL3(userMessage, contextBlock, userId, sessionId, System.nanoTime());
         }
         long start = System.nanoTime();
 
@@ -119,10 +125,15 @@ public class IntentCascadeRouter {
             }
         }
 
-        // ---- L2 轻量语义：文本缓存 → qwen-turbo 单标签 ----
+        // ---- L2 轻量语义：文本缓存（仅无上下文）→ qwen-turbo 单标签 ----
         if (config.isL2Enabled()) {
             String normalized = userMessage == null ? "" : userMessage.trim();
-            if (config.isL2CacheEnabled() && !normalized.isEmpty()) {
+            // 带上下文时旁路文本缓存：同文本在不同会话的正确意图可能不同
+            // （「长春」在规划反问语境是 PLANNING、全新会话是 CHAT），上下文逐轮变化
+            // 键也必 miss；旁路同时根治一次误判被全局缓存 60 分钟的投毒问题
+            boolean useCache = config.isL2CacheEnabled() && !normalized.isEmpty()
+                    && (contextBlock == null || contextBlock.isBlank());
+            if (useCache) {
                 String cached = safeGetL2(normalized);
                 IntentType cachedType = cached != null ? parseIntent(cached) : null;
                 if (cachedType != null) {
@@ -132,10 +143,10 @@ public class IntentCascadeRouter {
                     return result;
                 }
             }
-            IntentResult l2Result = l2.classify(userMessage, userId, sessionId);
+            IntentResult l2Result = l2.classify(userMessage, contextBlock, userId, sessionId);
             IntentType l2Type = l2Result != null ? l2Result.toIntentType() : null;
             if (l2Type != null) {
-                if (config.isL2CacheEnabled() && !normalized.isEmpty()) {
+                if (useCache) {
                     safeSaveL2(normalized, l2Type.name());
                 }
                 saveRecent(userId, sessionId, l2Type);
@@ -146,14 +157,14 @@ public class IntentCascadeRouter {
         }
 
         // ---- L3 兜底：现有 IntentClassifier 原样包装 ----
-        return viaL3(userMessage, userId, sessionId, start);
+        return viaL3(userMessage, contextBlock, userId, sessionId, start);
     }
 
     /**
      * L3 兜底并补埋点（enabled=false 直通时也走这里，保持旧链路）
      */
-    private IntentResult viaL3(String userMessage, String userId, String sessionId, long start) {
-        IntentResult result = l3.classify(userMessage, userId, sessionId);
+    private IntentResult viaL3(String userMessage, String contextBlock, String userId, String sessionId, long start) {
+        IntentResult result = l3.classify(userMessage, contextBlock, userId, sessionId);
         if (result != null && result.toIntentType() != null) {
             saveRecent(userId, sessionId, result.toIntentType());
             logHit("L3", start, userId, sessionId, result);

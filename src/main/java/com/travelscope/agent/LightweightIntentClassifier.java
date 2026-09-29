@@ -32,7 +32,7 @@ public class LightweightIntentClassifier {
     private static final Duration CLASSIFY_TIMEOUT = Duration.ofSeconds(15);
 
     private static final String SYS_PROMPT = """
-            你是旅游助手的意图分类器。根据用户消息，判定唯一一个意图类别。
+            你是旅游助手的意图分类器。根据用户消息（可能附带对话上下文），判定唯一一个意图类别。
 
             类别：
             - CHAT：问候、闲聊、能力咨询
@@ -40,7 +40,11 @@ public class LightweightIntentClassifier {
             - PLANNING：需要整合多天多要素（交通+住宿+景点+预算）的完整行程方案
             - RAG：旅游攻略、目的地介绍、文化风俗等知识型问题
 
-            规则：只看当前这条消息；拿不准时优先判 TOOL_CALL。
+            规则：
+            - 优先按【当前用户消息】本身判定；消息自身意图明确时不被上下文带偏
+            - 消息本身不明确时（如只答地名/天数/日期/预算/人数的短回答），结合【对话上下文】
+              理解——对助手上一轮反问的回答属于正在进行的流程，通常判 PLANNING
+            - 无上下文时只看当前这条消息；拿不准时优先判 TOOL_CALL
 
             示例：
             「你好」 → CHAT
@@ -48,6 +52,8 @@ public class LightweightIntentClassifier {
             「查一下明天北京到上海的高铁票」 → TOOL_CALL
             「帮我规划成都五日游，预算 6000」 → PLANNING
             「成都必吃美食有哪些？」 → RAG
+            （上下文：助手反问「您想去哪里玩？」）「长春」 → PLANNING
+            （上下文：助手反问「您想去哪里玩？」）「长春今天天气怎么样？」 → TOOL_CALL
             """;
 
     private final Model model;
@@ -66,9 +72,12 @@ public class LightweightIntentClassifier {
      * 两条路都失败才返回 null（级联层负责降到 L3）。
      * </p>
      *
+     * @param userMessage  用户消息原文
+     * @param contextBlock 对话上下文块（messages + 记忆摘要构建；null/空白 = 无上下文，
+     *                     行为与旧版一致——只看当前这条消息）
      * @return 分类结果；失败返回 null（级联层负责降级到 L3）
      */
-    public IntentResult classify(String userMessage, String userId, String sessionId) {
+    public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 .sessionId(sessionId + "-intent-l2")
@@ -81,7 +90,7 @@ public class LightweightIntentClassifier {
                     .maxIters(2)
                     .build();
 
-            Msg reply = classifier.call(userMessage, IntentResult.class, ctx)
+            Msg reply = classifier.call(buildInput(userMessage, contextBlock), IntentResult.class, ctx)
                     .block(CLASSIFY_TIMEOUT);
             if (reply == null) {
                 log.warn("L2 轻量分类返回为空: userId={}, sessionId={}", userId, sessionId);
@@ -114,6 +123,17 @@ public class LightweightIntentClassifier {
                     userId, sessionId, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 分类输入：有上下文时按「上下文块 + 当前消息」包装，否则原样（保持旧行为）
+     */
+    static String buildInput(String userMessage, String contextBlock) {
+        if (contextBlock == null || contextBlock.isBlank()) {
+            return userMessage;
+        }
+        return "【对话上下文（截至上一轮）】\n" + contextBlock.trim()
+                + "\n\n【当前用户消息】\n" + userMessage;
     }
 
     /**

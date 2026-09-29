@@ -70,6 +70,9 @@ public class ChatService {
     private final boolean historyEnabled;
     /** 会话记忆摘要（2026-09-29 失忆修复：每满 10 轮后台增量折叠，随窗口一起注入） */
     private final ConversationSummaryService conversationSummaryService;
+    /** 意图分类上下文构建器（travelscope.intent-cascade.context-*，失忆修复 Fix 4） */
+    private final IntentContextBuilder intentContextBuilder;
+    private final boolean intentContextEnabled;
     /** 应用配置（泳道超时等运行时读取） */
     private final com.travelscope.config.AppProperties appProperties;
     /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
@@ -101,6 +104,11 @@ public class ChatService {
         this.appProperties = appProperties;
         this.loadShedService = loadShedService;
         this.conversationSummaryService = conversationSummaryService;
+        this.intentContextBuilder = new IntentContextBuilder(
+                appProperties.getIntentCascade().getContextRounds(),
+                appProperties.getIntentCascade().getContextMaxCharsPerMessage(),
+                appProperties.getIntentCascade().getContextSummaryMaxChars());
+        this.intentContextEnabled = appProperties.getIntentCascade().isContextEnabled();
     }
 
     /**
@@ -148,7 +156,7 @@ public class ChatService {
         }
 
         Disposable disposable = Mono
-                .fromCallable(() -> resolveIntent(userMessage, userId, conversation.getId()))
+                .fromCallable(() -> resolveIntent(conversation, userId, userMessage))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(intent -> {
                     // 过载降级准入（2026-09-23）：意图明确后判定——YELLOW 只挡新 PLANNING
@@ -196,9 +204,21 @@ public class ChatService {
      *
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
-    private IntentResult resolveIntent(String userMessage, Long userId, Long conversationId) {
+    private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage) {
+        // 意图分类上下文注入（失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块随消息
+        // 送 L2/L3——「长春」这类对 intake 反问的裸名词短回答在语境下判 PLANNING，不再
+        // 被判 CHAT 脱离规划流。messages 表是唯一可靠事实源（L0/状态机/缓存都是加速层，
+        // 丢失可由此兜回）；效果依赖 POST /chat/stream 回传正确 conversationId。
+        String contextBlock = "";
+        if (intentContextEnabled) {
+            List<Message> messages = conversationService.listMessages(conversation.getId());
+            String summary = appProperties.getChatHistory().getSummary().isEnabled()
+                    ? conversation.getSummary() : null;
+            contextBlock = intentContextBuilder.build(messages, summary);
+        }
         IntentResult result = intentCascadeRouter.classify(
-                userMessage, String.valueOf(userId), SESSION_PREFIX + conversationId);
+                userMessage, contextBlock, String.valueOf(userId),
+                SESSION_PREFIX + conversation.getId());
         if (result != null && result.toIntentType() == IntentType.RAG) {
             log.info("意图=RAG，知识库可用: {}（不可用时由路由指令回退为直接回答）", ragService.isAvailable());
         }
@@ -206,9 +226,10 @@ public class ChatService {
         // （如「长春」「三天」）不含 L0 延续词、单条消息 L2 也判不出 PLANNING → 被判 CHAT
         // → 脱离规划流（master 只回通用文本）。这里在代码层覆盖：需求状态机处于 COLLECTING
         // 且分类为 CHAT → 强制 PLANNING（回流 intake 更新状态机）。TOOL_CALL/RAG 不覆盖
-        // （用户明确要查天气/查票时正常放行）。
+        // （用户明确要查天气/查票时正常放行）。Fix 4 上下文注入后本保护降级为第二道防线
+        // （状态机是加速层，Redis 丢失时 Fix 4 的 messages+摘要路径仍可靠）。
         if (result != null && result.toIntentType() == IntentType.CHAT) {
-            String reqSessionId = SESSION_PREFIX + conversationId;
+            String reqSessionId = SESSION_PREFIX + conversation.getId();
             TripRequirementState state = tripRequirementStore.get(String.valueOf(userId), reqSessionId);
             // COLLECTING 且已开始收集（有任一已收集字段或已反问过）才覆盖——
             // 全新会话的真闲聊不应被拉进规划流
