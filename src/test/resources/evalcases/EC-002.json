@@ -1,0 +1,17 @@
+{
+  "caseId": "EC-002",
+  "category": "MULTI_CITY",
+  "userMessages": [
+    "下个月想带爸妈去川渝玩5天：先在成都待3天，之后去重庆待2天，老人家腿脚一般，帮我安排得松一点",
+    "成都到重庆坐高铁吧，酒店要有电梯、离地铁站近一些",
+    "三个人预算6000以内，出一份完整行程，美食可以适当安排"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "行程需覆盖成都3天+重庆2天共5天，含每日POI、预算汇总及交通/住宿/天气四维信息"},
+      {"type": "CONSTRAINT_COVERED", "desc": "多城市串联：重庆段不得缺失，两城衔接交通需落地", "params": {"keyword": "重庆"}},
+      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

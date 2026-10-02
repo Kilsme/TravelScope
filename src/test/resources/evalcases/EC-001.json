@@ -1,0 +1,17 @@
+{
+  "caseId": "EC-001",
+  "category": "MULTI_CITY",
+  "userMessages": [
+    "五一假期想出去玩5天，从北京出发：前3天在北京逛，后2天去天津，最后从天津回北京，帮我规划一份行程",
+    "我们两个人出行，北京到天津打算坐高铁，住宿想选干净舒适、交通方便的酒店",
+    "两个人总预算8000左右，帮我把每天的景点、交通和花费都安排出来吧"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "行程需覆盖北京3天+天津2天共5天，含每日POI、预算汇总及交通/住宿/天气四维信息"},
+      {"type": "CONSTRAINT_COVERED", "desc": "多城市串联：天津段不得缺失，两城衔接交通需落地", "params": {"keyword": "天津"}},
+      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

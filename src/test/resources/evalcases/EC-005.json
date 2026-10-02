@@ -1,0 +1,17 @@
+{
+  "caseId": "EC-005",
+  "category": "STRICT_BUDGET",
+  "userMessages": [
+    "我是学生，暑假一个人去西安玩4天，总预算3000是硬约束，包含吃住行和门票的所有花费，一分都不能超",
+    "住宿住青旅床位就行，往返火车坐硬座",
+    "帮我做一份穷游方案，每项花费都列出来，加起来不能超过3000"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维，预算明细需逐项列出"},
+      {"type": "CONSTRAINT_COVERED", "desc": "严格预算硬约束：预算汇总需明确总预算3000，且明细合计不得超过3000", "params": {"keyword": "3000"}},
+      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

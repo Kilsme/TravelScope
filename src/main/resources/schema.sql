@@ -209,6 +209,35 @@ COMMENT ON COLUMN document_chunks.payload IS '扩展元数据（JSON: 可包含�
 COMMENT ON COLUMN document_chunks.created_at IS '创建时间';
 
 -- ============================================================================
+-- 6. 评估记录表 (evaluation_records) —— FR-S13 评估体系 / FR-S15 EvalCase 结果落库
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS evaluation_records (
+    id              BIGSERIAL PRIMARY KEY,
+    trace_id        VARCHAR(64),                                           -- Jaeger Trace ID（关联全链路调用，Micrometer Tracing 生成）
+    case_id         VARCHAR(64),                                           -- EvalCase 编号（如 EC-001；线上真实对话评估时为空）
+    rule_results    JSONB,                                                 -- 确定性规则各项通过与否（FIELD_COMPLETE/CONSTRAINT_COVERED/NO_HALLUCINATION/TOOL_ORDER）
+    rubric_scores   JSONB,                                                 -- 模型评分各项（qwen-max：路线连贯性/时间密度/偏好匹配）
+    total_score     NUMERIC(5,2),                                          -- 总分（规则&Rubric 双轨合成）
+    is_bad_case     BOOLEAN       NOT NULL DEFAULT FALSE,                  -- 是否坏例: true-规则不过或Rubric低于阈值 false-正常
+    created_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP       -- 创建时间
+);
+
+-- 索引
+CREATE INDEX IF NOT EXISTS idx_evaluation_records_created_at ON evaluation_records (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evaluation_records_case_id ON evaluation_records (case_id);
+CREATE INDEX IF NOT EXISTS idx_evaluation_records_is_bad_case ON evaluation_records (is_bad_case);
+
+COMMENT ON TABLE  evaluation_records IS '评估记录表（规则&Rubric 双轨评估结果）';
+COMMENT ON COLUMN evaluation_records.id IS '主键ID';
+COMMENT ON COLUMN evaluation_records.trace_id IS 'Jaeger Trace ID（关联全链路调用）';
+COMMENT ON COLUMN evaluation_records.case_id IS 'EvalCase 编号（线上真实对话评估时为空）';
+COMMENT ON COLUMN evaluation_records.rule_results IS '确定性规则各项通过与否（JSON格式）';
+COMMENT ON COLUMN evaluation_records.rubric_scores IS '模型评分各项（JSON格式）';
+COMMENT ON COLUMN evaluation_records.total_score IS '总分（规则&Rubric 双轨合成）';
+COMMENT ON COLUMN evaluation_records.is_bad_case IS '是否坏例: true-规则不过或低于阈值 false-正常';
+COMMENT ON COLUMN evaluation_records.created_at IS '创建时间';
+
+-- ============================================================================
 -- 初始化：创建默认管理员用户（密码: admin123，BCrypt加密）
 -- ============================================================================
 INSERT INTO users (username, password, nickname, role, status)
@@ -216,7 +245,7 @@ SELECT 'admin', '$2a$10$fVs0gHHOT/aJctFwfzit0efOZI8xknzWUJV0dxFE7M7hdCUlgj3ea', 
 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username = 'admin');
 
 -- ============================================================================
--- 6. Elasticsearch 索引说明（非 SQL 脚本，通过 ES API 创建）
+-- 7. Elasticsearch 索引说明（非 SQL 脚本，通过 ES API 创建）
 -- ============================================================================
 -- ES 索引: document_chunks_fulltext
 -- 用途: RAG 全文检索（BM25），与 pgvector 向量检索组成双路检索
