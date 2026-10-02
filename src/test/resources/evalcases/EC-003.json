@@ -1,0 +1,17 @@
+{
+  "caseId": "EC-003",
+  "category": "FAMILY",
+  "userMessages": [
+    "想带5岁的孩子去北京玩4天，孩子太小，节奏一定要松，每天最多两三个点，中午最好能回酒店午休",
+    "孩子特别喜欢动物，想看大熊猫，其他安排一些适合小朋友的景点吧",
+    "一家三口预算10000，酒店想住得离地铁近一点，帮我排个行程"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维；每日2~3个儿童友好POI并预留午休，节奏松"},
+      {"type": "CONSTRAINT_COVERED", "desc": "亲子偏好需覆盖：行程需包含孩子想看的大熊猫相关景点", "params": {"keyword": "熊猫"}},
+      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "caseId": "EC-004",
+  "category": "FAMILY",
+  "userMessages": [
+    "周末想带5岁的女儿去上海玩3天，她心心念念要去迪士尼，那一天要整个留给园区",
+    "剩下两天节奏放慢就好，酒店订亲子房，离地铁近的",
+    "一家三口预算8000，帮我把行程、门票和预算明细都列出来"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "3天行程含每日POI、预算汇总及交通/住宿/天气四维；迪士尼安排一整天，其余两天儿童友好、节奏松"},
+      {"type": "CONSTRAINT_COVERED", "desc": "亲子核心诉求需落地：行程需包含迪士尼一整天的安排", "params": {"keyword": "迪士尼"}},
+      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}
