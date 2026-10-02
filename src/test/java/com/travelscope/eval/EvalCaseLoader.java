@@ -202,6 +202,12 @@ public final class EvalCaseLoader {
                     throw new IllegalArgumentException(ruleWhere + ": CONSTRAINT_COVERED 规则必须提供非空 params.keyword");
                 }
             }
+            if (type == RuleType.NO_HALLUCINATION) {
+                String poi = params.get("poi");
+                if (poi == null || poi.isBlank()) {
+                    throw new IllegalArgumentException(ruleWhere + ": NO_HALLUCINATION 规则必须提供非空 params.poi（待核验的虚构地点名）");
+                }
+            }
             rules.add(new EvalCase.Rule(type, desc, params));
         }
         return List.copyOf(rules);

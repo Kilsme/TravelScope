@@ -62,6 +62,11 @@ class EvalCaseLoaderTest {
                     assertFalse(keyword == null || keyword.isBlank(),
                             id + ": CONSTRAINT_COVERED 必须带非空 keyword");
                 }
+                if (rule.type() == RuleType.NO_HALLUCINATION) {
+                    String poi = rule.params().get("poi");
+                    assertFalse(poi == null || poi.isBlank(),
+                            id + ": NO_HALLUCINATION 必须带非空 poi");
+                }
             }
             int minTotal = evalCase.expectations().rubric().minTotal();
             assertTrue(minTotal >= 1 && minTotal <= 100,
@@ -138,6 +143,10 @@ class EvalCaseLoaderTest {
         assertRejected(caseJson("EC-900", CATEGORY, MESSAGES,
                         "{\"rules\": [{\"type\": \"CONSTRAINT_COVERED\"}], \"rubric\": {\"minTotal\": 80}}", ""),
                 "params.keyword");
+        // NO_HALLUCINATION 缺 poi
+        assertRejected(caseJson("EC-900", CATEGORY, MESSAGES,
+                        "{\"rules\": [{\"type\": \"NO_HALLUCINATION\"}], \"rubric\": {\"minTotal\": 80}}", ""),
+                "params.poi");
         // params 值非字符串
         assertRejected(caseJson("EC-900", CATEGORY, MESSAGES,
                         "{\"rules\": [{\"type\": \"CONSTRAINT_COVERED\", \"params\": {\"keyword\": 3000}}], \"rubric\": {\"minTotal\": 80}}", ""),

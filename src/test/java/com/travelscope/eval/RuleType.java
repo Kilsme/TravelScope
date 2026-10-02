@@ -8,7 +8,7 @@ public enum RuleType {
     FIELD_COMPLETE,
     /** 用户硬约束被输出覆盖（params.keyword 必填） */
     CONSTRAINT_COVERED,
-    /** 不编造：地点不存在时指出并给替代建议 */
+    /** 不编造：地点不存在时指出并给替代建议（params.poi 必填：待核验的虚构地点名） */
     NO_HALLUCINATION,
     /** 工具调用顺序：先 POI 后路线后组装 */
     TOOL_ORDER,
