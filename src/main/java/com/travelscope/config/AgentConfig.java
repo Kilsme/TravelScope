@@ -18,6 +18,7 @@ import com.travelscope.agent.tools.RequirementTools;
 import com.travelscope.agent.tools.TaskTools;
 import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.agent.tools.WeatherTool;
+import com.travelscope.common.TracingHelper;
 import com.travelscope.service.IntentCache;
 import com.travelscope.service.TaskRegistry;
 import com.travelscope.service.TripRequirementStore;
@@ -100,17 +101,21 @@ public class AgentConfig {
     private final HotelTool hotelTool;
     private final AttractionTool attractionTool;
     private final TransportTool transportTool;
+    /** 业务链路打点（多智能体 span 的统一装配，2026-10-02） */
+    private final TracingHelper tracingHelper;
 
     public AgentConfig(AppProperties appProperties,
                        WeatherTool weatherTool,
                        HotelTool hotelTool,
                        AttractionTool attractionTool,
-                       TransportTool transportTool) {
+                       TransportTool transportTool,
+                       TracingHelper tracingHelper) {
         this.appProperties = appProperties;
         this.weatherTool = weatherTool;
         this.hotelTool = hotelTool;
         this.attractionTool = attractionTool;
         this.transportTool = transportTool;
+        this.tracingHelper = tracingHelper;
     }
 
     /**
@@ -133,12 +138,12 @@ public class AgentConfig {
         toolkit.registerTool(transportTool);
         // 任务容器工具：create_task_backlog / get_task_progress / update_task_status
         // 主 Agent 与规划子 Agent（SHARED 工作区、共享 Toolkit）均可调用
-        toolkit.registerTool(new TaskTools(taskRegistry));
+        toolkit.registerTool(new TaskTools(taskRegistry, tracingHelper));
         // 需求状态机工具（v3 FR-S02）：intake-agent 判缺项/写回用，判断环节零模型调用
         toolkit.registerTool(new RequirementTools(tripRequirementStore));
         // RAG 双路检索 + 任务结果缓存工具（FR-S06/S11/S14）：
         // search_pois_with_rag（poi-research 双路召回）+ get/register_task_result（planner 缓存复用）
-        toolkit.registerTool(new com.travelscope.agent.tools.PoiRagTools(ragServiceImpl, taskResultCache));
+        toolkit.registerTool(new com.travelscope.agent.tools.PoiRagTools(ragServiceImpl, taskResultCache, tracingHelper));
         registerMcpClients(toolkit);
         log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + RAG双路/任务缓存 + MCP(12306、飞常准)");
         return toolkit;
@@ -278,7 +283,7 @@ public class AgentConfig {
                         .build());
         return new LlmGatewayModel(primary,
                 gw.isFallbackEnabled() ? dashscopeTurboModel : null, cb,
-                Duration.ofSeconds(gw.getModelTimeoutSeconds()), gw.isFallbackEnabled());
+                Duration.ofSeconds(gw.getModelTimeoutSeconds()), gw.isFallbackEnabled(), tracingHelper);
     }
 
     /**
@@ -394,7 +399,7 @@ public class AgentConfig {
                 //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
                 .middlewares(List.of(new IntentRouterMiddleware(),
                         new PlanningGateMiddleware(taskRegistry),
-                        new ReviewerRetryMiddleware(taskWorkspaceService)))
+                        new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
                 // 否则工具调用会挂起等待用户确认导致对话提前结束
                 .permissionContext(PermissionContextState.builder()
@@ -556,7 +561,7 @@ public class AgentConfig {
             DashScopeChatModel dashscopeTurboModel) {
         LightweightIntentClassifier l2 = new LightweightIntentClassifier(dashscopeTurboModel);
         return new IntentCascadeRouter(appProperties, intentCache,
-                l2::classify, intentClassifier::classify);
+                l2::classify, intentClassifier::classify, tracingHelper);
     }
 
     /**

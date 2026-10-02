@@ -1,5 +1,6 @@
 package com.travelscope.agent.tools;
 
+import com.travelscope.common.TracingHelper;
 import com.travelscope.dto.RetrievedFragment;
 import com.travelscope.service.RagServiceImpl;
 import com.travelscope.service.TaskResultCache;
@@ -11,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * RAG 双路检索 + 任务结果缓存工具（FR-S06/S11/S14：poi-research 与 planner 的工具面）
@@ -33,10 +35,17 @@ public class PoiRagTools {
 
     private final RagServiceImpl ragService;
     private final TaskResultCache taskResultCache;
+    /** 业务链路打点（task-cache span，2026-10-02） */
+    private final TracingHelper tracing;
 
     public PoiRagTools(RagServiceImpl ragService, TaskResultCache taskResultCache) {
+        this(ragService, taskResultCache, TracingHelper.NOOP);
+    }
+
+    public PoiRagTools(RagServiceImpl ragService, TaskResultCache taskResultCache, TracingHelper tracing) {
         this.ragService = ragService;
         this.taskResultCache = taskResultCache;
+        this.tracing = tracing;
     }
 
     /**
@@ -91,6 +100,11 @@ public class PoiRagTools {
         }
         sessionId = resolveSessionId(sessionId, ctx);
         String cached = taskResultCache.get(ctx.getUserId(), sessionId, type);
+        // 业务打点（task-cache，2026-10-02）：与 cache_miss 日志同锚点，hit=是否命中；
+        // 经会话键显式挂到 chat-turn 下（框架工具线程无 trace 上下文）
+        tracing.recordChildSpan(ctx.getUserId(), sessionId, "task-cache", Map.of(
+                "taskType", type.name().toLowerCase(),
+                "hit", String.valueOf(cached != null)));
         if (cached == null) {
             log.info("cache_miss type={} 用户={}, 会话={}", type.name().toLowerCase(), ctx.getUserId(), sessionId);
             return "CACHE_MISS: " + type.name().toLowerCase() + " 无缓存（或已过期），需正常执行该子任务";
@@ -124,6 +138,10 @@ public class PoiRagTools {
         }
         sessionId = resolveSessionId(sessionId, ctx);
         taskResultCache.register(ctx.getUserId(), sessionId, type, "-".equals(taskId) ? null : taskId, content);
+        // 业务打点（task-cache，2026-10-02）：登记即缓存写入事件，hit=true（写入成功）
+        tracing.recordChildSpan(ctx.getUserId(), sessionId, "task-cache", Map.of(
+                "taskType", type.name().toLowerCase(),
+                "hit", "true"));
         return "已登记 " + type.name().toLowerCase() + " 产出（TTL " + type.ttl.toMinutes() + " 分钟），"
                 + "二次规划或回炉时 get_cached_task_result 可直接复用";
     }

@@ -1,10 +1,13 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TracingHelper;
 import com.travelscope.config.AgentConfig.TaskWorkspaceService;
 import com.travelscope.config.AppProperties;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.ActingInput;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,6 +23,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * ReviewerRetryMiddleware 保险丝单元测试（FR-S08 检测标准 4 的逻辑层验证）
@@ -161,5 +171,54 @@ class ReviewerRetryMiddlewareTest {
         assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(), "poi spawn 保留");
         assertEquals(ReviewerRetryMiddleware.RETRY_HINT_TOOL,
                 r.last.get().toolCalls().get(1).getName(), "reviewer spawn 被改写");
+    }
+
+    // ==================== review-attempt 业务打点（2026-10-02，mock Tracer 直证 span 内容） ====================
+
+    @Test
+    @DisplayName("review-attempt 打点：首审记录 span（仅 attempt，无产物时不打 result/score）")
+    void testReviewAttemptSpan_firstAttempt() {
+        Tracer tracer = mock(Tracer.class);
+        Span span = mock(Span.class);
+        when(tracer.nextSpan()).thenReturn(span);
+        when(span.name(anyString())).thenReturn(span);
+        ReviewerRetryMiddleware traced = new ReviewerRetryMiddleware(workspace, new TracingHelper(tracer));
+
+        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+
+        verify(span).name("review-attempt");
+        verify(span).tag("attempt", "1");
+        verify(span, never()).tag(eq("result"), anyString());
+        verify(span, never()).tag(eq("score"), anyString());
+        verify(span).start();
+        verify(span).end();
+    }
+
+    @Test
+    @DisplayName("review-attempt 打点：回炉送审带上上一轮 FAIL 的总分（result/score 解析自评审产物）")
+    void testReviewAttemptSpan_retryWithScore() throws Exception {
+        Tracer tracer = mock(Tracer.class);
+        Span span = mock(Span.class);
+        when(tracer.nextSpan()).thenReturn(span);
+        when(span.name(anyString())).thenReturn(span);
+        ReviewerRetryMiddleware traced = new ReviewerRetryMiddleware(workspace, new TracingHelper(tracer));
+
+        // 首审（放行）
+        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+        // 首审产物：FAIL 总分 78（REVIEW_RESULT 首行的文件等价物）
+        Path dir = workspace.getTaskDir("u1", "conv-t");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT),
+                "# 质检报告：不通过\n\n- 总分: 78/100（通过线 80）\n\n| 维度 | 得分 |\n|---|---|");
+
+        // 回炉重送 → span 带 attempt=2 + 上一轮 result=FAIL + score=78
+        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+
+        verify(span, times(2)).start();
+        verify(span, times(2)).end();
+        verify(span).tag("attempt", "1");
+        verify(span).tag("attempt", "2");
+        verify(span).tag("result", "FAIL");
+        verify(span).tag("score", "78");
     }
 }

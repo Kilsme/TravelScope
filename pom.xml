@@ -75,6 +75,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- 链路追踪（Micrometer Tracing + OpenTelemetry）：Bridge 桥接 OTel Tracer，
+             Trace 经 OTLP HTTP 导出到 Jaeger（docker-compose 的 travelscope-jaeger）；
+             版本由 Spring Boot BOM 管理，不手写版本号 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
         <!-- ==================== AgentScope 框架 ==================== -->
         <!-- AgentScope 核心聚合包（包含 core + 扩展模块） -->
         <dependency>

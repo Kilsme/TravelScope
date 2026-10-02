@@ -233,8 +233,10 @@ logging:
     org.hibernate.SQL: DEBUG
     org.hibernate.type.descriptor.sql.BasicBinder: TRACE
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
-    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+    # [%X{traceId:-},%X{spanId:-}]：链路追踪关联字段（MDC 由 micrometer-tracing 自动填充，
+    # Jaeger UI 里的 traceId 可直接在日志中搜索；无 trace 上下文时输出 [,]）
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{50} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-},%X{spanId:-}] %logger{50} - %msg%n"
   file:
     name: logs/travelscope.log
     max-size: 50MB
@@ -249,6 +251,15 @@ management:
   endpoint:
     health:
       show-details: always
+  # ---- Micrometer Tracing 链路追踪（2026-09-29 接入，导出到 Jaeger）----
+  tracing:
+    sampling:
+      # 采样率：开发期全采样（每个请求/定时任务都生成 Trace）；生产建议 0.1 以下
+      probability: 1.0
+  otlp:
+    tracing:
+      # OTLP HTTP 导出端点（docker-compose 的 travelscope-jaeger 容器，4318）
+      endpoint: http://localhost:4318/v1/traces
   health:
     # ES 健康指示器禁用：Boot 3.3.5 actuator 与 ES Java 客户端 9.0.2 方法签名不兼容
     # （HealthResponse.activeShardsPercentAsNumber 抛 NoSuchMethodError，且反应式流挂起

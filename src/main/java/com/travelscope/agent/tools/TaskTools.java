@@ -1,11 +1,15 @@
 package com.travelscope.agent.tools;
 
+import com.alibaba.fastjson2.JSON;
+import com.travelscope.common.TracingHelper;
 import com.travelscope.service.TaskRegistry;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Map;
 
 /**
  * 任务容器工具（需求 2：任务写入/查询/回报的唯一代码层入口）
@@ -28,9 +32,16 @@ public class TaskTools {
     private static final Logger log = LoggerFactory.getLogger(TaskTools.class);
 
     private final TaskRegistry taskRegistry;
+    /** 业务链路打点（task-backlog span，2026-10-02） */
+    private final TracingHelper tracing;
 
     public TaskTools(TaskRegistry taskRegistry) {
+        this(taskRegistry, TracingHelper.NOOP);
+    }
+
+    public TaskTools(TaskRegistry taskRegistry, TracingHelper tracing) {
         this.taskRegistry = taskRegistry;
+        this.tracing = tracing;
     }
 
     /**
@@ -51,7 +62,19 @@ public class TaskTools {
             RuntimeContext ctx) {
         String userId = ctx.getUserId();
         log.info("create_task_backlog: 用户={}, 会话={}", userId, sessionId);
-        return taskRegistry.createBacklog(userId, sessionId, tasksJson);
+        // 业务打点（task-backlog，2026-10-02）：taskCount=清单条数（解析失败省略该属性，不影响登记）；
+        // 框架工具线程无 trace 上下文，经会话键显式挂到 chat-turn 下
+        return tracing.withChildSpan(userId, sessionId, "task-backlog", attrsWithTaskCount(tasksJson),
+                () -> taskRegistry.createBacklog(userId, sessionId, tasksJson));
+    }
+
+    /** 打点属性：预解析 tasksJson 条数（纯读，异常时返回空 map 让打点只缺 taskCount） */
+    private static Map<String, String> attrsWithTaskCount(String tasksJson) {
+        try {
+            return Map.of("taskCount", String.valueOf(JSON.parseArray(tasksJson).size()));
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 
     /**

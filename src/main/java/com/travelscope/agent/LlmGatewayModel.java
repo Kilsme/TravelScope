@@ -1,5 +1,6 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TracingHelper;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import org.slf4j.Logger;
@@ -8,6 +9,7 @@ import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.agentscope.core.message.Msg;
@@ -47,17 +49,25 @@ public class LlmGatewayModel implements Model {
     private final CircuitBreaker circuitBreaker;
     private final Duration callTimeout;
     private final boolean fallbackEnabled;
+    /** 业务链路打点（model-call span，2026-10-02） */
+    private final TracingHelper tracing;
 
     /** 当前生效模型：fallback 切换后能力标志反映 fallback（对齐框架 activeModel 模式） */
     private final AtomicReference<Model> activeModel;
 
     public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
                            Duration callTimeout, boolean fallbackEnabled) {
+        this(primary, fallback, circuitBreaker, callTimeout, fallbackEnabled, TracingHelper.NOOP);
+    }
+
+    public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
+                           Duration callTimeout, boolean fallbackEnabled, TracingHelper tracing) {
         this.primary = primary;
         this.fallback = fallback;
         this.circuitBreaker = circuitBreaker;
         this.callTimeout = callTimeout;
         this.fallbackEnabled = fallbackEnabled;
+        this.tracing = tracing;
         this.activeModel = new AtomicReference<>(primary);
 
         // 熔断状态变迁埋点（检测标准 2 的观察点：OPEN / HALF_OPEN / CLOSED 日志）
@@ -71,6 +81,29 @@ public class LlmGatewayModel implements Model {
     @Override
     public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools,
                                      GenerateOptions options) {
+        // 业务打点（model-call，2026-10-02）：每次模型调用一个 span（ReAct 多轮迭代各一个），
+        // 订阅时开启、终态（完成/出错/取消）结束；outcome 三态：success（主模型成功）/
+        // fallback（切换降级成功，onErrorResume 内标，tagIfAbsent 防 complete 覆盖）/
+        // error（双失败，终态覆盖）
+        return Flux.defer(() -> {
+            TracingHelper.SpanHandle span = tracing.startSpan("model-call",
+                    Map.of("model", String.valueOf(activeModel.get().getModelName())));
+            return doStream(messages, tools, options, span)
+                    .doOnComplete(() -> {
+                        span.tagIfAbsent("outcome", "success");
+                        span.end();
+                    })
+                    .doOnError(e -> {
+                        span.tag("outcome", "error");
+                        span.error(e);
+                        span.end();
+                    })
+                    .doOnCancel(span::end);
+        });
+    }
+
+    private Flux<ChatResponse> doStream(List<Msg> messages, List<ToolSchema> tools,
+                                        GenerateOptions options, TracingHelper.SpanHandle span) {
         // 熔断统计挂在「主模型流」上（fallback 之前）：fallback 成功会掩盖主模型故障，
         // 若挂在外层整链，持续 401 时熔断器永远不 OPEN、请求永远打向 DashScope 拿 401。
         // OPEN 期间主模型流直接快速失败（CallNotPermitted），仍可经 fallback 提供服务。
@@ -88,6 +121,8 @@ public class LlmGatewayModel implements Model {
                     fallback.getModelName(), activeModel.get().getModelName(),
                     e.getClass().getSimpleName() + ": " + e.getMessage());
             activeModel.set(fallback);
+            // 打点内标：本次调用走了 fallback（外层 doOnComplete 的 success 经 tagIfAbsent 不覆盖）
+            span.tag("outcome", "fallback");
             return fallback.stream(messages, tools, options);
         });
     }
