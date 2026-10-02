@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
+import com.travelscope.common.TracingHelper;
 import com.travelscope.dto.ChatEvent;
 import com.travelscope.dto.IntentResult;
 import com.travelscope.dto.TripRequirementState;
@@ -31,6 +32,7 @@ import reactor.core.scheduler.Schedulers;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
 
@@ -73,6 +75,8 @@ public class ChatService {
     /** 意图分类上下文构建器（travelscope.intent-cascade.context-*，失忆修复 Fix 4） */
     private final IntentContextBuilder intentContextBuilder;
     private final boolean intentContextEnabled;
+    /** 业务链路打点（chat-turn span：一轮对话的 trace 根，2026-10-02） */
+    private final TracingHelper tracing;
     /** 应用配置（泳道超时等运行时读取） */
     private final com.travelscope.config.AppProperties appProperties;
     /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
@@ -87,6 +91,7 @@ public class ChatService {
                        LlmGateway llmGateway,
                        LoadShedService loadShedService,
                        ConversationSummaryService conversationSummaryService,
+                       TracingHelper tracing,
                        com.travelscope.config.AppProperties appProperties) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
@@ -109,6 +114,7 @@ public class ChatService {
                 appProperties.getIntentCascade().getContextMaxCharsPerMessage(),
                 appProperties.getIntentCascade().getContextSummaryMaxChars());
         this.intentContextEnabled = appProperties.getIntentCascade().isContextEnabled();
+        this.tracing = tracing;
     }
 
     /**
@@ -155,40 +161,61 @@ public class ChatService {
             return emitter;
         }
 
-        Disposable disposable = Mono
-                .fromCallable(() -> resolveIntent(conversation, userId, userMessage))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(intent -> {
-                    // 过载降级准入（2026-09-23）：意图明确后判定——YELLOW 只挡新 PLANNING
-                    // （慢泳道内存大头），快请求继续服务；RED 挡全部新对话。
-                    // 注意：此时网关槽位已持有，拒绝路径须 release
-                    boolean planningIntent = intent != null && intent.toIntentType() == IntentType.PLANNING;
-                    String shed = loadShedService.tryAdmit(planningIntent);
-                    if (shed != null) {
-                        llmGateway.release(String.valueOf(userId));
-                        try {
-                            emitter.send(SseEmitter.event()
-                                    .name(ChatEvent.TYPE_INTENT).data(toIntentPayload(intent)));
-                            emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR).data(shed));
-                        } catch (Exception ignored) {
-                            // 客户端已断开
+        // 业务打点（chat-turn，2026-10-02 多智能体链路 Trace）：本轮对话的 trace 根——
+        // 请求线程开启并短暂 inScope（订阅点捕获 trace 上下文，经 Reactor 自动传播流入
+        // 泳道/Agent 链，子 span 才挂得到父链）；intent 在分类后补标；doFinally 终态结束
+        // （complete/error/cancel 全覆盖，客户端断开 dispose 也不漏 span）。
+        // 另经 beginTurn 按会话登记——框架内部线程无 trace 上下文，工具/中间件打点经
+        // TracingHelper.recordChildSpan 显式挂到本 span 下
+        String turnSessionKey = SESSION_PREFIX + conversation.getId();
+        TracingHelper.SpanHandle turnSpan = tracing.startSpan("chat-turn", Map.of(
+                "userId", String.valueOf(userId),
+                "sessionId", turnSessionKey));
+        tracing.beginTurn(String.valueOf(userId), turnSessionKey, turnSpan);
+
+        Disposable disposable;
+        try (var spanScope = turnSpan.inScope()) {
+            disposable = Mono
+                    .fromCallable(() -> resolveIntent(conversation, userId, userMessage))
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .flatMapMany(intent -> {
+                        // 意图分类完成，补标 chat-turn 的 intent 属性（含 UNKNOWN 兜底）
+                        turnSpan.tag("intent", intent != null && intent.toIntentType() != null
+                                ? intent.toIntentType().name() : "UNKNOWN");
+                        // 过载降级准入（2026-09-23）：意图明确后判定——YELLOW 只挡新 PLANNING
+                        // （慢泳道内存大头），快请求继续服务；RED 挡全部新对话。
+                        // 注意：此时网关槽位已持有，拒绝路径须 release
+                        boolean planningIntent = intent != null && intent.toIntentType() == IntentType.PLANNING;
+                        String shed = loadShedService.tryAdmit(planningIntent);
+                        if (shed != null) {
+                            llmGateway.release(String.valueOf(userId));
+                            try {
+                                emitter.send(SseEmitter.event()
+                                        .name(ChatEvent.TYPE_INTENT).data(toIntentPayload(intent)));
+                                emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR).data(shed));
+                            } catch (Exception ignored) {
+                                // 客户端已断开
+                            }
+                            emitter.complete();
+                            return Flux.<ChatEvent>empty();
                         }
-                        emitter.complete();
-                        return Flux.<ChatEvent>empty();
-                    }
-                    return Flux.concat(
-                        Flux.just(toIntentEvent(intent)),
-                        runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull))
-                        // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
-                        // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
-                        // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
-                        .subscribeOn(intent != null && intent.toIntentType() == IntentType.PLANNING
-                                ? slowLaneScheduler : fastLaneScheduler);
-                })
-                .subscribe(
-                        event -> sendEvent(emitter, event),
-                        error -> handleError(emitter, replyBuf, conversation, userId, error),
-                        () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull));
+                        return Flux.concat(
+                            Flux.just(toIntentEvent(intent)),
+                            runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull))
+                            // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
+                            // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
+                            // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
+                            .subscribeOn(intent != null && intent.toIntentType() == IntentType.PLANNING
+                                    ? slowLaneScheduler : fastLaneScheduler);
+                    })
+                    // 终态（含取消/超时 dispose）结束 chat-turn span；会话父注册跨轮存续
+                    // （TracingHelper.beginTurn 注释：异步 spawn 的后台子链晚到的打点仍挂本轮 trace）
+                    .doFinally(signal -> turnSpan.end())
+                    .subscribe(
+                            event -> sendEvent(emitter, event),
+                            error -> handleError(emitter, replyBuf, conversation, userId, error),
+                            () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull));
+        }
 
         emitter.onTimeout(disposable::dispose);
         emitter.onError(t -> disposable.dispose());

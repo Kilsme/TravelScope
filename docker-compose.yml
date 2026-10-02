@@ -118,6 +118,20 @@ services:
       retries: 5
       start_period: 30s
 
+  # ======================== Jaeger 分布式追踪 ========================
+  # 接收应用 Micrometer Tracing + OpenTelemetry 导出的 Trace（OTLP HTTP 4318），
+  # UI 16686 查看调用链。all-in-one 单体镜像：数据存内存（重启即失，开发环境够用）；
+  # 1.35+ OTLP 接收默认开启（容器内 4317 gRPC / 4318 HTTP，此处只映射用到的 4318）
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: travelscope-jaeger
+    ports:
+      - "4318:4318"    # OTLP HTTP（应用 management.otlp.tracing.endpoint 指向这里）
+      - "16686:16686"  # Jaeger UI
+    restart: unless-stopped
+    networks:
+      - travelscope-net
+
 volumes:
   redis-data:
   minio-data:

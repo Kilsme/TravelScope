@@ -1,5 +1,6 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TracingHelper;
 import com.travelscope.config.AppProperties;
 import com.travelscope.config.AppProperties.IntentCascadeConfig;
 import com.travelscope.config.AppProperties.L1Rule;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -67,13 +69,21 @@ public class IntentCascadeRouter {
     private final LlmClassifier l2;
     private final LlmClassifier l3;
     private final List<CompiledRule> compiledRules;
+    /** 业务链路打点（intent-cascade span，2026-10-02） */
+    private final TracingHelper tracing;
 
     public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
                                LlmClassifier l2, LlmClassifier l3) {
+        this(appProperties, cache, l2, l3, TracingHelper.NOOP);
+    }
+
+    public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
+                               LlmClassifier l2, LlmClassifier l3, TracingHelper tracing) {
         this.config = appProperties.getIntentCascade();
         this.cache = cache;
         this.l2 = l2;
         this.l3 = l3;
+        this.tracing = tracing;
         this.compiledRules = compileRules(config.getL1Rules());
         log.info("意图级联初始化: enabled={}, L1 规则 {} 条（{}）, L0={}, L2={} (model={}), L2 缓存={}",
                 config.isEnabled(), compiledRules.size(),
@@ -172,6 +182,8 @@ public class IntentCascadeRouter {
             long ms = elapsedMs(start);
             log.info("cascade_miss latency={}ms userId={} sessionId={}（全层未命中，主 Agent 自主路由）",
                     ms, userId, sessionId);
+            // 业务打点（intent-cascade）：与 cascade_miss 埋点同锚点
+            tracing.recordSpan("intent-cascade", Map.of("layer", "MISS", "latencyMs", String.valueOf(ms)));
         }
         return result;
     }
@@ -247,8 +259,11 @@ public class IntentCascadeRouter {
      * 埋点日志（FR-S12 基础）：层命中 + 端到端延迟 + 意图
      */
     private void logHit(String layer, long start, String userId, String sessionId, IntentResult result) {
+        long latencyMs = elapsedMs(start);
         log.info("cascade_hit={} latency={}ms intent={} userId={} sessionId={}",
-                layer, elapsedMs(start), result.intent, userId, sessionId);
+                layer, latencyMs, result.intent, userId, sessionId);
+        // 业务打点（intent-cascade，2026-10-02）：与 cascade_hit 埋点同锚点同取值（layer/latencyMs）
+        tracing.recordSpan("intent-cascade", Map.of("layer", layer, "latencyMs", String.valueOf(latencyMs)));
     }
 
     private static long elapsedMs(long startNanos) {
