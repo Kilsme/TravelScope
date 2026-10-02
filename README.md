@@ -101,6 +101,18 @@ mvn spring-boot:run
 - Actuator: http://localhost:8080/api/actuator/health
 - MinIO Console: http://localhost:9001 (root / root123456)
 
+### 5. 运行回归测试（EvalCase 门禁，FR-S15）
+
+```bash
+# 前置：docker-compose up -d + 本地 PostgreSQL 已建库建表，且 export API_KEY=sk-...
+EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
+```
+
+5 类 EvalCase 用例（多城市/亲子/严格预算/地点不存在/路线过密，`src/test/resources/evalcases/`）真实跑完整多智能体链路，
+按「确定性规则 + qwen-max Rubric 三维评分」双轨判定，任一规则 FAIL 或总分低于 80 即门禁失败；
+结果（含 trace_id）写入 `evaluation_records`。未设置 `EVAL_REAL_API` 时该测试自动跳过，
+`mvn test` 不受影响（规则断言器单测 `RuleAssertersTest`/`RubricScoresTest` 始终运行）。
+
 ## 数据库表结构
 
 | 表名 | 说明 |
