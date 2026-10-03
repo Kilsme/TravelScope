@@ -480,15 +480,17 @@ public class AgentConfig {
                         "get_cached_task_result"))
                 .build();
 
-        // 质检子 Agent（FR-S08）：5 维评分 + 可调工具核验事实，产出 review_passed.md / review_report.md。
+        // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，产出 review_passed.md / review_report.md。
         // 模型经 modelResolver 按 name 分流到 qwen-max（评分模型与主链路 qwen-plus 分离）；
         // tools 白名单限定核验工具面（天气/路线/地理 + 文件 + 缓存登记）
         SubagentDeclaration reviewer = SubagentDeclaration.builder()
                 .name(ReviewerAgent.AGENT_NAME)
-                .description("质量审阅 Agent（质检员，qwen-max 评分模型）：对 itinerary_draft.md 做 5 维评分"
-                        + "（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分，总分≥80 且无单维<12 通过），"
-                        + "调工具核验事实（重查距离/天气），通过写 review_passed.md 并自登记缓存，"
-                        + "不通过写 review_report.md（含改进建议供 planner 回炉）")
+                .description("质量审阅 Agent（质检员，qwen-max 评分模型）：对 itinerary_draft.md 做分段审核"
+                        + "（段1 POI 有效性 / 段2 路线连贯性+时间密度 / 段3 预算+偏好匹配，各段 pass|fail），"
+                        + "以 5 维评分（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分）作量化依据，"
+                        + "总分≥80 且无单维<12 且三段全 pass 才通过；调工具核验事实（重查距离/天气），"
+                        + "通过写 review_passed.md，不通过写 review_report.md"
+                        + "（含分段结论与改进建议，供 planner 按段回炉）")
                 .inlineAgentsBody(ReviewerAgent.SYS_PROMPT)
                 .model(appProperties.getDashscope().getReviewerModel())
                 .maxIters(ReviewerAgent.MAX_ITERS)
