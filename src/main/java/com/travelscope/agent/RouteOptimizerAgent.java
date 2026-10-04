@@ -18,8 +18,11 @@ public class RouteOptimizerAgent {
     /** Agent 名称（用于多智能体编排中的唯一标识） */
     public static final String AGENT_NAME = "route-optimizer";
 
-    /** 最大推理迭代次数（FR-S07：迭代试错需要轮次空间） */
-    public static final int MAX_ITERS = 6;
+    /**
+     * 最大推理迭代次数（B2 回炉重跑实测上调：读清单 + 载入技能 + 两两算通勤 + 覆盖写
+     * route_plan + 登记缓存需 7~9 轮，6 轮在写文件前耗尽导致「无最终回复」截断）
+     */
+    public static final int MAX_ITERS = 10;
 
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
