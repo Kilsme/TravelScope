@@ -20,8 +20,12 @@ public class ReviewerAgent {
     /** Agent 名称（用于多智能体编排中的唯一标识） */
     public static final String AGENT_NAME = "reviewer-agent";
 
-    /** 最大推理迭代次数（分段审核 + 工具核验，轮次适中） */
-    public static final int MAX_ITERS = 6;
+    /**
+     * 最大推理迭代次数（B2 实测上调：读草案 + 工具核验 + 写产物文件 + 输出标记，
+     * 路径探索不顺利时 6 轮会在写文件前耗尽——报告文件是 planner 按段路由与
+     * ReviewerRetryMiddleware 的代码可见契约，缺文件即破坏回炉闭环）
+     */
+    public static final int MAX_ITERS = 10;
 
     /** 通过阈值：总分（FR-S08） */
     public static final int PASS_TOTAL_SCORE = 80;
