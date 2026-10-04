@@ -182,9 +182,10 @@ travelscope:
     global-qps: 100
     acquire-timeout-ms: 3000
     fast-lane-timeout-seconds: 25
-    # 慢泳道 300s：完整规划链（planner 工具直调 + poi/route + reviewer 评分 + ≤2 次回炉）
-    # 单段实测 30-60s，60s 必然切断；仍在 spawn 同步 600s 上限内
-    slow-lane-timeout-seconds: 300
+    # 慢泳道 420s（2026-10-04 由 300 上调）：B2/B3 实测规划全链（含分段回炉）275~320s，
+    # 且 master 现经 ctx force_sync 同步等待 planner 至 420s——泳道必须 ≥ 同步等待上限，
+    # 否则 master 等待会被泳道先砍断。FR-S09 容量假设（2000 在线）待 B4 回归复核
+    slow-lane-timeout-seconds: 420
     model-timeout-seconds: 30
     cb-sliding-window-size: 10
     cb-failure-rate-threshold: 50

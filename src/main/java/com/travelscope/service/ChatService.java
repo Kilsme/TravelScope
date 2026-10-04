@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
+import com.travelscope.common.ActivityPresenter;
 import com.travelscope.common.TracingHelper;
 import com.travelscope.dto.ChatEvent;
 import com.travelscope.dto.IntentResult;
@@ -20,6 +21,7 @@ import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.harness.agent.HarnessAgent;
+import io.agentscope.harness.agent.tool.AgentSpawnTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -293,6 +295,15 @@ public class ChatService {
         String agentSessionId = SESSION_PREFIX + conversation.getId();
         ctx.put(IntentRouterMiddleware.CTX_COLLAB_DIR_KEY,
                 taskWorkspaceService.collabDirRelativePath(agentSessionId));
+        // 前端可见性改造（2026-10-04）：PLANNING 轮强制 spawn 同步等待 420s——框架默认
+        // 同步等待仅 30s，规划全链（含分段回炉）实测 275~320s，必然「超时转后台」，
+        // master 只能回「后台运行中」并结束回合，前端从此无反馈、结果要等下一条消息。
+        // 双键经 AgentSpawnTool.resolveEffectiveTimeoutMs 生效（仅 force_sync 时读 ctx 键，
+        // 上限 clamp 600s）；超时行为从「转后台」变为「中断并明确报超时」。
+        if (type == IntentType.PLANNING) {
+            ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
+            ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 420);
+        }
 
         String outgoing = userMessage;
         if (type == IntentType.RAG && ragService.isAvailable()) {
@@ -348,8 +359,11 @@ public class ChatService {
         java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
                 ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
         return travelMasterAgent.streamEvents(msg, ctx)
-                // 主 Agent 自身事件 + intake-agent 转发的 ask_user 反问（转 clarify_question）
-                .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event))
+                // 主 Agent 自身事件 + intake 反问 + 子 Agent 工具活动（前端可见性改造：
+                // master 同步等待期间，子 Agent 的工具 Start/End 转为 agent_status 推送；
+                // 子 Agent 文本 delta 仍被 isMainAgentEvent 拦截——思维链不外泄）
+                .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event)
+                        || isSubAgentToolEvent(event))
                 .doOnNext(event -> {
                     // 过程/结果分离（2026-09-22）：PLANNING 轮 master 的过程文本不进 replyBuf——
                     // replyBuf 只保留给最终方案（done/入库），过程叙述按句聚合后进活动流
@@ -421,6 +435,18 @@ public class ChatService {
     }
 
     /**
+     * 子 Agent 工具活动放行（2026-10-04 前端可见性改造）：source 含 "/"（嵌套子 Agent）
+     * 的工具 Start/End 事件放行进 toChatEvent → agent_status，让用户全程看到
+     * 「行程规划 · 检索景点 RUNNING」之类的活动，而不是委派后一片寂静。
+     */
+    private boolean isSubAgentToolEvent(AgentEvent event) {
+        if (event.getSource() == null || !event.getSource().contains("/")) {
+            return false;
+        }
+        return event instanceof ToolCallStartEvent || event instanceof ToolResultEndEvent;
+    }
+
+    /**
      * AgentEvent → SSE 事件映射（非推送事件返回 null 被过滤）
      * <p>
      * 过程/结果分离（2026-09-22 改造）：
@@ -466,6 +492,11 @@ public class ChatService {
 
     /**
      * 构造 agent_status 事件（payload JSON：agent/action/state）
+     * <p>
+     * 2026-10-04 用户友好化：经 {@link ActivityPresenter} 把内部名映射为中文角色/动作，
+     * 纯工程操作（缓存/文件/任务容器，白名单之外）返回 {@code null} 不推送——
+     * 前端活动流只见中文动作，不见工程结构。
+     * </p>
      *
      * @param source 事件源（null = 主 Agent；"conv-x/intake-agent" 形态解析出子代理名）
      */
@@ -474,9 +505,13 @@ public class ChatService {
         if (source != null && source.contains("/")) {
             agent = source.substring(source.lastIndexOf('/') + 1);
         }
+        String actionLabel = ActivityPresenter.actionLabel(action);
+        if (actionLabel == null) {
+            return null; // 内部工具/未知名：白名单外不推送（mapNotNull 会丢弃）
+        }
         JSONObject payload = new JSONObject();
-        payload.put("agent", agent);
-        payload.put("action", action);
+        payload.put("agent", ActivityPresenter.agentLabel(agent));
+        payload.put("action", actionLabel);
         payload.put("state", state);
         return ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload.toJSONString());
     }
@@ -528,12 +563,18 @@ public class ChatService {
 
     /** THINKING 事件发射（runAgent 装配的 sink 通道，参数传递无共享状态） */
     private static void emitThinking(String sentence, java.util.function.Consumer<String> thinkingEmitter) {
-        if (sentence.length() > 60) {
-            sentence = sentence.substring(0, 60) + "…";
+        // 消毒先行（2026-10-04）：含工程细节（工具名/任务ID/路径/系统指令词汇）的
+        // 叙述句整句丢弃，再截断——先截断会把黑名单 token 切残导致漏检
+        String clean = ActivityPresenter.sanitizeSentence(sentence);
+        if (clean == null) {
+            return;
+        }
+        if (clean.length() > 60) {
+            clean = clean.substring(0, 60) + "…";
         }
         JSONObject payload = new JSONObject();
-        payload.put("agent", "travel-master");
-        payload.put("action", sentence);
+        payload.put("agent", ActivityPresenter.agentLabel("travel-master"));
+        payload.put("action", clean);
         payload.put("state", "THINKING");
         thinkingEmitter.accept(payload.toJSONString());
     }
@@ -582,6 +623,10 @@ public class ChatService {
         }
         if (msg.contains("401") || msg.contains("Unauthorized") || msg.contains("invalid")) {
             return "模型服务认证异常，请稍后再试或联系管理员。";
+        }
+        // 账户欠费（DashScope Arrearage）：原始报文含 request_id/错误码等工程细节，不透传
+        if (msg.contains("Arrearage") || msg.contains("good standing")) {
+            return "AI 服务账户余额不足，请联系管理员充值后重试（模型服务已拒绝请求）。";
         }
         return "处理失败，请稍后重试（" + msg + "）";
     }
