@@ -93,7 +93,9 @@ IntentRouterMiddleware implements MiddlewareBase {
                 2. 按需求拆分任务（每项含 taskId/描述/建议工具/优先级，四维覆盖：交通/住宿/景点/天气）
                 3. 调用 create_task_backlog 工具登记清单：sessionId 填 "%s"，tasksJson 填任务 JSON 数组。
                    禁止用 write_file 代替本工具——容器以本工具为准
-                4. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
+                4. 登记成功后调用 agent_spawn 委派 planning-agent（同步等待其最终结果——
+                   全链要跑数分钟，不要传 timeout_seconds=0，也不要只回「后台运行中」就
+                   结束本轮；等待期间用户能看到子任务活动），任务说明中必须写明：
                    「用 read_file 读取 %s/task_backlog.md 与 %s/intake_done.md 执行；
                    每完成一项任务调用 update_task_status 工具回报状态」
                 5. 需要时调用 get_task_progress 查询未完成任务数；完成后读取 %s/ 下的 execution_result.md、\
