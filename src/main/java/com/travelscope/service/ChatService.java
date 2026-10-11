@@ -228,7 +228,7 @@ public class ChatService {
     /**
      * 意图分类（阻塞调用，运行在 boundedElastic；FR-S01 三层级联入口）
      * <p>
-     * L0 会话延续 → L1 规则表 → L2 qwen-turbo → L3 IntentClassifier 兜底，
+     * L0 会话延续 → L1 规则表 → L2 轻量模型（deepseek-v4-flash-0731）→ L3 IntentClassifier 兜底，
      * 上层命中即短路（见 IntentCascadeRouter）；日志格式 cascade_hit=L{n} latency=xms。
      *
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
@@ -295,14 +295,16 @@ public class ChatService {
         String agentSessionId = SESSION_PREFIX + conversation.getId();
         ctx.put(IntentRouterMiddleware.CTX_COLLAB_DIR_KEY,
                 taskWorkspaceService.collabDirRelativePath(agentSessionId));
-        // 前端可见性改造（2026-10-04）：PLANNING 轮强制 spawn 同步等待 420s——框架默认
-        // 同步等待仅 30s，规划全链（含分段回炉）实测 275~320s，必然「超时转后台」，
-        // master 只能回「后台运行中」并结束回合，前端从此无反馈、结果要等下一条消息。
+        // 前端可见性改造（2026-10-04，2026-10-05 模型网关迁移后再校准 420→600）：
+        // PLANNING 轮强制 spawn 同步等待 600s——框架默认同步等待仅 30s；qwen 时期全链
+        // 实测 275~320s 配 420s，迁移 glm-5-3-260814（thinking 禁用）+ RAG 语义路降级
+        // （DashScope embedding 欠费）后实测 450s 仍未跑完质检段，600s 为框架 clamp 上限。
         // 双键经 AgentSpawnTool.resolveEffectiveTimeoutMs 生效（仅 force_sync 时读 ctx 键，
-        // 上限 clamp 600s）；超时行为从「转后台」变为「中断并明确报超时」。
+        // 上限 clamp 600s）；注意 master 自行传更小的显式 timeout_seconds 会覆盖本值
+        // （提示词已改为显式要求 600）。
         if (type == IntentType.PLANNING) {
             ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
-            ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 420);
+            ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 600);
         }
 
         String outgoing = userMessage;

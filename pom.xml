@@ -102,10 +102,17 @@
             <version>${agentscope.version}</version>
         </dependency>
 
-        <!-- AgentScope DashScope 模型扩展（通义千问） -->
+        <!-- AgentScope DashScope 模型扩展（Embedding：text-embedding-v3 仍走 DashScope） -->
         <dependency>
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-extensions-model-dashscope</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+
+        <!-- AgentScope OpenAI 兼容模型扩展：全部对话模型经自建模型网关（OpenAI 协议）调用 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-openai</artifactId>
             <version>${agentscope.version}</version>
         </dependency>
 

@@ -1,5 +1,6 @@
 package com.travelscope.service;
 
+import com.travelscope.config.AppProperties;
 import com.travelscope.entity.Conversation;
 import com.travelscope.entity.Message;
 import com.travelscope.entity.User;
@@ -27,13 +28,16 @@ public class ConversationService {
     private final UserRepository userRepository;
     private final ConversationRepository conversationRepository;
     private final MessageRepository messageRepository;
+    private final AppProperties appProperties;
 
     public ConversationService(UserRepository userRepository,
                                ConversationRepository conversationRepository,
-                               MessageRepository messageRepository) {
+                               MessageRepository messageRepository,
+                               AppProperties appProperties) {
         this.userRepository = userRepository;
         this.conversationRepository = conversationRepository;
         this.messageRepository = messageRepository;
+        this.appProperties = appProperties;
     }
 
     /**
@@ -113,8 +117,8 @@ public class ConversationService {
      * 保存助手回复
      * <p>
      * FR-A01 Token 采集：assistant 消息 = 主链输出 token（估算）+ 意图分类成本
-     * （L2 qwen-turbo 轻量分类 ~80 token / L3 qwen-plus ~200 token 固定量级）。
-     * modelName 填主链路模型（master qwen-plus；L2/L3 分类 token 已按固定成本计入）。
+     * （L2 轻量模型 ~80 token / L3 主链模型 ~200 token 固定量级）。
+     * modelName 填主链路模型（模型网关配置；L2/L3 分类 token 已按固定成本计入）。
      * </p>
      */
     @Transactional
@@ -148,7 +152,7 @@ public class ConversationService {
 
     // ==================== FR-A01 Token 估算（轻量近似，真实链路采集的可测近似） ====================
 
-    /** 意图分类每次调用的固定 token 成本（L2 turbo ~80 / L3 plus ~200，取保守均值） */
+    /** 意图分类每次调用的固定 token 成本（L2 轻量档 ~80 / L3 主链档 ~200，取保守均值） */
     private static final int INTENT_CLASSIFY_COST_TOKENS = 120;
 
     /** 按文本长度估算 token（中文约 1 字符 ≈ 1 token，英文/数字约 4 字符/token，取保守 1.5 字符/token 折中） */
@@ -160,11 +164,12 @@ public class ConversationService {
         return (int) Math.ceil(text.length() / 1.5);
     }
 
-    private static String estimateUserModel() {
-        return "qwen-plus";
+    /** Token 报表的 model_name 维度：主链路对话模型（模型网关配置，2026-10-05 前为 qwen-plus） */
+    private String estimateUserModel() {
+        return appProperties.getModelGateway().getModel();
     }
 
-    private static String estimateAssistantModel() {
-        return "qwen-plus";
+    private String estimateAssistantModel() {
+        return appProperties.getModelGateway().getModel();
     }
 }

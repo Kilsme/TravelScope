@@ -69,12 +69,33 @@ server:
 # ======================== 应用统一配置 ========================
 ## 所有第三方 API Key 通过环境变量 / 高级设置注入，不在配置文件中硬编码
 travelscope:
-  # ---- 通义千问（DashScope）模型配置 ----
+  # ---- 模型网关（OpenAI 兼容）：全部对话模型经此网关（2026-10-05 迁移）----
+  # 主链路与质检 = glm-5-3-260814；轻量档（L2 分类/摘要/fallback）= deepseek-v4-flash-0731
+  # （见 intent-cascade.l2-model 与 chat-history.summary.model）
+  # 轻量档用 -0731 变体的原因：网关上 deepseek-v4-flash 渠道损坏（实测 500
+  # do_request_failed，-w8a8-400k 同坏；-0731 与 v4.1-flash 可用）——网关修复后
+  # 改回 deepseek-v4-flash 只需调整下方两处模型名配置
+  model-gateway:
+    base-url: http://ddns.trdyun.xyz:10003/v1
+    api-key: ${media_model_gateway_api_key:}
+    # 主链路对话模型（master/planner/intake/poi/route + L3 意图分类兜底）
+    model: glm-5-3-260814
+    # 质检评分模型（FR-S08：reviewer-agent + EvalCase Rubric 评分专用）
+    reviewer-model: glm-5-3-260814
+    # GLM 思考模式：GLM-5 系默认开启（单轮推理实测 35~133s，420s 链路预算内跑不完整链），
+    # 禁用后单轮 ~2s——默认禁用；需要评审深度时可临时打开（链路耗时会同量级放大）
+    thinking-enabled: false
+    # 结构化输出兼容开关（2026-10-05 实测校准）：
+    # glm-5-3-260814 不严格遵守 json_schema response_format（实测返回 markdown 围栏
+    # JSON + 附加文字，_structured_output 解析失败）——置 false 走合成
+    # generate_response 工具路径（glm 工具调用已被 B1 验收验证可靠）；
+    # native-structured-output-with-tools 保留 true（当前无「工具+结构化」并存的调用方）
+    native-structured-output: false
+    native-structured-output-with-tools: true
+
+  # ---- 通义千问（DashScope）：仅 Embedding（text-embedding-v3）使用 ----
   dashscope:
     api-key: ${API_KEY:}
-    model: qwen-plus
-    # 质检评分模型（FR-S08：reviewer-agent 专用，与主链路 qwen-plus 分离）
-    reviewer-model: qwen-max
     embedding-model: text-embedding-v3
     embedding-dimensions: 1024
 
@@ -134,7 +155,7 @@ travelscope:
     rrf-k: 60
 
   # ---- 意图三层级联配置（FR-S01）----
-  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 qwen-turbo 单标签 → L3 IntentClassifier 兜底
+  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 deepseek-v4-flash-0731 单标签 → L3 IntentClassifier 兜底
   # 上层命中即短路；规则表为空时代码内置同款默认规则
   intent-cascade:
     enabled: true
@@ -142,7 +163,7 @@ travelscope:
     l0-ttl-minutes: 30
     l0-max-message-length: 20
     l2-enabled: true
-    l2-model: qwen-turbo
+    l2-model: deepseek-v4-flash-0731
     l2-cache-enabled: true
     l2-cache-ttl-minutes: 60
     # 分类上下文注入（2026-09-29 失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块
@@ -170,11 +191,11 @@ travelscope:
   # 对话准入层（ChatService→LlmGateway）：全局并发 + 单用户并发 2 + 全局 QPS
   # 【容量基线（2026-09-23 并发改造）】：单机 8C16G 安全上限约 200~300 并发对话；
   # global-concurrency 按「在线人数 × 10~15% 同时活跃」估算——2000 在线配 200~300。
-  # 真实上限同时受 DashScope 账号配额钳制，超出配额会触发熔断/fallback，按实际配额调整。
+  # 真实上限同时受模型网关与上游模型配额钳制，超出配额会触发熔断/fallback，按实际配额调整。
   # 叠加 LoadShedService 三级过载降级（GREEN/YELLOW/RED，见 service/LoadShedService）兜底。
-  # 快泳道（CHAT/TOOL_CALL/RAG）25s / 慢泳道（PLANNING）300s 对话级超时
+  # 快泳道（CHAT/TOOL_CALL/RAG）25s / 慢泳道（PLANNING）420s 对话级超时
   # 模型调用层（LlmGatewayModel 装饰器）：熔断（窗口 10 次/失败率 50%/OPEN 10s）
-  # + 单次调用超时 30s + 失败 fallback → qwen-turbo + SSE error 兜底文案
+  # + 单次调用超时 30s + 失败 fallback → deepseek-v4-flash-0731 + SSE error 兜底文案
   llm-gateway:
     enabled: true
     global-concurrency: 200
@@ -182,16 +203,20 @@ travelscope:
     global-qps: 100
     acquire-timeout-ms: 3000
     fast-lane-timeout-seconds: 25
-    # 慢泳道 420s（2026-10-04 由 300 上调）：B2/B3 实测规划全链（含分段回炉）275~320s，
-    # 且 master 现经 ctx force_sync 同步等待 planner 至 420s——泳道必须 ≥ 同步等待上限，
-    # 否则 master 等待会被泳道先砍断。FR-S09 容量假设（2000 在线）待 B4 回归复核
-    slow-lane-timeout-seconds: 420
+    # 慢泳道 600s（2026-10-05 模型网关迁移后由 420 再上调）：glm-5-3-260814
+    # （thinking 禁用）+ RAG 语义路降级（DashScope embedding 欠费）实测全链 450s
+    # 仍未到质检段，600s 为框架 spawn 同步等待 clamp 上限——泳道必须 ≥ 同步等待上限。
+    # qwen 时期为 300→420；FR-S09 容量假设（2000 在线）待 B4 回归复核
+    slow-lane-timeout-seconds: 600
     model-timeout-seconds: 30
     cb-sliding-window-size: 10
     cb-failure-rate-threshold: 50
     cb-minimum-number-of-calls: 5
     cb-wait-duration-open-seconds: 10
     fallback-enabled: true
+    # 探测回切间隔（2026-10-11 熔断统计漂移修复）：粘滞 fallback 期间每 30s 对主模型
+    # 发一次最小探测（走熔断器，OPEN 未到期零网络开销），成功即自动回切——替代重启恢复
+    probe-interval-seconds: 30
 
   # ---- 过载降级配置（2026-09-23 并发改造：弹性降级优先策略）----
   # 三级：GREEN 正常 → YELLOW（堆>75% 或网关剩余<10%）：拒绝新 PLANNING，快请求正常
@@ -221,8 +246,8 @@ travelscope:
       # 折叠输入单条截断 / 总量上限（超出按比例收紧单条）
       input-max-chars-per-message: 600
       input-total-max-chars: 30000
-      # 摘要生成模型（每 10 轮一次的低成本辅助调用，与 L2 意图分类同级定位）
-      model: qwen-turbo
+      # 摘要生成模型（每 10 轮一次的低成本辅助调用，模型网关轻量档，与 L2 意图分类同级定位）
+      model: deepseek-v4-flash-0731
       timeout-seconds: 30
 
 # ======================== 日志配置 ========================

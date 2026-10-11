@@ -9,7 +9,7 @@ import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.Toolkit;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import com.travelscope.testutil.ModelGatewayTestSupport;
 import io.agentscope.harness.agent.HarnessAgent;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,15 +30,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * ReviewerAgent 分段审核真实验收测试（FR-S08 v3.2 / B1）。
  * <p>
- * 不经 Spring 上下文，直接用 ReviewerAgent.SYS_PROMPT + qwen-max 构建 HarnessAgent
- * （IntentCascadeRealApiTest 门控先例 + RubricScorer 单 Agent 直跑骨架），把一份
- * 真实超预算的 itinerary_draft.md（杭州 2 日 500 元预算、总计 642 超支 142，
- * 取自 conv-52 实测样本）喂给 reviewer，验证分段审核契约：
+ * 不经 Spring 上下文，直接用 ReviewerAgent.SYS_PROMPT + 质检模型（glm-5-3-260814 @
+ * 模型网关）构建 HarnessAgent（IntentCascadeRealApiTest 门控先例 + RubricScorer 单 Agent
+ * 直跑骨架），把一份真实超预算的 itinerary_draft.md（杭州 2 日 500 元预算、总计 642
+ * 超支 142，取自 conv-52 实测样本）喂给 reviewer，验证分段审核契约：
  * review_report.md 含分段结论表/总分行（SCORE_PATTERN 兼容）/改进建议，
  * 回复首行带扩展标记 REVIEW_RESULT: FAIL 总分=xx 失败段=…（预算段必失败）。
  * </p>
  */
-@EnabledIfEnvironmentVariable(named = "API_KEY", matches = "sk-.+")
+@EnabledIfEnvironmentVariable(named = ModelGatewayTestSupport.API_KEY_ENV, matches = ".+")
 class ReviewerSegmentedReviewRealApiTest {
 
     /** 与 AgentConfig 中 reviewer 声明一致的最大迭代 */
@@ -97,20 +97,17 @@ class ReviewerSegmentedReviewRealApiTest {
         Files.createDirectories(taskDir);
         Files.writeString(taskDir.resolve("itinerary_draft.md"), OVER_BUDGET_ITINERARY, StandardCharsets.UTF_8);
 
-        // ---- 构建 reviewer：同 SYS_PROMPT + qwen-max；核验工具用确定性桩（本测试验证提示词契约：
-        // 分段结构/产物文件/标记行，不验证真实核验工具质量。真实 AMAP/和风 API 有配额限流，
-        // 限流时模型进入降级态会让测试随外部环境抖动；桩数据合理且恒定，模型保持工具调用行为）----
+        // ---- 构建 reviewer：同 SYS_PROMPT + 质检评分模型（glm-5-3-260814 @ 模型网关）；
+        // 核验工具用确定性桩（本测试验证提示词契约：分段结构/产物文件/标记行，不验证真实
+        // 核验工具质量。真实 AMAP/和风 API 有配额限流，限流时模型进入降级态会让测试随外部
+        // 环境抖动；桩数据合理且恒定，模型保持工具调用行为）----
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(new VerificationStubs());
 
         HarnessAgent reviewer = HarnessAgent.builder()
                 .name(ReviewerAgent.AGENT_NAME)
                 .sysPrompt(ReviewerAgent.SYS_PROMPT)
-                .model(DashScopeChatModel.builder()
-                        .apiKey(System.getenv("API_KEY"))
-                        .modelName("qwen-max")
-                        .stream(true)
-                        .build())
+                .model(ModelGatewayTestSupport.reviewerModel())
                 .toolkit(toolkit)
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .permissionContext(PermissionContextState.builder()

@@ -107,6 +107,9 @@ public class TravelMasterAgent {
             4. 登记成功后调用 agent_spawn 委派 planning-agent，任务说明中必须写明：
                    「用 read_file 读取路由指令给出的 task_backlog.md 路径与 intake_done.md 执行；
                    每完成一项任务调用 update_task_status 工具回报状态」
+                   【必须显式传 timeout_seconds=600】planning-agent 全链（检索/排线/组装/质检）
+                   实测需 6~10 分钟，传小了会「超时转后台」导致你误判失败而重复委派；
+                   若仍收到超时转后台，调用 wait_async_results 等待完成，严禁重复 spawn
             5. 执行期间可调用 get_task_progress 查询进度（还有多少任务未完成）；
                完成后读取协作目录下的 execution_result.md、itinerary_draft.md 与 review_passed.md，
                整合优化后输出最终方案：

@@ -6,7 +6,7 @@
 
 Six-agent orchestration · Segmented review with rework routing · Task-result cache reuse · End-to-end observability
 
-[Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [qwen-plus / qwen-max](https://img.shields.io/badge/LLM-qwen--plus%20%2F%20qwen--max-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
+[Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [glm-5-3-260814 / deepseek-v4-flash-0731](https://img.shields.io/badge/LLM-glm--5.3%20%2F%20ds--flash-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
 
 **English** | [简体中文](README.md)
 
@@ -17,7 +17,7 @@ Six-agent orchestration · Segmented review with rework routing · Task-result c
 > You say: "**Plan a 2-day Hangzhou + Shanghai trip, budget ¥700, into nature and history**" —
 > the intake agent asks clarifying questions to fill in the gaps, the researcher searches POIs
 > via dual-path retrieval, the route optimizer iterates pairwise commute times, and the reviewer
-> (qwen-max) audits the itinerary in three segments. If a segment fails, **only that segment's
+> (dedicated reviewer model) audits the itinerary in three segments. If a segment fails, **only that segment's
 > subtask is redone** — everything else is reused from cache — and the final itinerary, complete
 > with timeline, budget breakdown, and alternatives, is streamed to your browser.
 
@@ -38,13 +38,13 @@ Six-agent orchestration · Segmented review with rework routing · Task-result c
 ## ✨ Key Features
 
 - 🤖 **Six-agent orchestration** — `travel-master` (intent routing + orchestration) → `intake-agent` (requirement state machine, ≤3 rounds of clarifying questions) → `planning-agent` (second-level orchestrator, calls real-time data tools directly) → the `poi-research` / `route-optimizer` / `reviewer-agent` trio; delegation depth of 3 with code-level gates and fuses
-- 🧭 **Three-tier cascaded intent routing** — L0 session continuity (Redis last-intent + short follow-up detection, zero compute) → L1 rule table (~60% of traffic) → L2 qwen-turbo lightweight classification (with result caching) → L3 qwen-plus fallback; upper layers short-circuit on hit
+- 🧭 **Three-tier cascaded intent routing** — L0 session continuity (Redis last-intent + short follow-up detection, zero compute) → L1 rule table (~60% of traffic) → L2 deepseek-v4-flash-0731 lightweight classification (with result caching) → L3 main-chain model fallback; upper layers short-circuit on hit
 - 🔍 **Dual-path RAG retrieval** — pgvector semantic search + Elasticsearch BM25 keyword search, fused with RRF ranking; results carry `RAG / ES / RAG+ES` provenance tags for poi-research's multi-round re-querying
 - ✅ **Segmented review + segment-routed rework (v3.2 flagship)** — a single LLM call audits three segments in order (POI validity / route coherence / budget & preference fit); on failure, only the failed segment's subtask is rerun — **all other results are reused**, full redo is explicitly forbidden
 - ⚡ **Task-result cache (FR-S14)** — Redis `taskresult:{userId}:{sessionId}:{taskType}`; POI/route/hotel TTL 30min, weather 10min; rework and re-planning check the cache first, reusing on hit (log anchor `cache_hit=poi`)
 - 🛡️ **LLM Gateway** — global concurrency Semaphore(200) → global QPS 100/s → per-user concurrency 2, all via fast-fail `tryAcquire`; the 300s PLANNING slow lane is isolated from the query fast lane, with four levels of user-readable degradation copy pushed straight to SSE on overload
 - 📡 **End-to-end observability** — OpenTelemetry instrumentation (chat-turn / task-cache / review-attempt spans and log anchors like `review_retry count=N`) exported to Jaeger; an SSE protocol that separates process from result (`agent_status` activity stream + a dedicated final-answer event)
-- 🧪 **Dual-track quality gate** — 10 real-chain EvalCases (multi-city / family / strict budget / nonexistent place / over-dense route); verdicts combine deterministic rule assertions with a qwen-max 3-dimension rubric; any rule FAIL or a total score below 80 fails the gate, with results (including trace_id) persisted to `evaluation_records`
+- 🧪 **Dual-track quality gate** — 10 real-chain EvalCases (multi-city / family / strict budget / nonexistent place / over-dense route); verdicts combine deterministic rule assertions with a reviewer-model 3-dimension rubric; any rule FAIL or a total score below 80 fails the gate, with results (including trace_id) persisted to `evaluation_records`
 
 ## 🏗️ Architecture
 
@@ -52,7 +52,7 @@ Six-agent orchestration · Segmented review with rework routing · Task-result c
 flowchart TD
     U["💻 User · React 19 frontend (SSE streaming)"] --> M
 
-    subgraph MAST ["travel-master primary agent (qwen-plus)"]
+    subgraph MAST ["travel-master primary agent (main-chain model)"]
         M["Cascaded intent routing + task decomposition"]
         M -.-> MW["Middleware chain:<br/>IntentRouterMiddleware (route instruction injection)<br/>PlanningGateMiddleware (delegation gate)<br/>ReviewerRetryMiddleware (rework fuse ≤2)"]
     end
@@ -61,7 +61,7 @@ flowchart TD
     I --> P["🗺️ planning-agent (2nd-level orchestrator)<br/>direct weather/hotel/ticket/geo tool calls<br/>assembles itinerary_draft.md"]
     P --> POI["🔍 poi-research<br/>RAG+ES dual-path retrieval<br/>→ poi_shortlist.md"]
     P --> RT["🛣️ route-optimizer<br/>pairwise commute optimization<br/>→ route_plan.md"]
-    P --> RV["🕵️ reviewer-agent (qwen-max)<br/>3-segment review + 5-dimension scoring<br/>REVIEW_RESULT: PASS|FAIL failed_segment=1|2|3"]
+    P --> RV["🕵️ reviewer-agent (reviewer model)<br/>3-segment review + 5-dimension scoring<br/>REVIEW_RESULT: PASS|FAIL failed_segment=1|2|3"]
     RV -->|"FAIL failed_segment"| P
     RV -->|"PASS"| OUT["✅ review_passed.md → master integrates the answer"]
 
@@ -80,7 +80,7 @@ flowchart TD
 
 Rework is capped at 2 rounds; the 3rd review submission is hard-blocked by the `ReviewerRetryMiddleware` fuse (no reliance on model self-discipline), and the loop ends with a "best-effort current version" wrap-up.
 
-**Measured rework cost** (real qwen-plus chain, segment-2 failure, 2 samples per path):
+**Measured rework cost** (real main-chain model, qwen-plus era, segment-2 failure, 2 samples per path):
 
 | Path | Elapsed (mean) | LLM calls (mean) |
 |---|---|---|
@@ -94,7 +94,7 @@ The poi-research branch is eliminated entirely (6 calls → 0) and all four cach
 | Decision | Why |
 |---|---|
 | **Prompt-driven with code-level guardrails** | Agent behavior is constrained by SYS_PROMPT contracts, but critical invariants never rely on model discipline: `PlanningGateMiddleware` enforces task-backlog registration before delegation, `ReviewerRetryMiddleware` hard-caps review submissions (log anchor `review_retry count=N`), and hotel budget filtering lives in code for zero hallucination |
-| **Tiered model strategy** | Quality-sensitive review runs on qwen-max (routed per sub-agent name via modelResolver — the framework's first name-based resolver), the main chain on qwen-plus, L2 intent classification on qwen-turbo: one model pool, layered by task nature |
+| **Tiered model strategy** | All chat models go through a self-hosted OpenAI-compatible gateway (migrated 2026-10-05): quality-sensitive review runs on a separately configured reviewer model (routed per sub-agent name via modelResolver — the framework's first name-based resolver), the main chain on glm-5-3-260814, L2 intent classification on deepseek-v4-flash-0731; embeddings remain on DashScope |
 | **Intent cascade instead of one big LLM call** | Intent classification is a classification problem, not an agent problem: L0 session continuity costs nothing → L1 rules absorb ~60% of traffic → L2 lightweight model + Redis result cache → L3 fallback; upper layers short-circuit, so classification cost adapts to traffic |
 | **Designed for failure** | Redis down → task cache / agent state degrade to in-process memory; RAG unavailable → poi-research falls back to direct AMAP search; lane timeout → user-readable degradation copy pushed to SSE; review verification tools failing → conservative scoring without breaking the flow |
 | **Observability as contract** | Log anchors (`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`) double as ops grep points and acceptance-test assertions; OTel spans (chat-turn / task-cache / review-attempt) make every rework traceable |
@@ -102,7 +102,7 @@ The poi-research branch is eliminated entirely (6 calls → 0) and all four cach
 
 ### 🐛 Found by real runs — issues unit tests couldn't catch
 
-Every feature ships with an API_KEY-gated real-chain acceptance test (B1 segmented-review contract / B2 segment-routed rework / B3 cost benchmark). All four issues below were surfaced by real runs, root-caused, then fixed — the most direct argument for measurement-driven development:
+Every feature ships with an env-gated real-chain acceptance test (B1 segmented-review contract / B2 segment-routed rework / B3 cost benchmark). All four issues below were surfaced by real runs, root-caused, then fixed — the most direct argument for measurement-driven development:
 
 | Symptom | Root cause | Fix |
 |---|---|---|
@@ -143,7 +143,8 @@ cp .env.example .env   # fill in the keys below
 
 | Env var | Description | Get it at |
 |---|---|---|
-| `API_KEY` | Qwen DashScope API key | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
+| `media_model_gateway_api_key` | Model-gateway API key (all chat models: glm-5-3-260814 / deepseek-v4-flash-0731; gateway base URL in `application.yml` under `travelscope.model-gateway.base-url`) | Self-hosted gateway |
+| `API_KEY` | Qwen DashScope API key (embedding text-embedding-v3 only) | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
 | `AMAP_WEB_API_KEY` | AMAP (Amap) Web API key | [lbs.amap.com](https://lbs.amap.com/) |
 | `WEATHER_API_HOST` | Qweather API host (no https:// prefix) | [dev.qweather.com](https://dev.qweather.com/) |
 | `WEATHER_API_KEY` | Qweather API key | [dev.qweather.com](https://dev.qweather.com/) |
@@ -168,7 +169,7 @@ Open `http://localhost:3000` to start chatting. Health check: `http://localhost:
 # Unit / contract tests (no external API needed, 40+ test classes)
 mvn test
 
-# Real-chain acceptance tests (requires export API_KEY=sk-...)
+# Real-chain acceptance tests (requires export media_model_gateway_api_key=...)
 mvn test -Dtest=ReviewerSegmentedReviewRealApiTest      # B1: reviewer segmented-review contract
 mvn test -Dtest=PlannerSegmentReworkRealApiTest         # B2: planner segment-routed rework (2 scenarios)
 mvn test -Dtest=ReworkCostBenchmarkRealApiTest          # B3: rework cost benchmark

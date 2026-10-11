@@ -6,7 +6,7 @@
 
 六 Agent 协作编排 · 分段质检回炉 · 任务结果缓存复用 · 全链路可观测
 
-[Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [qwen-plus / qwen-max](https://img.shields.io/badge/LLM-qwen--plus%20%2F%20qwen--max-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
+[Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [glm-5-3-260814 / deepseek-v4-flash-0731](https://img.shields.io/badge/LLM-glm--5.3%20%2F%20ds--flash-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
 
 **简体中文** | [English](README.en.md)
 
@@ -16,7 +16,7 @@
 
 > 你说「**帮我规划杭州加上海双城 2 日游，预算 700，喜欢自然和人文**」——
 > 需求收集 Agent 会反问补齐关键信息，检索员双路搜景点，排线员两两算通勤迭代调优，
-> 质检员（qwen-max）分三段审核行程；哪段不通过就**只回炉那一段**，其余成果走缓存复用，
+> 质检员（独立质检档模型）分三段审核行程；哪段不通过就**只回炉那一段**，其余成果走缓存复用，
 > 最后把一份带时间线、预算汇总与备选方案行程单流式推到你的浏览器。
 
 ## 📸 界面预览
@@ -36,13 +36,13 @@
 ## ✨ 核心特性
 
 - 🤖 **六 Agent 协作编排** — `travel-master`（意图路由 + 编排）→ `intake-agent`（需求收集状态机，反问 ≤3 轮）→ `planning-agent`（二级编排，直调实时数据工具）→ `poi-research` / `route-optimizer` / `reviewer-agent` 三剑客；编排深度 3 层，委派有代码层门禁与保险丝
-- 🧭 **意图三层级联路由** — L0 会话延续（Redis 最近意图 + 短追问识别，0 计算）→ L1 规则表（承接约 60% 流量）→ L2 qwen-turbo 轻量语义分类（带结果缓存）→ L3 qwen-plus 兜底，上层命中即短路
+- 🧭 **意图三层级联路由** — L0 会话延续（Redis 最近意图 + 短追问识别，0 计算）→ L1 规则表（承接约 60% 流量）→ L2 deepseek-v4-flash-0731 轻量语义分类（带结果缓存）→ L3 主链路模型兜底，上层命中即短路
 - 🔍 **RAG 双路检索** — pgvector 语义检索 + Elasticsearch BM25 关键词检索，RRF 融合排序，结果带 `RAG / ES / RAG+ES` 来源标记，供 poi-research 多轮换词重查
 - ✅ **分段审核 + 按段回炉（v3.2 招牌）** — 一次 LLM 调用内分三段顺序审（POI 有效性 / 路线连贯性 / 预算偏好匹配），不通过时按失败段路由：**只重跑失败的子任务，其余成果一律复用**，严禁全量重做
 - ⚡ **任务结果缓存（FR-S14）** — Redis `taskresult:{userId}:{sessionId}:{taskType}`，POI/路线/酒店 30min、天气 10min TTL；回炉与二次规划先查缓存，命中即复用（日志锚点 `cache_hit=poi`）
-- 🛡️ **LLM Gateway** — 全局并发 Semaphore(200) → 全局 QPS 100/s → 单用户并发 2，全 `tryAcquire` 快速失败；PLANNING 慢泳道 300s 与查询快泳道隔离，超限四级降级文案直推 SSE
+- 🛡️ **LLM Gateway** — 全局并发 Semaphore(200) → 全局 QPS 100/s → 单用户并发 2，全 `tryAcquire` 快速失败；PLANNING 慢泳道 420s（2026-10-04 由 300s 上调：回炉全链实测 274~320s 触顶）与查询快泳道隔离，超限四级降级文案直推 SSE
 - 📡 **全链路可观测** — OpenTelemetry 埋点（chat-turn / task-cache / review-attempt / review_retry count=N 等 span 与日志锚点）对接 Jaeger；SSE 过程/结果分离事件协议（`agent_status` 活动流 + 最终方案独立事件）
-- 🧪 **双轨质量门禁** — 10 条 EvalCase 真实链路用例（多城市/亲子/严格预算/地点不存在/路线过密），「确定性规则断言 + qwen-max Rubric 三维评分」双轨判定，任一 FAIL 或总分 <80 即门禁失败，结果含 trace_id 落库 `evaluation_records`
+- 🧪 **双轨质量门禁** — 10 条 EvalCase 真实链路用例（多城市/亲子/严格预算/地点不存在/路线过密），「确定性规则断言 + 质检模型 Rubric 三维评分」双轨判定，任一 FAIL 或总分 <80 即门禁失败，结果含 trace_id 落库 `evaluation_records`
 
 ## 🏗️ 系统架构
 
@@ -50,7 +50,7 @@
 flowchart TD
     U["💻 用户 · React 19 前端（SSE 流式）"] --> M
 
-    subgraph MAST ["travel-master 主 Agent（qwen-plus）"]
+    subgraph MAST ["travel-master 主 Agent（主链路模型）"]
         M["意图级联路由 + 任务拆分编排"]
         M -.-> MW["中间件责任链：<br/>IntentRouterMiddleware（路由指令注入）<br/>PlanningGateMiddleware（委派门禁）<br/>ReviewerRetryMiddleware（回炉保险丝 ≤2 次）"]
     end
@@ -59,7 +59,7 @@ flowchart TD
     I --> P["🗺️ planning-agent（二级编排）<br/>直调天气/酒店/车票/地理工具<br/>组装 itinerary_draft.md"]
     P --> POI["🔍 poi-research<br/>RAG+ES 双路检索<br/>→ poi_shortlist.md"]
     P --> RT["🛣️ route-optimizer<br/>两两算通勤迭代调优<br/>→ route_plan.md"]
-    P --> RV["🕵️ reviewer-agent（qwen-max）<br/>三段审核 + 5 维评分<br/>REVIEW_RESULT: PASS|FAIL 失败段=1|2|3"]
+    P --> RV["🕵️ reviewer-agent（质检档模型）<br/>三段审核 + 5 维评分<br/>REVIEW_RESULT: PASS|FAIL 失败段=1|2|3"]
     RV -->|"FAIL 失败段"| P
     RV -->|"PASS"| OUT["✅ review_passed.md → master 整合输出"]
 
@@ -78,21 +78,21 @@ flowchart TD
 
 回炉 ≤2 次，第 3 次送审被 `ReviewerRetryMiddleware` 代码保险丝硬拦截（不依赖模型自觉），超限以「当前最佳版本（已尽力）」收尾。
 
-**回炉成本实测**（真实 qwen-plus 链路，段2 fail 场景，各 2 轮采样）：
+**回炉成本实测**（真实主链路模型，qwen-plus 时期采集，段2 fail 最坏场景，各 2 轮采样，详见 `docs/fix-record-2026-10-04-回炉成本实测.md`）：
 
-| 路径 | 总耗时（均值） | LLM 调用（均值） |
+| 路径 | LLM 调用（均值） | 总耗时（均值） |
 |---|---|---|
-| 全量重做（v3.1 语义，缓存清空） | 275.1 s | 47 |
-| **分段回炉（本项目）** | **180 s（↓ 35%）** | **31.5（↓ 33%，最好一轮 ↓ 50%）** |
+| 全量重做（v3.1 语义，缓存清空） | 47 | 275.1 s |
+| **分段回炉（本项目）** | **31.5（↓ 33%，最好一轮 ↓ 50%）** | 297.5 s（未下降） |
 
-poi-research 分支被整体省掉（6 次调用 → 0），四类缓存命中；墙钟收益取决于失败段子任务重量（段3 fail 纯 planner 自修订为最优场景）。
+poi-research 分支被整体省掉（6 次调用 → 0），四类缓存命中；墙钟收益取决于失败段子任务重量——段2 fail（必重跑最重的 route-optimizer，约 3 分钟）为最坏情况，段3 fail 纯 planner 自修订为最优场景。实测回炉链路 274~320s 触及原 300s 泳道上限，据此慢泳道上调至 420s。
 
 ## 🧠 工程思维：关键设计与取舍
 
 | 设计决策 | 为什么这么选 |
 |---|---|
 | **提示词驱动 + 代码层兜底** | Agent 行为靠 SYS_PROMPT 契约约束，但关键不变量绝不依赖模型自觉：委派前 `PlanningGateMiddleware` 强制校验任务清单、回炉次数 `ReviewerRetryMiddleware` 硬拦第 3 次送审（日志锚点 `review_retry count=N`）、酒店按预算过滤放代码层零幻觉 |
-| **分级模型策略** | 质量敏感的质检走 qwen-max（经 modelResolver 按子 Agent 名分流，框架首个按名分流的 resolver）、主链路 qwen-plus、L2 意图分类 qwen-turbo——同一模型池按任务性质分层，成本与质量兼得 |
+| **分级模型策略** | 全部对话模型经自建 OpenAI 兼容网关（2026-10-05 迁移）：质量敏感的质检走独立配置的 reviewer-model（经 modelResolver 按子 Agent 名分流，框架首个按名分流的 resolver）、主链路 glm-5-3-260814、L2 意图分类 deepseek-v4-flash-0731——按任务性质分层，成本与质量兼得；Embedding 仍走 DashScope |
 | **意图级联而非一锅 LLM** | 意图识别是分类问题不是 Agent 问题：L0 会话延续 0 计算 → L1 规则表承接约 60% 流量 → L2 轻量模型 + Redis 结果缓存 → L3 兜底，上层命中即短路，分类成本随流量自适应 |
 | **面向失败设计** | Redis 挂 → 任务缓存 / Agent 状态自动降级进程内存；RAG 不可用 → poi-research 退化为高德直查；泳道超时 → 用户可读降级文案直推 SSE；评审核验工具失败 → 保守评分不中断流程 |
 | **可观测即契约** | 日志锚点（`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`）同时是运维 grep 点和验收测试断言点；OTel span（chat-turn / task-cache / review-attempt）让每一次回炉可追溯 |
@@ -100,7 +100,7 @@ poi-research 分支被整体省掉（6 次调用 → 0），四类缓存命中�
 
 ### 🐛 实测驱动：真跑暴露的问题（单测发现不了）
 
-每个特性都配 API_KEY 门控的真实链路验收测试（B1 分段审核契约 / B2 按段回炉路由 / B3 成本基准）。以下四个问题全部由真跑暴露、定位根因后修复——这是"实测驱动开发"最直接的注脚：
+每个特性都配环境变量门控的真实链路验收测试（B1 分段审核契约 / B2 按段回炉路由 / B3 成本基准）。以下四个问题全部由真跑暴露、定位根因后修复——这是"实测驱动开发"最直接的注脚：
 
 | 现象 | 根因 | 修复 |
 |---|---|---|
@@ -141,7 +141,8 @@ cp .env.example .env   # 填入下列 Key
 
 | 环境变量 | 说明 | 获取地址 |
 |---|---|---|
-| `API_KEY` | 通义千问 DashScope API Key | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
+| `media_model_gateway_api_key` | 模型网关 API Key（全部对话模型：glm-5-3-260814 / deepseek-v4-flash-0731，网关地址见 `application.yml` 的 `travelscope.model-gateway.base-url`） | 自建网关 |
+| `API_KEY` | 通义千问 DashScope API Key（仅 Embedding text-embedding-v3 使用） | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
 | `AMAP_WEB_API_KEY` | 高德地图 Web API Key | [lbs.amap.com](https://lbs.amap.com/) |
 | `WEATHER_API_HOST` | 和风天气 API Host（不含 https://） | [dev.qweather.com](https://dev.qweather.com/) |
 | `WEATHER_API_KEY` | 和风天气 API Key | [dev.qweather.com](https://dev.qweather.com/) |
@@ -151,8 +152,12 @@ cp .env.example .env   # 填入下列 Key
 ### 4. 启动后端与前端
 
 ```bash
-# 后端（默认 8080）
-mvn spring-boot:run
+# 后端（默认 8080）——推荐 java -jar（Boot jar 依赖完整）
+mvn package -DskipTests
+java -jar target/TravelScope-1.0-SNAPSHOT.jar
+
+# 备选：mvn spring-boot:run（部分 Maven 发行版下 run 目标 fork 的类路径会缺失
+# agentscope 依赖报 ClassNotFoundException，遇到时用上面的 java -jar 方式）
 
 # 前端（另开终端，默认 3000，已配置 /api → 8080 代理）
 cd frontend && npm install && npm run dev
@@ -166,7 +171,7 @@ cd frontend && npm install && npm run dev
 # 单元 / 契约测试（无需外部 API，40+ 测试类）
 mvn test
 
-# 真实链路验收测试（需 export API_KEY=sk-...）
+# 真实链路验收测试（需 export media_model_gateway_api_key=...）
 mvn test -Dtest=ReviewerSegmentedReviewRealApiTest      # B1：reviewer 分段审核契约
 mvn test -Dtest=PlannerSegmentReworkRealApiTest         # B2：planner 按段回炉路由（两场景）
 mvn test -Dtest=ReworkCostBenchmarkRealApiTest          # B3：回炉成本实测基准
@@ -212,7 +217,7 @@ TravelScope/
 - [ ] FR-S10 三级记忆分层（滚动摘要长期记忆增强）
 - [ ] FR-A 管理端：Token 用量 / 用户管理 / 3A 评估看板
 - [ ] FR-S13 Prompter 闭环（提示词版本管理与效果回归）
-- [ ] PLANNING 慢泳道预算复核（全量重做链路实测 275s 已逼近 300s 上限）
+- [x] PLANNING 慢泳道预算复核 → 已完成（2026-10-04 上调 300→420s：回炉全链实测 274~320s 触顶，且须 ≥ master 同步等待上限 420s）
 - [ ] 意图例句向量相似度（pgvector 余弦 top1）替换 L2 轻量分类
 
 ## 🧭 核心代码导航

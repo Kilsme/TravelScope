@@ -8,8 +8,9 @@ import io.agentscope.core.model.Model;
 import java.time.Duration;
 
 /**
- * Rubric 评分器（FR-S15 双轨评估的 Rubric 轨）：调 qwen-max（复用 dashscopeReviewerModel
- * Bean，即 travelscope.dashscope.reviewer-model 配置）对行程产物按三维 10 分制打分。
+ * Rubric 评分器（FR-S15 双轨评估的 Rubric 轨）：调质检评分模型（复用 gatewayReviewerModel
+ * Bean，即 travelscope.model-gateway.reviewer-model 配置，glm-5-3-260814 @ 模型网关）
+ * 对行程产物按三维 10 分制打分。
  * <p>
  * 调用模式复用 LightweightIntentClassifier 先例：ReActAgent 结构化输出 + 纯文本宽容解析
  * 双路（解析逻辑在 {@link RubricScores#parse} 纯函数中独立单测）；解析失败重试 1 次，
@@ -21,7 +22,7 @@ public class RubricScorer {
 
     private static final Duration SCORE_TIMEOUT = Duration.ofSeconds(120);
 
-    /** 评分产物截断上限（qwen-max 长上下文足够，防御性截断） */
+    /** 评分产物截断上限（长上下文足够，防御性截断） */
     private static final int MAX_PLAN_CHARS = 12000;
 
     private static final String SYS_PROMPT = """

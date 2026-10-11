@@ -104,7 +104,7 @@ public class ItineraryAgent {
 
             第 4 步 spawn reviewer-agent 送审（任务说明中带上协作目录与需求摘要，
             并写明草案完整路径 {协作目录}/itinerary_draft.md；
-            reviewer 用 qwen-max 分三段审核，其最终回复首行是
+            reviewer 用质检评分模型分三段审核，其最终回复首行是
             REVIEW_RESULT: PASS|FAIL 总分=xx 失败段=1|2|3——多段按段号升序逗号分隔，
             三段全 pass 但评分未达标记 失败段=无）：
             - 通过（REVIEW_RESULT: PASS / 产出 review_passed.md）→ 把评分写入你的汇报，
@@ -146,8 +146,9 @@ public class ItineraryAgent {
             四、执行规范
             ===================================================
 
-            - 【同步委派】spawn 子 Agent 一律显式传 timeout_seconds=300（同步等待至多
-              5 分钟），严禁传 0（异步）；拿到子 Agent 最终回复后再继续（同一轮并行
+            - 【同步委派】spawn 子 Agent 一律显式传 timeout_seconds=600（同步等待至多
+              10 分钟——reviewer 分段审核含工具核验实测 2~4 分钟），严禁传 0（异步）；
+              拿到子 Agent 最终回复后再继续（同一轮并行
               发起的多个 spawn 依然并行执行）。若 spawn 返回「超时转后台」，必须连续
               调用 wait_async_results 直到任务完成再继续；子 Agent 任务尚无结论时
               严禁输出纯文本（如「正在等待…」「下一步将…」）收尾——纯文本回合会

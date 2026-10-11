@@ -20,7 +20,7 @@ import java.util.regex.Pattern;
  * <pre>
  * L0 会话延续：短追问（长度 ≤ 上限 且 含代词/语气词）+ Redis 有 TTL 内该会话最近意图 → 沿用，0 计算
  * L1 规则表：保守正则集（打招呼/命令前缀/极固定句式），首个命中即返回
- * L2 轻量语义：qwen-turbo 单标签分类 + Redis 文本缓存（SHA-256 键）
+ * L2 轻量语义：轻量模型（deepseek-v4-flash-0731 @ 模型网关）单标签分类 + Redis 文本缓存（SHA-256 键）
  * L3 LLM 兜底：现有 IntentClassifier 原样包装（方法引用适配，零改动）
  * </pre>
  * <p>
@@ -135,7 +135,7 @@ public class IntentCascadeRouter {
             }
         }
 
-        // ---- L2 轻量语义：文本缓存（仅无上下文）→ qwen-turbo 单标签 ----
+        // ---- L2 轻量语义：文本缓存（仅无上下文）→ 轻量模型单标签 ----
         if (config.isL2Enabled()) {
             String normalized = userMessage == null ? "" : userMessage.trim();
             // 带上下文时旁路文本缓存：同文本在不同会话的正确意图可能不同

@@ -9,7 +9,7 @@ import com.travelscope.entity.User;
 import com.travelscope.service.ChatService;
 import com.travelscope.service.ConversationService;
 import com.travelscope.service.EvaluationRecordService;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -36,22 +36,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * EvalCase 双轨评估 runner（FR-S15 / A5）：真实跑完整多智能体链路，
- * 确定性规则 + qwen-max Rubric 双轨判定，结果写入 evaluation_records，作为合并门禁。
+ * 确定性规则 + 质检模型（glm-5-3-260814 @ 模型网关）Rubric 双轨判定，
+ * 结果写入 evaluation_records，作为合并门禁。
  *
- * <p>门控（RagServiceImplTest 组合门控先例）：{@code EVAL_REAL_API=1} 且 API_KEY 为 sk- 前缀，
- * 且本机 PostgreSQL 5432（全上下文启动与落库必需）与 dashscope.aliyuncs.com:443 可达才执行；
- * 否则整类跳过、Spring 上下文不启动，mvn test 不受影响（规则断言器单测见 RuleAssertersTest）。</p>
+ * <p>门控（RagServiceImplTest 组合门控先例）：{@code EVAL_REAL_API=1} 且
+ * media_model_gateway_api_key 已配置，且本机 PostgreSQL 5432（全上下文启动与落库必需）
+ * 与模型网关 ddns.trdyun.xyz:10003 可达才执行；否则整类跳过、Spring 上下文不启动，
+ * mvn test 不受影响（规则断言器单测见 RuleAssertersTest）。</p>
  *
  * <p>驱动方式：绕过 Controller 直接调 {@link ChatService#streamChat}（MOCK web 环境，
  * 默认 profile——不能用 test profile，会排除 DataSource）；轮次完成信号 = messages 表中
  * 该会话 assistant 消息数达到轮次序号（handleComplete/handleError 均经 persistReply 落库，
- * 链路失败轮不落 → 轮询超时判 FAIL，与慢泳道 300s 上限语义一致）。
+ * 链路失败轮不落 → 轮询超时判 FAIL，与慢泳道超时上限语义一致）。
  * 首个 @SpringBootTest：启动副作用已核实（KnowledgeIngestRunner 默认关闭、MinIO/Redis/MCP 失败均降级）。</p>
  */
 @SpringBootTest
 @EnabledIf(value = "com.travelscope.eval.EvalCaseRunnerTest#realApiEnabled",
-        disabledReason = "需 EVAL_REAL_API=1 且 API_KEY=sk-.. 且本机 PostgreSQL(5432)、dashscope.aliyuncs.com:443 可达"
-                + "（docker-compose up + 本地 PG 后重跑）")
+        disabledReason = "需 EVAL_REAL_API=1 且 media_model_gateway_api_key 已配置 且本机 PostgreSQL(5432)、"
+                + "模型网关 ddns.trdyun.xyz:10003 可达（docker-compose up + 本地 PG 后重跑）")
 class EvalCaseRunnerTest {
 
     @Autowired
@@ -68,10 +70,10 @@ class EvalCaseRunnerTest {
     private JdbcTemplate jdbcTemplate;
     @Autowired
     private ObjectProvider<Tracer> tracerProvider;
-    /** qwen-max 评分模型（复用 dashscopeReviewerModel Bean，即 travelscope.dashscope.reviewer-model 配置） */
+    /** 质检评分模型（复用 gatewayReviewerModel Bean，即 travelscope.model-gateway.reviewer-model 配置） */
     @Autowired
-    @Qualifier("dashscopeReviewerModel")
-    private DashScopeChatModel reviewerModel;
+    @Qualifier("gatewayReviewerModel")
+    private OpenAIChatModel reviewerModel;
 
     /** 轮询间隔 */
     private static final long POLL_INTERVAL_MS = 2000;
@@ -81,12 +83,12 @@ class EvalCaseRunnerTest {
         if (!"1".equals(System.getenv("EVAL_REAL_API"))) {
             return false;
         }
-        String apiKey = System.getenv("API_KEY");
-        if (apiKey == null || !apiKey.startsWith("sk-")) {
+        String apiKey = System.getenv("media_model_gateway_api_key");
+        if (apiKey == null || apiKey.isBlank()) {
             return false;
         }
         return portReachable("localhost", 5432)
-                && portReachable("dashscope.aliyuncs.com", 443);
+                && portReachable("ddns.trdyun.xyz", 10003);
     }
 
     private static boolean portReachable(String host, int port) {
@@ -104,7 +106,7 @@ class EvalCaseRunnerTest {
         ensureEvaluationTable();
         List<EvalCase> cases = EvalCaseLoader.loadAll();
         System.out.printf("[EVAL] 开始执行 %d 条 EvalCase（reviewer 模型: %s）%n",
-                cases.size(), appProperties.getDashscope().getReviewerModel());
+                cases.size(), appProperties.getModelGateway().getReviewerModel());
 
         List<CaseReport> reports = new ArrayList<>();
         for (EvalCase evalCase : cases) {

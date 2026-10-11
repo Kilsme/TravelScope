@@ -25,7 +25,8 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import io.agentscope.core.tool.Toolkit;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import com.travelscope.testutil.ModelGatewayTestSupport;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
@@ -62,21 +63,22 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <ul>
  *   <li>场景1（conv-9101）：预置跨城往返烂路线（route_plan 含 杭州→外滩→杭州
  *       两段 ~180 分钟通勤），裁决回放段2 fail → 回炉只重跑 route-optimizer（真实
- *       qwen-plus），POI 走缓存复用（FR-S14 锚点 cache_hit=poi），poi-research 不被 spawn</li>
+ *       主链路模型 glm-5-3-260814），POI 走缓存复用（FR-S14 锚点 cache_hit=poi），
+ *       poi-research 不被 spawn</li>
  *   <li>场景2（conv-9102）：干净西湖小簇行程但预算整体超支（800 预算 / 1025 总计），
  *       裁决回放段3 fail → planner 自行修订草案（换酒店），不委派任何检索/排线子 Agent</li>
  * </ul>
  * <p>
  * <b>reviewer 为脚本化裁决回放桩</b>（读 scripted_verdict.md 按送审次数回放，格式复刻
  * ReviewerAgent 第六/七节契约）：B2 的验收对象是 planner 的按段路由，裁决的生产
- * （qwen-max 分段审核）已由 ReviewerSegmentedReviewRealApiTest 真实验收；真跑实证
- * （2026-10-04 六轮）路由逻辑全部正确、失败断言均源自真实裁决的段号漂移，故本测试
- * 将裁决固定为受控输入以保证可重复。观测通道：SpawnRecorder 中间件（仿
- * ReviewerRetryMiddleware 的 onActing 拦截）记录 agent_spawn（agent_id + 时间戳）；
- * Logback RecordingAppender 捕获 TaskResultCache 的 cache_hit={type} 日志。
+ * （质检模型分段审核）已由 ReviewerSegmentedReviewRealApiTest 真实验收；真跑实证
+ * （2026-10-04 六轮，qwen-plus 时期）路由逻辑全部正确、失败断言均源自真实裁决的
+ * 段号漂移，故本测试将裁决固定为受控输入以保证可重复。观测通道：SpawnRecorder
+ * 中间件（仿 ReviewerRetryMiddleware 的 onActing 拦截）记录 agent_spawn（agent_id +
+ * 时间戳）；Logback RecordingAppender 捕获 TaskResultCache 的 cache_hit={type} 日志。
  * </p>
  */
-@EnabledIfEnvironmentVariable(named = "API_KEY", matches = "sk-.+")
+@EnabledIfEnvironmentVariable(named = ModelGatewayTestSupport.API_KEY_ENV, matches = ".+")
 class PlannerSegmentReworkRealApiTest {
 
     /** 4-Agent 图全链（planner+reviewer×2+route-optimizer）真实 LLM 调用，留足余量 */
@@ -644,22 +646,18 @@ class PlannerSegmentReworkRealApiTest {
                         + "通过写 review_passed.md，不通过写 review_report.md"
                         + "（含分段结论与改进建议，供 planner 按段回炉）")
                 .inlineAgentsBody(SCRIPTED_REVIEWER_PROMPT)
-                .model("qwen-plus")
+                .model(ModelGatewayTestSupport.MAIN_MODEL)
                 .maxIters(4)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .build();
 
-        DashScopeChatModel qwenPlus = DashScopeChatModel.builder()
-                .apiKey(System.getenv("API_KEY"))
-                .modelName("qwen-plus")
-                .stream(true)
-                .build();
+        OpenAIChatModel mainModel = ModelGatewayTestSupport.mainModel();
 
         return HarnessAgent.builder()
                 .name(ItineraryAgent.AGENT_NAME)
                 .sysPrompt(ItineraryAgent.SYS_PROMPT)
-                .model(qwenPlus)
-                .modelResolver(name -> qwenPlus)
+                .model(mainModel)
+                .modelResolver(name -> mainModel)
                 .toolkit(toolkit)
                 .maxIters(ItineraryAgent.MAX_ITERS)
                 .enablePendingToolRecovery(true)
