@@ -23,9 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * LlmGatewayModel 模型装饰器单元测试（FR-S09 检测标准 2/3 的逻辑层验证）
  * <p>
- * 手写 CountingModel 桩（可控失败/成功），覆盖：fallback 切换（含中途失败）、
- * fallback 也失败上抛、熔断 OPEN 快速失败 → HALF_OPEN 探测恢复、熔断统计目标不漂移
- * （粘滞期间 fallback 抖动不影响熔断器）、探测回切（粘滞 → 探测成功 → 自动回切）。
+ * 手写 CountingModel 桩（可控失败/成功），覆盖：首包前失败干净切 fallback、首包后
+ * 中途失败不切（P0-B 首包提交闸门）、空块不提交规则、fallback 也失败上抛、
+ * 熔断 OPEN 快速失败 → HALF_OPEN 探测恢复、熔断统计目标不漂移（粘滞期间 fallback
+ * 抖动不影响熔断器）、探测回切（粘滞 → 探测成功 → 自动回切）。
  * 熔断参数调小加速（窗口 4 / 阈值 50% / 最小 4 / OPEN 300ms）。
  * </p>
  */
@@ -36,7 +37,8 @@ class LlmGatewayModelTest {
         final String name;
         final AtomicInteger calls = new AtomicInteger();
         volatile boolean failNext;
-        volatile boolean failMidStream;   // 发 1 个块后中途失败
+        volatile boolean failMidStream;        // 发 1 个有内容的块后中途失败（首包已提交）
+        volatile boolean failAfterEmptyChunk;  // 发 1 个空内容块后失败（首包未提交）
 
         CountingModel(String name) {
             this.name = name;
@@ -50,8 +52,16 @@ class LlmGatewayModelTest {
                 return Flux.error(new RuntimeException("simulated 401 unauthorized"));
             }
             if (failMidStream) {
-                ChatResponse chunk = ChatResponse.builder().id("c").build();
+                ChatResponse chunk = ChatResponse.builder().id("c")
+                        .content(List.of(io.agentscope.core.message.TextBlock.builder()
+                                .text("partial-").build()))
+                        .build();
                 return Flux.just(chunk).concatWith(Flux.error(new RuntimeException("mid-stream failure")));
+            }
+            if (failAfterEmptyChunk) {
+                // 模型流常见的 role-only 首块（content 为 null），随后失败
+                ChatResponse empty = ChatResponse.builder().id("role").build();
+                return Flux.just(empty).concatWith(Flux.error(new RuntimeException("401 after role chunk")));
             }
             return Flux.just(ChatResponse.builder().id("ok-" + name).build());
         }
@@ -90,22 +100,50 @@ class LlmGatewayModelTest {
         assertEquals(1, primary.calls.get());
         assertEquals(1, fallback.calls.get(), "主模型失败后应切 fallback");
         assertTrue(responses != null && !responses.isEmpty(), "用户仍能收到响应");
+        // 首包前失败（401 在首个非空块前暴露）→ 干净切换：用户只看到 fallback 的响应（P0-B）
+        assertEquals(1, responses.size(), "首包前失败应只看到 fallback 的干净响应");
         assertEquals("ok-qwen-turbo", responses.get(0).getId());
     }
 
     @Test
-    @DisplayName("中途失败（已发块后错误）也切 fallback（框架原生 fallbackModel 不覆盖此场景）")
-    void testFallbackOnMidStreamFailure() {
+    @DisplayName("首包后中途失败（P0-B）：已发块不可回收 → 不切 fallback，异常上抛转 SSE error")
+    void testMidStreamFailureAfterCommit_throwsUp() {
         CountingModel primary = new CountingModel("qwen-plus");
         CountingModel fallback = new CountingModel("qwen-turbo");
         primary.failMidStream = true;
+
+        List<ChatResponse> received = new java.util.concurrent.CopyOnWriteArrayList<>();
+        assertThrows(Exception.class, () ->
+                gateway(primary, fallback, fastCb())
+                        .stream(List.of(), List.of(), null)
+                        .doOnNext(received::add)
+                        .then().block(Duration.ofSeconds(5)));
+
+        assertEquals(1, received.size(), "已下发的首包保留（不可回收，保持现状）");
+        assertTrue(received.get(0).getContent() != null && !received.get(0).getContent().isEmpty(),
+                "已下发的是有内容的首包");
+        assertEquals(0, fallback.calls.get(),
+                "首包提交后中途失败不再切 fallback（根治「前缀 + fallback 全量重发」拼接输出）");
+    }
+
+    @Test
+    @DisplayName("空内容块后失败（首包未提交）：仍干净切 fallback——「非空才提交」规则")
+    void testFallbackAfterEmptyChunk() {
+        CountingModel primary = new CountingModel("qwen-plus");
+        CountingModel fallback = new CountingModel("qwen-turbo");
+        primary.failAfterEmptyChunk = true;
 
         List<ChatResponse> responses = gateway(primary, fallback, fastCb())
                 .stream(List.of(), List.of(), null)
                 .collectList().block(Duration.ofSeconds(5));
 
-        assertEquals(1, fallback.calls.get(), "中途失败也应切 fallback");
+        assertEquals(1, fallback.calls.get(), "空块不提交，之后失败仍可干净切换");
+        assertTrue(responses != null && !responses.isEmpty());
+        // 响应 = primary 的空 role 块 + fallback 的完整响应；用户可见内容只有 fallback 部分
         assertEquals("ok-qwen-turbo", responses.get(responses.size() - 1).getId());
+        assertTrue(responses.subList(0, responses.size() - 1).stream()
+                        .allMatch(r -> r.getContent() == null || r.getContent().isEmpty()),
+                "前缀只允许空块（无可见内容泄漏，拼接根治边界）");
     }
 
     @Test
