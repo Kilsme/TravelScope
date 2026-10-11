@@ -7,12 +7,19 @@ import io.agentscope.core.rag.knowledge.SimpleKnowledge;
 import io.agentscope.core.rag.model.Document;
 import io.agentscope.core.rag.model.RetrieveConfig;
 import io.agentscope.core.rag.store.PgVectorStore;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 /**
@@ -23,6 +30,13 @@ import java.util.stream.Collectors;
  * <b>关键词路（自写）</b>：EsBm25Client（ik_smart BM25 match，框架核验：原生
  * ElasticsearchStore 只做 kNN 且 content index=false，BM25 必须自写）。
  * <b>融合（自写）</b>：RrfFusion（score=Σ 1/(rrfK+rank)，按 chunkId 去重）。
+ * </p>
+ * <p>
+ * <b>双路并行 + 通道级超时</b>（2026-10-11 P1-C）：两路提交到专用小线程池
+ * （rag-retrieval-N，检索不与模型调用抢资源）并行执行——改造前语义路 .block(15s)
+ * 跑完才走 ES 路（串行，最坏耗时 = 15s + ES 耗时），并行后单次检索耗时 ≤ 通道级超时
+ * （rag.lane-timeout-ms，默认 15s，取两路大者）。每路独立计时，超时/失败路按空结果
+ * 降级——只放弃等待、不中断池内任务（过小超时等于整路白算，任务仍在池内跑完）。
  * </p>
  * <p>
  * 可用性降级：语义路构造失败（PG/pgvector 不可用）或 ES 路失败时各自静默降级，
@@ -46,6 +60,18 @@ public class RagServiceImpl implements RagService {
 
     /** 语义路（null = pgvector 路不可用，双路退化为纯 BM25） */
     private final SimpleKnowledge vectorKnowledge;
+
+    /** 双路并行专用小线程池（检索不与模型调用抢资源；daemon，命名 rag-retrieval-N） */
+    private final ExecutorService ragRetrievalExecutor = Executors.newFixedThreadPool(4, new java.util.concurrent.ThreadFactory() {
+        private final AtomicInteger seq = new AtomicInteger(1);
+
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "rag-retrieval-" + seq.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        }
+    });
 
     public RagServiceImpl(AppProperties appProperties, EsBm25Client esBm25Client,
                           javax.sql.DataSource dataSource,
@@ -114,29 +140,37 @@ public class RagServiceImpl implements RagService {
      */
     public List<RetrievedFragment> dualRetrieveWithSource(String query, int topK) {
         long start = System.nanoTime();
-        List<RrfFusion.Entry> vectorRanked = List.of();
-        List<RrfFusion.Entry> keywordRanked = List.of();
+        long laneTimeoutMs = ragConfig.getLaneTimeoutMs();
 
-        // 语义路（pgvector kNN，模式 dual/vector 且可用时）
-        if (vectorKnowledge != null && !"fulltext".equals(ragConfig.getMode())) {
+        // 双路并行（P1-C）：各自提交专用池，通道级超时内等待——改造前串行
+        // （语义路 15s 跑完才走 ES），并行后单次检索耗时取两路大者
+        CompletableFuture<List<RrfFusion.Entry>> vectorFuture = CompletableFuture.supplyAsync(() -> {
+            // 语义路（pgvector kNN，模式 dual/vector 且可用时）
+            if (vectorKnowledge == null || "fulltext".equals(ragConfig.getMode())) {
+                return List.<RrfFusion.Entry>of();
+            }
             try {
                 List<Document> docs = vectorKnowledge.retrieve(query,
                                 RetrieveConfig.builder().limit(topK).build())
-                        .block(java.time.Duration.ofSeconds(15));
-                if (docs != null) {
-                    vectorRanked = docs.stream()
-                            .map(d -> new RrfFusion.Entry(chunkIdOf(d), textOf(d)))
-                            .toList();
-                }
+                        .block(java.time.Duration.ofMillis(laneTimeoutMs));
+                return docs == null ? List.<RrfFusion.Entry>of()
+                        : docs.stream().map(d -> new RrfFusion.Entry(chunkIdOf(d), textOf(d))).toList();
             } catch (Exception e) {
                 log.warn("语义路检索失败（本轮退化为关键词路）: {}", e.getMessage());
+                return List.of();
             }
-        }
+        }, ragRetrievalExecutor);
 
-        // 关键词路（ES BM25，模式 dual/fulltext 且可用时）
-        if (esBm25Client.isAvailable() && !"vector".equals(ragConfig.getMode())) {
-            keywordRanked = esBm25Client.search(query, topK);
-        }
+        CompletableFuture<List<RrfFusion.Entry>> esFuture = CompletableFuture.supplyAsync(() -> {
+            // 关键词路（ES BM25，模式 dual/fulltext 且可用时）
+            if (!esBm25Client.isAvailable() || "vector".equals(ragConfig.getMode())) {
+                return List.<RrfFusion.Entry>of();
+            }
+            return esBm25Client.search(query, topK);
+        }, ragRetrievalExecutor);
+
+        List<RrfFusion.Entry> vectorRanked = awaitLane(vectorFuture, "语义路", laneTimeoutMs);
+        List<RrfFusion.Entry> keywordRanked = awaitLane(esFuture, "BM25路", laneTimeoutMs);
 
         List<RetrievedFragment> fused = RrfFusion.fuse(vectorRanked, keywordRanked,
                 ragConfig.getRrfK(), topK);
@@ -144,6 +178,27 @@ public class RagServiceImpl implements RagService {
                 abbreviate(query), vectorRanked.size(), keywordRanked.size(), fused.size(),
                 (System.nanoTime() - start) / 1_000_000);
         return fused;
+    }
+
+    /**
+     * 通道级超时等待（P1-C）：超时不中断任务（慢任务在池内跑完），只放弃等待——
+     * 超时/失败路按空结果降级，不拖住另一路；真实耗时见 rag_retrieve 日志 latency
+     */
+    private static <T> List<T> awaitLane(CompletableFuture<List<T>> future, String lane, long timeoutMs) {
+        try {
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            log.warn("{} 超过通道级超时 {}ms，按空结果降级", lane, timeoutMs);
+            return List.of();
+        } catch (Exception e) {
+            log.warn("{} 执行失败，按空结果降级: {}", lane, e.getMessage());
+            return List.of();
+        }
+    }
+
+    @PreDestroy
+    void shutdownRetrievalExecutor() {
+        ragRetrievalExecutor.shutdownNow();
     }
 
     /** 语义路文档 → chunk 标识（docId:chunkId，与 ES 侧拼接规则对齐，RRF 去重键） */
