@@ -39,6 +39,11 @@ import java.util.stream.Collectors;
  * 降级——只放弃等待、不中断池内任务（过小超时等于整路白算，任务仍在池内跑完）。
  * </p>
  * <p>
+ * <b>召回扇出 / 最终条数拆分</b>（2026-10-11 P1-E）：每路召回走 {@code rag.recall-fanout}
+ * （默认 15），融合后截取走 {@code rag.context-top-k}（默认 5）——修复原「一个 topK
+ * 三义」；构造器启动校验漏斗单调收窄不变式（recallFanout ≥ contextTopK），违反即报错。
+ * </p>
+ * <p>
  * 可用性降级：语义路构造失败（PG/pgvector 不可用）或 ES 路失败时各自静默降级，
  * 至少一路可用即 isAvailable()=true；两路全挂返回 false（ChatService 的 RAG 分支自然跳过）。
  * RagConfig.mode 支持 dual / vector / fulltext 三档。
@@ -79,6 +84,13 @@ public class RagServiceImpl implements RagService {
                           @Value("${spring.datasource.password}") String dbPassword) {
         this.ragConfig = appProperties.getRag();
         this.esBm25Client = esBm25Client;
+        // 启动校验（2026-10-11 P1-E，照 ragent RetrievalBudget 不变式）：漏斗单调收窄——
+        // 召回扇出必须 ≥ 最终条数，违反即 Bean 创建失败（启动报错，防配置静默错配）
+        if (ragConfig.getRecallFanout() < ragConfig.getContextTopK()) {
+            throw new IllegalStateException(
+                    "recallFanout(" + ragConfig.getRecallFanout() + ") < contextTopK("
+                            + ragConfig.getContextTopK() + ")，违反漏斗单调收窄不变式（召回扇出必须 ≥ 最终条数）");
+        }
 
         SimpleKnowledge knowledge = null;
         try {
@@ -135,23 +147,30 @@ public class RagServiceImpl implements RagService {
 
     /**
      * 双路检索 + RRF 融合（poi-research 的 search_pois_with_rag 工具入口）
+     * <p>
+     * 召回扇出 / 最终条数两段拆分（2026-10-11 P1-E）：每路召回数走配置
+     * {@code rag.recall-fanout}（默认 15，想大保召回），本参数只决定融合后进上下文的
+     * 最终条数——修复原「一个 topK 三义」（调扇出会误动最终条数）。
+     * </p>
      *
+     * @param contextTopK 融合后截取的最终条数（应 ≤ recall-fanout，漏斗单调收窄）
      * @return 带来源标记（RAG / ES / RAG+ES）的融合排序片段
      */
-    public List<RetrievedFragment> dualRetrieveWithSource(String query, int topK) {
+    public List<RetrievedFragment> dualRetrieveWithSource(String query, int contextTopK) {
         long start = System.nanoTime();
         long laneTimeoutMs = ragConfig.getLaneTimeoutMs();
+        int recallFanout = ragConfig.getRecallFanout();
 
         // 双路并行（P1-C）：各自提交专用池，通道级超时内等待——改造前串行
         // （语义路 15s 跑完才走 ES），并行后单次检索耗时取两路大者
         CompletableFuture<List<RrfFusion.Entry>> vectorFuture = CompletableFuture.supplyAsync(() -> {
-            // 语义路（pgvector kNN，模式 dual/vector 且可用时）
+            // 语义路（pgvector kNN，模式 dual/vector 且可用时；召回扇出走配置，P1-E）
             if (vectorKnowledge == null || "fulltext".equals(ragConfig.getMode())) {
                 return List.<RrfFusion.Entry>of();
             }
             try {
                 List<Document> docs = vectorKnowledge.retrieve(query,
-                                RetrieveConfig.builder().limit(topK).build())
+                                RetrieveConfig.builder().limit(recallFanout).build())
                         .block(java.time.Duration.ofMillis(laneTimeoutMs));
                 return docs == null ? List.<RrfFusion.Entry>of()
                         : docs.stream().map(d -> new RrfFusion.Entry(chunkIdOf(d), textOf(d))).toList();
@@ -162,18 +181,18 @@ public class RagServiceImpl implements RagService {
         }, ragRetrievalExecutor);
 
         CompletableFuture<List<RrfFusion.Entry>> esFuture = CompletableFuture.supplyAsync(() -> {
-            // 关键词路（ES BM25，模式 dual/fulltext 且可用时）
+            // 关键词路（ES BM25，模式 dual/fulltext 且可用时；召回扇出走配置，P1-E）
             if (!esBm25Client.isAvailable() || "vector".equals(ragConfig.getMode())) {
                 return List.<RrfFusion.Entry>of();
             }
-            return esBm25Client.search(query, topK);
+            return esBm25Client.search(query, recallFanout);
         }, ragRetrievalExecutor);
 
         List<RrfFusion.Entry> vectorRanked = awaitLane(vectorFuture, "语义路", laneTimeoutMs);
         List<RrfFusion.Entry> keywordRanked = awaitLane(esFuture, "BM25路", laneTimeoutMs);
 
         List<RetrievedFragment> fused = RrfFusion.fuse(vectorRanked, keywordRanked,
-                ragConfig.getRrfK(), topK);
+                ragConfig.getRrfK(), contextTopK);
         log.info("rag_retrieve query='{}' 语义路={}条 BM25路={}条 融合={}条 latency={}ms",
                 abbreviate(query), vectorRanked.size(), keywordRanked.size(), fused.size(),
                 (System.nanoTime() - start) / 1_000_000);
