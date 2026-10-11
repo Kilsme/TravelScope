@@ -132,6 +132,10 @@ travelscope:
     index-name: document_chunks_fulltext
     # 向量维度（与 pgvector 保持一致）
     dimensions: 1024
+    # HTTP 超时（2026-10-11 P1-D）：连接 3s；读取 10s——小于 RAG 通道级超时
+    # （rag.lane-timeout-ms 15s），HTTP 层先超时让慢查询任务终结释放线程，lane 层再兜底
+    connect-timeout-ms: 3000
+    read-timeout-ms: 10000
     # 用户名（开发环境未启用安全认证，留空）
     username: ""
     # 密码（开发环境未启用安全认证，留空）

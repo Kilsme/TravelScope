@@ -13,6 +13,10 @@ import co.elastic.clients.transport.rest5_client.Rest5ClientTransport;
 import co.elastic.clients.transport.rest5_client.low_level.Rest5Client;
 import com.travelscope.config.AppProperties;
 import com.travelscope.service.RrfFusion.Entry;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient;
+import org.apache.hc.client5.http.impl.async.HttpAsyncClients;
+import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -38,6 +42,13 @@ import java.util.Map;
  * 降级：连接/查询失败静默降级（首次 warn 后续 debug），{@link #isAvailable()}=false 时
  * 不参与双路融合——与 RedisIntentCache 同款容错风格。
  * </p>
+ * <p>
+ * HTTP 超时（2026-10-11 P1-D，治本）：自建 HttpAsyncClient 注入 Rest5Client——连接超时
+ * （connect-timeout-ms，默认 3s）+ 读取超时（read-timeout-ms，默认 10s，小于 RAG 通道级
+ * 超时 lane-timeout-ms 15s）。分层：HTTP 层先超时让慢查询任务以异常终结、释放检索池
+ * 线程（治本）；awaitLane 通道级超时再兜底（放弃等待）。超时异常走既有降级语义：
+ * 首次失败即 available=false（fail-closed，与连接失败同语义）。
+ * </p>
  */
 @Service
 public class EsBm25Client {
@@ -60,8 +71,19 @@ public class EsBm25Client {
         Rest5Client rc = null;
         ElasticsearchClient ec = null;
         try {
-            // 低层 HTTP 客户端（开发环境 xpack.security.enabled=false 匿名访问）
-            rc = Rest5Client.builder(URI.create(config.getUrl())).build();
+            // 低层 HTTP 客户端（开发环境 xpack.security.enabled=false 匿名访问）；
+            // 自带连接/读取超时（P1-D）：慢查询以异常终结、释放检索池线程，
+            // 不再无限占用（Rest5ClientBuilder 9.0.2 无 RequestConfig 回调，注入自建 HttpAsyncClient）
+            RequestConfig requestConfig = RequestConfig.custom()
+                    .setConnectTimeout(Timeout.ofMilliseconds(config.getConnectTimeoutMs()))
+                    .setResponseTimeout(Timeout.ofMilliseconds(config.getReadTimeoutMs()))
+                    .build();
+            CloseableHttpAsyncClient httpClient = HttpAsyncClients.custom()
+                    .setDefaultRequestConfig(requestConfig)
+                    .build();
+            rc = Rest5Client.builder(URI.create(config.getUrl()))
+                    .setHttpClient(httpClient)
+                    .build();
             ec = new ElasticsearchClient(new Rest5ClientTransport(rc, new JacksonJsonpMapper()));
         } catch (Exception e) {
             logFailure("构造 Rest5Client", e);

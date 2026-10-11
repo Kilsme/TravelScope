@@ -212,6 +212,11 @@ public class AppProperties {
         private String password = "";
         /** 是否禁用 SSL 验证（开发环境用） */
         private boolean disableSslVerification = false;
+        /** HTTP 连接超时（毫秒，2026-10-11 P1-D）：本地/局域网 ES 3s 足够 */
+        private int connectTimeoutMs = 3000;
+        /** HTTP 读取超时（毫秒，P1-D 治本）：小于 RAG 通道级超时（lane-timeout-ms 15s）——
+         *  HTTP 层先超时让慢查询任务以异常终结、释放检索池线程，lane 层再兜底 */
+        private int readTimeoutMs = 10000;
     }
 
     /**
