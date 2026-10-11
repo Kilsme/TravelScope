@@ -5,14 +5,18 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.MsgRole;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
@@ -21,23 +25,29 @@ import io.agentscope.core.model.ToolSchema;
 /**
  * LLM Gateway —— 模型调用层装饰器（FR-S09）
  * <p>
- * {@code implements Model} 包装主模型（qwen-plus），对每一次模型调用叠加：
+ * {@code implements Model} 包装主链路模型（glm-5-3-260814 @ 模型网关），对每一次模型调用叠加：
  * <ol>
  *   <li><b>熔断</b>：Resilience4j CircuitBreaker（滑动窗口失败率超阈值 → OPEN 快速失败
- *       → waitDuration 后 HALF_OPEN 探测恢复）——OPEN 期间请求不再打到 DashScope</li>
+ *       → waitDuration 后 HALF_OPEN 探测恢复）——OPEN 期间请求不再打到模型网关</li>
  *   <li><b>单次调用超时</b>：Flux.timeout（默认 30s）</li>
- *   <li><b>fallback 降级</b>：失败（含中途失败）→ log.warn("fallback → {turbo}") →
- *       切换 qwen-turbo 实例重流；fallback 也失败则异常上抛，由 ChatService 转 SSE error</li>
+ *   <li><b>fallback 降级</b>：失败（含中途失败）→ log.warn("fallback → …") →
+ *       切换 deepseek-v4-flash-0731 实例重流并粘滞（防抖）；fallback 也失败则异常上抛，
+ *       由 ChatService 转 SSE error。注意主/备同网关（2026-10-05 迁移后）：网关整体故障时
+ *       fallback 同失效，由熔断 OPEN 快速失败 + SSE error 文案兜底</li>
+ *   <li><b>探测回切</b>：粘滞期间由 @Scheduled 定时任务对 primary 发最小探测调用（走熔断器，
+ *       OPEN 未到期被 CallNotPermitted 快速拦截、零网络开销；到期经 HALF_OPEN 惰性转换放行），
+ *       探测成功即自动回切 primary——替代早期的「重启恢复」（2026-10-11 熔断统计漂移修复）</li>
  * </ol>
  * </p>
  * <p>
  * 框架核验依据（agentscope 2.0.3 反编译）：Model 仅 2 抽象方法 + 3 default，框架自身的
  * fallbackModel 实现就是同款 implements Model 包装器（ReActAgent$2）；ChatModelBase.stream
- * 是 public final（不能继承装饰，必须接口实现）；DashScopeHttpException 不实现
- * ModelHttpException——框架原生重试不认 401/invalid-model，本装饰器是唯一处理点；
- * GenerateOptions.modelName 被 DashScopeChatModel 忽略——fallback 必须持有独立模型实例。
+ * 是 public final（不能继承装饰，必须接口实现）；模型侧 HTTP 异常（401/invalid-model 等）
+ * 不实现 ModelHttpException——框架原生重试不认它们，本装饰器是唯一处理点；
+ * OpenAIChatModel 虽尊重 per-call GenerateOptions.modelName，但运行时无法在单实例上
+ * 切换模型（per-call options 由框架传入），fallback 仍需持有独立的轻量模型实例。
  * 与框架原生 fallbackModel 的差异：原生只在「首个信号是错误」时切换（switchOnFirst），
- * 本装饰器 onErrorResume 覆盖中途失败（丢弃已发块、整流切到 turbo 重发）。
+ * 本装饰器 onErrorResume 覆盖中途失败（丢弃已发块、整流切到轻量模型重发）。
  * </p>
  */
 public class LlmGatewayModel implements Model {
@@ -52,8 +62,12 @@ public class LlmGatewayModel implements Model {
     /** 业务链路打点（model-call span，2026-10-02） */
     private final TracingHelper tracing;
 
-    /** 当前生效模型：fallback 切换后能力标志反映 fallback（对齐框架 activeModel 模式） */
+    /** 当前生效模型：fallback 切换后能力标志反映 fallback（对齐框架 activeModel 模式）；
+     *  粘滞防抖——切到 fallback 后保持，由探测任务 {@link #probePrimaryRecovery()} 回切 */
     private final AtomicReference<Model> activeModel;
+
+    /** 探测回切并发防护：同一时间至多一个在途探测 */
+    private final AtomicBoolean probing = new AtomicBoolean();
 
     public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
                            Duration callTimeout, boolean fallbackEnabled) {
@@ -104,21 +118,26 @@ public class LlmGatewayModel implements Model {
 
     private Flux<ChatResponse> doStream(List<Msg> messages, List<ToolSchema> tools,
                                         GenerateOptions options, TracingHelper.SpanHandle span) {
-        // 熔断统计挂在「主模型流」上（fallback 之前）：fallback 成功会掩盖主模型故障，
-        // 若挂在外层整链，持续 401 时熔断器永远不 OPEN、请求永远打向 DashScope 拿 401。
+        Model current = activeModel.get();   // 粘滞语义不变：当前生效模型
+        // 熔断统计只挂「主模型流」（fallback 之前）：fallback 成功会掩盖主模型故障，
+        // 若挂在外层整链，持续 401 时熔断器永远不 OPEN、请求永远打向模型网关拿 401。
+        // 熔断器是主模型的保护开关——fallback 直调不套熔断（2026-10-11 统计目标漂移修复：
+        // 修复前熔断器经 activeModel.get() 间接挂载，粘滞后统计/探测对象漂移到 fallback）。
         // OPEN 期间主模型流直接快速失败（CallNotPermitted），仍可经 fallback 提供服务。
-        Flux<ChatResponse> guardedPrimary = Flux.defer(() ->
-                        activeModel.get().stream(messages, tools, options))
-                .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
+        Flux<ChatResponse> call = Flux.defer(() -> current.stream(messages, tools, options))
                 .timeout(callTimeout);
+        Flux<ChatResponse> guarded = (current == primary)
+                ? call.transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
+                : call;
 
-        if (!fallbackEnabled || fallback == null) {
-            return guardedPrimary;
+        if (!fallbackEnabled || fallback == null || current == fallback) {
+            // 已在 fallback 档：不再嵌套 fallback，失败直接上抛（由 ChatService 转 SSE error）
+            return guarded;
         }
-        return guardedPrimary.onErrorResume(e -> {
-            // 主模型失败（熔断 OPEN / 超时 / 401 / 中途错误）→ 切 fallback 重流
+        return guarded.onErrorResume(e -> {
+            // 主模型失败（熔断 OPEN / 超时 / 401 / 中途错误）→ 切 fallback 重流并粘滞
             log.warn("fallback → {} (primary={} 失败原因: {})",
-                    fallback.getModelName(), activeModel.get().getModelName(),
+                    fallback.getModelName(), current.getModelName(),
                     e.getClass().getSimpleName() + ": " + e.getMessage());
             activeModel.set(fallback);
             // 打点内标：本次调用走了 fallback（外层 doOnComplete 的 success 经 tagIfAbsent 不覆盖）
@@ -149,7 +168,55 @@ public class LlmGatewayModel implements Model {
     }
 
     /**
-     * 重置回主模型（测试钩子；生产链路中每个对话的首次调用即走 primary）。
+     * 探测回切调度壳（替代「重启恢复」，2026-10-11）：粘滞 fallback 期间每
+     * travelscope.llm-gateway.probe-interval-seconds（默认 30s）触发一次。
+     * 核心逻辑在 {@link #probePrimaryRecovery()}（返回 Mono 供测试直调；@Scheduled 不订阅
+     * 响应式返回，故在此 subscribe 驱动）。
+     */
+    @Scheduled(fixedDelayString = "${travelscope.llm-gateway.probe-interval-seconds:30}000",
+            initialDelayString = "${travelscope.llm-gateway.probe-interval-seconds:30}000")
+    public void schedulePrimaryProbe() {
+        probePrimaryRecovery().subscribe(recovered -> {
+            if (recovered) {
+                log.warn("primary 探测成功 → 自动回切（熔断状态 {}）", circuitBreaker.getState());
+            }
+        });
+    }
+
+    /**
+     * 探测回切核心：仅粘滞期间（当前生效模型为 fallback）对 primary 发一次最小探测调用，
+     * <b>走熔断器</b>——OPEN 未到期被 CallNotPermitted 快速拦截（零网络开销）；OPEN 到期经
+     * R4j 惰性转换 HALF_OPEN 放行探测。探测成功即证明主模型恢复 → 自动回切 primary
+     * （回切后真实流量自然把 HALF_OPEN 推到 CLOSED；若仍抖动则失败重新 OPEN → 再粘滞，自校正）。
+     * 探测失败计入熔断统计（探测的正是主模型健康度），保持粘滞。
+     *
+     * @return true=本次探测成功且已回切；false=未粘滞（no-op，零调用）/探测被熔断拦截/探测失败
+     */
+    public Mono<Boolean> probePrimaryRecovery() {
+        if (fallback == null || activeModel.get() != fallback) {
+            return Mono.just(false);   // 未粘滞：无需探测
+        }
+        if (!probing.compareAndSet(false, true)) {
+            return Mono.just(false);   // 已有在途探测
+        }
+        return Flux.defer(() -> primary.stream(
+                        List.of(Msg.builder().role(MsgRole.USER).textContent("ping").build()),
+                        List.of(), null))
+                .timeout(callTimeout)
+                .transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
+                .collectList()
+                .map(chunks -> !chunks.isEmpty() && activeModel.compareAndSet(fallback, primary))
+                .onErrorResume(e -> {
+                    log.debug("primary 探测未恢复（{}: {}）",
+                            e.getClass().getSimpleName(), e.getMessage());
+                    return Mono.just(false);
+                })
+                .doFinally(s -> probing.set(false));
+    }
+
+    /**
+     * 重置回主模型（测试钩子；生产链路的回切由探测任务 {@link #probePrimaryRecovery()} 完成，
+     * 粘滞设计见 architecture.md 7.1）。
      */
     void resetToPrimary() {
         activeModel.set(primary);

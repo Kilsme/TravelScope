@@ -9,8 +9,8 @@ package com.travelscope.agent;
  * <p>
  * v3.2 升级为分段审核：一次调用内分三段顺序审（段1 POI 有效性 / 段2 路线连贯性+
  * 时间密度 / 段3 预算+偏好匹配，各段 pass|fail），5 维评分保留作为分段结论的
- * 量化依据；通过标准 = 总分 ≥80 且无单维 &lt;12 且三段全 pass。评分模型 qwen-max
- * （与主链路 qwen-plus 分离，经 planner 的 modelResolver 按 name 分流）；通过写
+ * 量化依据；通过标准 = 总分 ≥80 且无单维 &lt;12 且三段全 pass。评分模型经 planner 的
+ * modelResolver 按 name 分流（独立于主链路配置，2026-10-05 起为 glm-5-3-260814 @ 模型网关）；通过写
  * review_passed.md，不通过写 review_report.md（含分段结论与改进建议）供 planner
  * 回炉（≤2 次，ReviewerRetryMiddleware 保险丝在代码层兜底防无限循环）。
  * </p>

@@ -3,7 +3,7 @@ package com.travelscope.agent;
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.IntentResult;
 import com.travelscope.service.IntentCache;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import com.travelscope.testutil.ModelGatewayTestSupport;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -19,14 +19,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 意图级联端到端测试（真实 qwen-turbo L2 + 真实 qwen-plus L3 + Fake 缓存）
+ * 意图级联端到端测试（真实 deepseek-v4-flash-0731 L2 + 真实 glm-5-3-260814 L3 @ 模型网关 + Fake 缓存）
  * <p>
  * 验证级联接线正确：L1 未命中的真实消息在 L2 被真实模型分类（验收标准 c 的完整链路），
  * 并观测 L2 真实延迟（目标 < 200ms 的观测项，网络抖动大不作硬断言）。
  * 2026-09-29 失忆修复 Fix 4：反问语境下裸地名走带上下文的真实 L2 判 PLANNING。
  * </p>
  */
-@EnabledIfEnvironmentVariable(named = "API_KEY", matches = "sk-.+")
+@EnabledIfEnvironmentVariable(named = ModelGatewayTestSupport.API_KEY_ENV, matches = ".+")
 class IntentCascadeRealApiTest {
 
     /** Fake 缓存（复用单测语义；E2E 的 Redis 路径由 RedisIntentCacheTest 覆盖） */
@@ -67,14 +67,8 @@ class IntentCascadeRealApiTest {
 
     @BeforeAll
     static void setUp() {
-        String apiKey = System.getenv("API_KEY");
-        DashScopeChatModel turbo = DashScopeChatModel.builder()
-                .apiKey(apiKey).modelName("qwen-turbo").stream(true).build();
-        DashScopeChatModel plus = DashScopeChatModel.builder()
-                .apiKey(apiKey).modelName("qwen-plus").stream(true).build();
-
-        LightweightIntentClassifier l2 = new LightweightIntentClassifier(turbo);
-        IntentClassifier l3 = new IntentClassifier(plus);
+        LightweightIntentClassifier l2 = new LightweightIntentClassifier(ModelGatewayTestSupport.lightModel());
+        IntentClassifier l3 = new IntentClassifier(ModelGatewayTestSupport.mainModel());
 
         AppProperties props = new AppProperties();
         cache = new FakeCache();

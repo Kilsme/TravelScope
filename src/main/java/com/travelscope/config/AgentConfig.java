@@ -29,8 +29,10 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.core.tool.mcp.McpClientBuilder;
 import io.agentscope.core.tool.mcp.McpClientWrapper;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import io.agentscope.extensions.model.openai.compat.glm.GLMFormatter;
 import io.agentscope.core.model.Model;
+import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
@@ -243,32 +245,35 @@ public class AgentConfig {
     }
 
     /**
-     * 创建 DashScope 聊天模型 Bean（主链路 qwen-plus）
+     * 创建主链路模型 Bean（glm-5-3-260814 @ 模型网关，经 LLM Gateway 装饰，FR-S09）
      * <p>
-     * 显式构建（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY），
-     * 供主 Agent 与意图分类器共用；子代理的字符串模型 ID 通过 modelResolver 解析到同一实例，
-    /**
-     * 创建主链路模型 Bean（qwen-plus，经 LLM Gateway 装饰，FR-S09）
-     * <p>
-     * 真实 DashScope 实例（apiKey 取自 travelscope.dashscope.api-key，即环境变量 API_KEY）
+     * 2026-10-05 对话模型全量迁移：OpenAIChatModel 直连自建模型网关（标准 OpenAI
+     * chat completions 协议 + Bearer 认证；baseUrl 以 /v1 结尾时扩展自动去重，
+     * 最终请求 {base-url}/chat/completions，无需设置 endpointPath）。base-url/api-key 取自
+     * travelscope.model-gateway.*（api-key 即环境变量 media_model_gateway_api_key）。
      * 外包 {@link LlmGatewayModel} 装饰器：熔断（滑动窗口失败率超阈值 → OPEN → HALF_OPEN）+
-     * 单次调用超时 + 失败 fallback → qwen-turbo 重流。master/planner/modelResolver/4 个声明式
-     * 子 Agent 全部收敛到本 Bean——包一个实例全链路生效（意图级联 L3 也经此）。
+     * 单次调用超时 + 失败 fallback → deepseek-v4-flash-0731 重流。master/planner/modelResolver/
+     * 4 个声明式子 Agent 全部收敛到本 Bean——包一个实例全链路生效（意图级联 L3 也经此）。
      * </p>
      * <p>
      * 返回类型为 {@link Model} 接口（装饰器模式；框架核验：Model 仅 2 抽象方法，
      * 框架自身的 fallbackModel 实现就是同款 implements Model 包装器）。
-     * @Primary：按 DashScopeChatModel 类型注入 turbo 的地方不受影响，
-     * 按 Model 类型注入的下游解析到本装饰后主链路模型。
+     * @Primary：按 Model 类型注入的下游解析到本装饰后主链路模型。
      * </p>
      */
     @Bean
     @org.springframework.context.annotation.Primary
-    public Model dashscopeChatModel(DashScopeChatModel dashscopeTurboModel) {
-        Model primary = DashScopeChatModel.builder()
-                .apiKey(appProperties.getDashscope().getApiKey())
-                .modelName(appProperties.getDashscope().getModel())
+    public Model gatewayChatModel(OpenAIChatModel gatewayLightModel) {
+        var mg = appProperties.getModelGateway();
+        Model primary = OpenAIChatModel.builder()
+                .baseUrl(mg.getBaseUrl())
+                .apiKey(mg.getApiKey())
+                .modelName(mg.getModel())
                 .stream(true)
+                .formatter(new GLMFormatter())
+                .generateOptions(glmDefaults(mg))
+                .nativeStructuredOutput(mg.isNativeStructuredOutput())
+                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
                 .build();
         var gw = appProperties.getLlmGateway();
         if (!gw.isEnabled()) {
@@ -282,7 +287,7 @@ public class AgentConfig {
                         .waitDurationInOpenState(Duration.ofSeconds(gw.getCbWaitDurationOpenSeconds()))
                         .build());
         return new LlmGatewayModel(primary,
-                gw.isFallbackEnabled() ? dashscopeTurboModel : null, cb,
+                gw.isFallbackEnabled() ? gatewayLightModel : null, cb,
                 Duration.ofSeconds(gw.getModelTimeoutSeconds()), gw.isFallbackEnabled(), tracingHelper);
     }
 
@@ -295,54 +300,82 @@ public class AgentConfig {
     }
 
     /**
-     * L2 轻量分类模型 Bean（qwen-turbo，FR-S01 意图级联）
+     * L2 轻量分类模型 Bean（deepseek-v4-flash-0731 @ 模型网关，FR-S01 意图级联）
      * <p>
-     * 与主链路共用 apiKey，仅模型名不同（travelscope.intent-cascade.l2-model）；
+     * 与主链路共用网关 base-url/api-key，仅模型名不同（travelscope.intent-cascade.l2-model）；
      * 被意图级联的 L2 层使用（LightweightIntentClassifier），并作为主链路
-     * LlmGatewayModel 的 fallback 目标（fallback 是降级终点，自身不再套熔断）。
+     * LlmGatewayModel 的 fallback 目标（fallback 是降级终点，自身不再套熔断；
+     * 主/备同网关——网关整体故障时 fallback 同失效，由熔断 OPEN 快速失败 + SSE error 兜底）。
      * </p>
      */
     @Bean
-    public DashScopeChatModel dashscopeTurboModel() {
-        return DashScopeChatModel.builder()
-                .apiKey(appProperties.getDashscope().getApiKey())
+    public OpenAIChatModel gatewayLightModel() {
+        var mg = appProperties.getModelGateway();
+        return OpenAIChatModel.builder()
+                .baseUrl(mg.getBaseUrl())
+                .apiKey(mg.getApiKey())
                 .modelName(appProperties.getIntentCascade().getL2Model())
                 .stream(true)
+                .nativeStructuredOutput(mg.isNativeStructuredOutput())
+                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
                 .build();
     }
 
     /**
-     * 记忆摘要生成模型 Bean（qwen-turbo，2026-09-29 失忆修复）
+     * 记忆摘要生成模型 Bean（deepseek-v4-flash-0731 @ 模型网关，2026-09-29 失忆修复）
      * <p>
      * ConversationSummaryService 每满 10 轮后台折叠一次会话历史的低成本低延迟辅助调用，
-     * 与意图级联 L2 同级定位。独立实例而非复用 turbo Bean：GenerateOptions.modelName
-     * 被 DashScopeChatModel 忽略，换模型必须持独立实例（见 LlmGatewayModel 注释），
-     * 模型名走 chat-history.summary.model 独立配置。裸模型不经 LlmGateway 装饰——
-     * 后台任务不占对话准入槽位、不影响主链路熔断统计。
+     * 与意图级联 L2 同级定位。独立实例而非复用轻量 Bean：模型名走
+     * chat-history.summary.model 独立配置（与 l2-model 各自可调，当前同档）。
+     * 裸模型不经 LlmGateway 装饰——后台任务不占对话准入槽位、不影响主链路熔断统计。
      * </p>
      */
     @Bean
-    public DashScopeChatModel conversationSummaryModel() {
-        return DashScopeChatModel.builder()
-                .apiKey(appProperties.getDashscope().getApiKey())
+    public OpenAIChatModel conversationSummaryModel() {
+        var mg = appProperties.getModelGateway();
+        return OpenAIChatModel.builder()
+                .baseUrl(mg.getBaseUrl())
+                .apiKey(mg.getApiKey())
                 .modelName(appProperties.getChatHistory().getSummary().getModel())
                 .stream(true)
+                .nativeStructuredOutput(mg.isNativeStructuredOutput())
+                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
                 .build();
     }
 
     /**
-     * 质检评分模型 Bean（qwen-max，FR-S08：reviewer-agent 专用）
+     * 质检评分模型 Bean（glm-5-3-260814 @ 模型网关，FR-S08：reviewer-agent 专用）
      * <p>
-     * 评分模型与主链路 qwen-plus 分离（更强的评审能力且互不占额度）；
-     * 由 buildPlannerAgent 的 modelResolver 按 agent name 分流到 reviewer-agent。
+     * 评分模型与主链路模型名独立配置（travelscope.model-gateway.reviewer-model，
+     * 当前同为 glm-5-3-260814）；由 buildPlannerAgent 的 modelResolver 按 agent name
+     * 分流到 reviewer-agent，EvalCase 的 Rubric 评分复用本 Bean。
      * </p>
      */
     @Bean
-    public DashScopeChatModel dashscopeReviewerModel() {
-        return DashScopeChatModel.builder()
-                .apiKey(appProperties.getDashscope().getApiKey())
-                .modelName(appProperties.getDashscope().getReviewerModel())
+    public OpenAIChatModel gatewayReviewerModel() {
+        var mg = appProperties.getModelGateway();
+        return OpenAIChatModel.builder()
+                .baseUrl(mg.getBaseUrl())
+                .apiKey(mg.getApiKey())
+                .modelName(mg.getReviewerModel())
                 .stream(true)
+                .formatter(new GLMFormatter())
+                .generateOptions(glmDefaults(mg))
+                .nativeStructuredOutput(mg.isNativeStructuredOutput())
+                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
+                .build();
+    }
+
+    /**
+     * GLM 系模型的默认请求参数：thinking 开关经 additionalBodyParam 原样透传到请求体
+     * （框架 GLMFormatter 的官方机制）。GLM-5 系默认开启思考、单轮推理实测 35~133s
+     * （planner 链路 420s 预算内连 poi-research 都未跑完），禁用后单轮 ~2s——
+     * 默认禁用，经 travelscope.model-gateway.thinking-enabled 可开。
+     */
+    private static GenerateOptions glmDefaults(AppProperties.ModelGatewayConfig mg) {
+        return GenerateOptions.builder()
+                .additionalBodyParam("thinking",
+                        Map.of("type", mg.isThinkingEnabled() ? "enabled" : "disabled"))
                 .build();
     }
 
@@ -358,8 +391,8 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public HarnessAgent travelMasterAgent(Toolkit toolkit, Model dashscopeChatModel,
-                                          DashScopeChatModel dashscopeReviewerModel,
+    public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
+                                          OpenAIChatModel gatewayReviewerModel,
                                           TaskRegistry taskRegistry,
                                           TaskWorkspaceService taskWorkspaceService,
                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
@@ -372,7 +405,7 @@ public class AgentConfig {
                         + "调需求状态机工具判断缺项（纯代码零模型调用），理解用户模糊回答并写回状态，"
                         + "反问经 ask_user 工具发出（≤3 轮，超限 DEGRADED 带默认值放行），产出 intake_done.md")
                 .inlineAgentsBody(IntakeAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getModel())
+                .model(appProperties.getModelGateway().getModel())
                 .maxIters(IntakeAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .tools(List.of(
@@ -384,9 +417,9 @@ public class AgentConfig {
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
                 .sysPrompt(TravelMasterAgent.SYS_PROMPT)
-                .model(dashscopeChatModel)
+                .model(gatewayChatModel)
                 // 子代理声明的字符串模型 ID 统一解析到同一模型实例
-                .modelResolver(name -> dashscopeChatModel)
+                .modelResolver(name -> gatewayChatModel)
                 .toolkit(toolkit)
                 .maxIters(TravelMasterAgent.MAX_ITERS)
                 // 挂起的工具调用自动补错误结果继续（2026-09-21）：长规划链路被泳道超时/客户端断开/
@@ -420,7 +453,7 @@ public class AgentConfig {
                         "规划 Agent（行程规划师，二级编排者）：直调工具获取天气/酒店/车票实时数据，"
                                 + "并行调度 poi-research 与 route-optimizer 两个子 Agent，"
                                 + "组装行程草案并经 reviewer-agent 质检闭环",
-                        name -> buildPlannerAgent(toolkit, dashscopeChatModel, dashscopeReviewerModel))
+                        name -> buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 声明式 + {} 工厂式[内含 {}/{}/{}])",
@@ -446,15 +479,15 @@ public class AgentConfig {
      * workspace / skillRepository / 权限模式与主 Agent 一致。
      * </p>
      */
-    private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model dashscopeChatModel,
-                                           DashScopeChatModel dashscopeReviewerModel) {
+    private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model gatewayChatModel,
+                                           Model gatewayReviewerModel) {
         // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
         SubagentDeclaration poiResearch = SubagentDeclaration.builder()
                 .name(PoiResearchAgent.AGENT_NAME)
                 .description("景点检索 Agent（检索员）：按目的地+天数+偏好多轮检索筛选景点候选，"
                         + "召回不足时换关键词重查，产出 poi_shortlist.md")
                 .inlineAgentsBody(PoiResearchAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getModel())
+                .model(appProperties.getModelGateway().getModel())
                 .maxIters(PoiResearchAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .skills(List.of("attraction-search"))
@@ -468,7 +501,7 @@ public class AgentConfig {
                 .description("路线调优 Agent（排线员）：读 poi_shortlist.md，两两调路线工具算通勤，"
                         + "就近聚类分日 + 迭代调整再算，产出 route_plan.md 并自行登记缓存")
                 .inlineAgentsBody(RouteOptimizerAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getModel())
+                .model(appProperties.getModelGateway().getModel())
                 .maxIters(RouteOptimizerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .skills(List.of("route-planning"))
@@ -481,18 +514,18 @@ public class AgentConfig {
                 .build();
 
         // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，产出 review_passed.md / review_report.md。
-        // 模型经 modelResolver 按 name 分流到 qwen-max（评分模型与主链路 qwen-plus 分离）；
+        // 模型经 modelResolver 按 name 分流到质检评分模型（glm-5-3-260814，独立配置）；
         // tools 白名单限定核验工具面（天气/路线/地理 + 文件 + 缓存登记）
         SubagentDeclaration reviewer = SubagentDeclaration.builder()
                 .name(ReviewerAgent.AGENT_NAME)
-                .description("质量审阅 Agent（质检员，qwen-max 评分模型）：对 itinerary_draft.md 做分段审核"
+                .description("质量审阅 Agent（质检员，评分模型独立配置）：对 itinerary_draft.md 做分段审核"
                         + "（段1 POI 有效性 / 段2 路线连贯性+时间密度 / 段3 预算+偏好匹配，各段 pass|fail），"
                         + "以 5 维评分（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分）作量化依据，"
                         + "总分≥80 且无单维<12 且三段全 pass 才通过；调工具核验事实（重查距离/天气），"
                         + "通过写 review_passed.md，不通过写 review_report.md"
                         + "（含分段结论与改进建议，供 planner 按段回炉）")
                 .inlineAgentsBody(ReviewerAgent.SYS_PROMPT)
-                .model(appProperties.getDashscope().getReviewerModel())
+                .model(appProperties.getModelGateway().getReviewerModel())
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .tools(List.of(
@@ -509,12 +542,12 @@ public class AgentConfig {
             return HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
-                    .model(dashscopeChatModel)
-                    // 模型分流（FR-S08）：reviewer-agent 的声明 model ID 解析到 qwen-max，
+                    .model(gatewayChatModel)
+                    // 模型分流（FR-S08）：reviewer-agent 解析到质检评分模型（独立配置），
                     // 其余（poi/route/planner 自身）走主链路装饰模型——原一刀切 resolver 会把
-                    // 声明里的模型名无视掉，qwen-max 必须在这里分流才生效
+                    // 声明里的模型名无视掉，评分模型必须在这里分流才生效
                     .modelResolver(name -> ReviewerAgent.AGENT_NAME.equals(name)
-                            ? dashscopeReviewerModel : dashscopeChatModel)
+                            ? gatewayReviewerModel : gatewayChatModel)
                     .toolkit(toolkit)
                     .maxIters(ItineraryAgent.MAX_ITERS)
                     // 挂起工具调用自动补错误结果（与 master 同款，防链路打断后 spawn 卡死）
@@ -543,25 +576,25 @@ public class AgentConfig {
      */
     @Bean
     public IntentClassifier intentClassifier(
-            @org.springframework.beans.factory.annotation.Qualifier("dashscopeChatModel")
-            Model dashscopeChatModel) {
-        return new IntentClassifier(dashscopeChatModel);
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
+            Model gatewayChatModel) {
+        return new IntentClassifier(gatewayChatModel);
     }
 
     /**
      * 创建意图级联路由器 Bean（FR-S01：L0 → L1 → L2 → L3，上层命中即短路）
      * <p>
-     * L2 注入 qwen-turbo 轻量分类器；L3 以方法引用包装现有 IntentClassifier（零改动）；
-     * 缓存为 RedisIntentCache（Redis 不可用时静默降级为无缓存模式）。
+     * L2 注入 deepseek-v4-flash-0731 轻量分类器（模型网关轻量档）；L3 以方法引用包装现有
+     * IntentClassifier（零改动）；缓存为 RedisIntentCache（Redis 不可用时静默降级为无缓存模式）。
      * </p>
      */
     @Bean
     public IntentCascadeRouter intentCascadeRouter(
             IntentCache intentCache,
             IntentClassifier intentClassifier,
-            @org.springframework.beans.factory.annotation.Qualifier("dashscopeTurboModel")
-            DashScopeChatModel dashscopeTurboModel) {
-        LightweightIntentClassifier l2 = new LightweightIntentClassifier(dashscopeTurboModel);
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayLightModel")
+            OpenAIChatModel gatewayLightModel) {
+        LightweightIntentClassifier l2 = new LightweightIntentClassifier(gatewayLightModel);
         return new IntentCascadeRouter(appProperties, intentCache,
                 l2::classify, intentClassifier::classify, tracingHelper);
     }

@@ -13,7 +13,8 @@ import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.skill.repository.ClasspathSkillRepository;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.core.tool.Toolkit;
-import io.agentscope.extensions.model.dashscope.DashScopeChatModel;
+import com.travelscope.testutil.ModelGatewayTestSupport;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
@@ -59,10 +60,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 脚本化 PASS 裁决桩（成本对称），不含共同的首次 FAIL 评审（两路径同价，不计入差值）。
  * 外部 API 用确定性桩（复用 {@link PlannerSegmentReworkRealApiTest} 的
  * PlannerStubs / SpawnRecorder / ThrowingRedisTemplate / RecordingAppender——同一套桩
- * 保证两组可比）。结论写入 docs/fix-record-2026-10-04-回炉成本实测.md。
+ * 保证两组可比）。结论写入 docs/fix-record-2026-10-04-回炉成本实测.md
+ * （该轮实测采集于 qwen-plus 时期，2026-10-05 起链路模型为 glm-5-3-260814）。
  * </p>
  */
-@EnabledIfEnvironmentVariable(named = "API_KEY", matches = "sk-.+")
+@EnabledIfEnvironmentVariable(named = ModelGatewayTestSupport.API_KEY_ENV, matches = ".+")
 class ReworkCostBenchmarkRealApiTest {
 
     private static final Duration RUN_TIMEOUT = Duration.ofMinutes(15);
@@ -492,22 +494,18 @@ class ReworkCostBenchmarkRealApiTest {
                         + "通过写 review_passed.md，不通过写 review_report.md（含分段结论与改进建议，"
                         + "供 planner 按段回炉）")
                 .inlineAgentsBody(SCRIPTED_REVIEWER_PROMPT)
-                .model("qwen-plus")
+                .model(ModelGatewayTestSupport.MAIN_MODEL)
                 .maxIters(4)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .build();
 
-        DashScopeChatModel qwenPlus = DashScopeChatModel.builder()
-                .apiKey(System.getenv("API_KEY"))
-                .modelName("qwen-plus")
-                .stream(true)
-                .build();
+        OpenAIChatModel mainModel = ModelGatewayTestSupport.mainModel();
 
         return HarnessAgent.builder()
                 .name(ItineraryAgent.AGENT_NAME)
                 .sysPrompt(ItineraryAgent.SYS_PROMPT)
-                .model(qwenPlus)
-                .modelResolver(name -> qwenPlus)
+                .model(mainModel)
+                .modelResolver(name -> mainModel)
                 .toolkit(toolkit)
                 .maxIters(ItineraryAgent.MAX_ITERS)
                 .enablePendingToolRecovery(true)

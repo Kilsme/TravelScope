@@ -16,7 +16,7 @@ import java.time.Duration;
  * 与 L3 的 {@link IntentClassifier} 结构完全一致（每次分类新建 ReActAgent、
  * 结构化输出、独立 sessionId 不污染主会话状态），差异只在：
  * <ul>
- *   <li>模型：qwen-turbo（单标签分类任务，低成本低延迟）</li>
+ *   <li>模型：轻量档（deepseek-v4-flash-0731 @ 模型网关；单标签分类任务，低成本低延迟）</li>
  *   <li>超时：15 秒（比 L3 的 60 秒短——L2 的定位是快速筛选，
  *       超时/失败即视为 miss 落到 L3 兜底，不在这里恋战）</li>
  *   <li>提示词：精简版（同类定义 + 少量示例），适配轻量模型</li>
@@ -65,8 +65,9 @@ public class LightweightIntentClassifier {
     /**
      * 单标签分类（结构与 IntentClassifier.classify 一致）
      * <p>
-     * qwen-turbo 对结构化输出（合成工具路径）的遵循度不稳定：实测常把意图标签
-     * （如 "CHAT"）直接当纯文本输出（metadata 无 _structured_output 键）。因此本类
+     * 轻量模型对结构化输出（合成工具路径）的遵循度不稳定（qwen-turbo 时期实测，
+     * 轻量档模型普遍存在）：常把意图标签（如 "CHAT"）直接当纯文本输出（metadata 无
+     * _structured_output 键）。因此本类
      * 在结构化解析之外增加<b>纯文本标签解析兜底</b>：textContent.trim() 去掉引号/
      * 句读后能归一化为合法 IntentType 即视为成功——这正是「单标签分类」的最自然形态。
      * 两条路都失败才返回 null（级联层负责降到 L3）。
@@ -78,6 +79,24 @@ public class LightweightIntentClassifier {
      * @return 分类结果；失败返回 null（级联层负责降级到 L3）
      */
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
+        IntentResult result = classifyOnce(userMessage, contextBlock, userId, sessionId);
+        if (result != null) {
+            return result;
+        }
+        // 重试 1 次（2026-10-05 网关迁移实测：deepseek-v4-flash-0731 约 20% 概率输出
+        // 乱格式文本（如 "[[12]]"、双括号 JSON）导致双路解析皆空——与 RubricScorer 的
+        // 重试 1 次同款兜底，单次成功率 ~80% → 重试后 ~96%；级联场景本层空值本就有
+        // L3 兜底，重试进一步降低打到 L3（更贵）的概率
+        result = classifyOnce(userMessage, contextBlock, userId, sessionId);
+        if (result != null) {
+            log.info("L2 轻量分类重试成功: userId={}, sessionId={}", userId, sessionId);
+            return result;
+        }
+        return null;
+    }
+
+    /** 单次分类调用（双路解析：框架结构化 → 纯文本标签），失败返回 null */
+    private IntentResult classifyOnce(String userMessage, String contextBlock, String userId, String sessionId) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 .sessionId(sessionId + "-intent-l2")
@@ -96,7 +115,7 @@ public class LightweightIntentClassifier {
                 log.warn("L2 轻量分类返回为空: userId={}, sessionId={}", userId, sessionId);
                 return null;
             }
-            // 路径一：框架结构化输出（qwen-turbo 对该路径遵循度不稳定，
+            // 路径一：框架结构化输出（轻量模型对该路径遵循度不稳定，
             // metadata 缺 _structured_output 键时框架会抛异常——捕获后走路径二）
             try {
                 IntentResult result = reply.getStructuredData(IntentResult.class);
@@ -106,9 +125,9 @@ public class LightweightIntentClassifier {
                     return result;
                 }
             } catch (Exception ignored) {
-                // metadata 无结构化键（qwen-turbo 常见），落纯文本解析
+                // metadata 无结构化键（轻量模型常见），落纯文本解析
             }
-            // 路径二：纯文本标签解析（qwen-turbo 常把标签直接当文本输出，如 textContent="CHAT"）
+            // 路径二：纯文本标签解析（轻量模型常把标签直接当文本输出，如 textContent="CHAT"）
             IntentType fromText = parseTextLabel(reply.getTextContent());
             if (fromText != null) {
                 log.info("L2 轻量分类结果(纯文本标签): intent={} (userId={}, sessionId={})",

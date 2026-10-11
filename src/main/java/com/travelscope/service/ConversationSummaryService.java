@@ -30,7 +30,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * （即每满 10 轮），由 ChatService 在每轮回复落库后与本轮历史注入时调用检查。
  * </p>
  * <p>
- * 折叠为后台异步（fire-and-forget，绝不阻塞对话链路）；qwen-turbo 轻量调用，
+ * 折叠为后台异步（fire-and-forget，绝不阻塞对话链路）；轻量模型（deepseek-v4-flash-0731）
+ * 低成本调用，
  * 仿 {@link com.travelscope.agent.LightweightIntentClassifier} 模式：每次新建无工具
  * ReActAgent、独立 sessionId 不污染主 Agent 的 Redis 状态、结构化 + 纯文本双路解析。
  * 失败静默降级（log.warn 保留原状，不抛出），下个到期点自动重试——与项目 Redis 类
@@ -51,7 +52,7 @@ public class ConversationSummaryService {
     private final Scheduler summaryScheduler =
             Schedulers.newBoundedElastic(2, 200, "summary-gen", 60, true);
 
-    /** 折叠进行中的会话（防同会话并发双折：浪费一次 turbo 调用且 last-write-wins 互相覆盖） */
+    /** 折叠进行中的会话（防同会话并发双折：浪费一次轻量模型调用且 last-write-wins 互相覆盖） */
     private final Set<Long> inFlight = ConcurrentHashMap.newKeySet();
 
     private final ConversationService conversationService;
@@ -216,8 +217,8 @@ public class ConversationSummaryService {
     }
 
     /**
-     * 调用摘要模型（qwen-turbo）：结构化解析 + 纯文本兜底双路
-     * （qwen-turbo 对结构化输出遵循度不稳定，与 L2 意图分类同款双路，见 LightweightIntentClassifier）
+     * 调用摘要模型（轻量档 deepseek-v4-flash-0731）：结构化解析 + 纯文本兜底双路
+     * （轻量模型对结构化输出遵循度不稳定，与 L2 意图分类同款双路，见 LightweightIntentClassifier）
      */
     private String callSummarizer(String prompt, String userId, Long conversationId,
                                   AppProperties.SummaryConfig cfg) {
@@ -243,7 +244,7 @@ public class ConversationSummaryService {
                 return result.summary;
             }
         } catch (Exception ignored) {
-            // metadata 无结构化键（qwen-turbo 常见），走纯文本
+            // metadata 无结构化键（轻量模型常见），走纯文本
         }
         return reply.getTextContent();
     }

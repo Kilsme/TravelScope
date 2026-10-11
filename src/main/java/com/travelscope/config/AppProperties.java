@@ -19,8 +19,11 @@ import java.util.List;
 @ConfigurationProperties(prefix = "travelscope")
 public class AppProperties {
 
-    /** 通义千问（DashScope）配置 */
+    /** 通义千问（DashScope）配置：2026-10-05 对话模型迁移至模型网关后，仅 Embedding 使用 */
     private DashScopeConfig dashscope = new DashScopeConfig();
+
+    /** 模型网关（OpenAI 兼容）配置：全部对话模型经此网关调用（2026-10-05 迁移） */
+    private ModelGatewayConfig modelGateway = new ModelGatewayConfig();
 
 
     /** 高德地图配置 */
@@ -68,7 +71,7 @@ public class AppProperties {
 
     /**
      * 记忆摘要配置（增量折叠）：每满 {@code intervalRounds} 轮，把 messages[covered..T)
-     * 折叠进已有摘要（qwen-turbo 后台异步），随滑动窗口一起注入模型——第 N 轮之前
+     * 折叠进已有摘要（轻量模型后台异步），随滑动窗口一起注入模型——第 N 轮之前
      * 聊过什么不再对模型不可见。
      */
     @Data
@@ -83,8 +86,8 @@ public class AppProperties {
         private int inputMaxCharsPerMessage = 600;
         /** 折叠输入总量上限（字符）——超出时按比例收紧单条截断（存量长会话首折兜底） */
         private int inputTotalMaxChars = 30000;
-        /** 摘要生成模型 */
-        private String model = "qwen-turbo";
+        /** 摘要生成模型（模型网关轻量档 deepseek-v4-flash-0731） */
+        private String model = "deepseek-v4-flash-0731";
         /** 摘要生成调用超时（秒） */
         private int timeoutSeconds = 30;
     }
@@ -102,14 +105,51 @@ public class AppProperties {
         private double permitsYellowRatio = 0.10;
     }
 
+    /**
+     * 模型网关（OpenAI 兼容）配置：主链路与质检模型 glm-5-3-260814、轻量模型 deepseek-v4-flash-0731
+     * <p>
+     * 2026-10-05 对话模型全量迁移（原 DashScope qwen-plus/qwen-max/qwen-turbo）。
+     * 网关协议为标准 OpenAI chat completions（Bearer 认证）；Embedding 仍走 DashScope。
+     * </p>
+     */
+    @Data
+    public static class ModelGatewayConfig {
+        /** 网关 Base URL（OpenAI 兼容，如 http://ddns.trdyun.xyz:10003/v1） */
+        private String baseUrl;
+        /** 网关 API Key（环境变量 media_model_gateway_api_key） */
+        private String apiKey;
+        /** 主链路对话模型（master/planner/intake/poi/route + L3 意图分类兜底） */
+        private String model = "glm-5-3-260814";
+        /** 质检评分模型（reviewer-agent + EvalCase Rubric 评分，与主链路同网关独立配置） */
+        private String reviewerModel = "glm-5-3-260814";
+        /**
+         * GLM 系模型的思考模式（thinking）开关，false = 禁用（默认）。
+         * 实测（2026-10-05 E2E）：GLM-5 系默认开启思考，单轮推理 35~133s（生成大量
+         * reasoning token），planner 链路 420s 预算内连 poi-research 都未跑完；
+         * thinking 禁用后单轮 ~2s。经 GenerateOptions.additionalBodyParam("thinking",
+         * {"type":"enabled|disabled"}) 透传，配合 compat.glm.GLMFormatter 生效。
+         */
+        private boolean thinkingEnabled = false;
+        /**
+         * 结构化输出是否走原生 json_schema response_format（无工具时）。
+         * 框架在原生路径失败时自动降级合成 generate_response 工具，一般无需关闭。
+         */
+        private boolean nativeStructuredOutput = true;
+        /**
+         * 结构化输出与工具调用并存时是否仍用原生 json_schema。
+         * 已知坑（OpenAIChatModel javadoc）：部分 OpenAI 兼容后端（DeepSeek/Kimi 系）在
+         * tools + response_format 并存时优先 response_format 导致跳过工具调用——表现为
+         * 模型不调工具直接输出 JSON。出现时置 false（结构化调用回退合成工具路径，
+         * 普通工具调用不受影响）。
+         */
+        private boolean nativeStructuredOutputWithTools = true;
+    }
+
+    /** 通义千问（DashScope）配置：仅 Embedding（text-embedding-v3）使用 */
     @Data
     public static class DashScopeConfig {
-        /** 通义千问 API Key */
+        /** 通义千问 API Key（仅 Embedding 调用使用） */
         private String apiKey;
-        /** 对话模型名称 */
-        private String model = "qwen-plus";
-        /** 质检评分模型（FR-S08：reviewer-agent 专用，与主链路分离） */
-        private String reviewerModel = "qwen-max";
         /** Embedding 模型名称 */
         private String embeddingModel = "text-embedding-v3";
         /** Embedding 维度 */
@@ -234,8 +274,8 @@ public class AppProperties {
         private int l0MaxMessageLength = 20;
         /** L2 轻量分类开关 */
         private boolean l2Enabled = true;
-        /** L2 轻量分类模型（单标签，低成本） */
-        private String l2Model = "qwen-turbo";
+        /** L2 轻量分类模型（单标签，低成本，模型网关轻量档 deepseek-v4-flash-0731） */
+        private String l2Model = "deepseek-v4-flash-0731";
         /** L2 文本缓存开关 */
         private boolean l2CacheEnabled = true;
         /** L2 文本缓存 TTL（分钟） */
@@ -281,10 +321,10 @@ public class AppProperties {
         /** 快泳道超时（秒）：CHAT/TOOL_CALL/RAG 意图的对话级超时（25s——master 含工具调用的
          *  多轮推理链实测 5s 会误杀，25s 仍与慢泳道 60s 保持数量级差异） */
         private int fastLaneTimeoutSeconds = 25;
-        /** 慢泳道超时（秒）：PLANNING 意图的对话级超时 */
-        /** 慢泳道超时（秒）：PLANNING 意图的对话级超时（300s——完整链路 = planner 直调工具
-         *  + poi/route 子任务 + reviewer qwen-max 评分 + ≤2 次回炉，实测单段 30-60s，
-         *  60s 必然切断；仍在 spawn 同步 600s 上限内） */
+        /** 慢泳道超时（秒）：PLANNING 意图的对话级超时。校准史：qwen 时期 300→420
+         *  （回炉全链实测 275~320s）；2026-10-05 迁移 glm-5-3-260814（thinking 禁用）
+         *  + RAG 语义路降级后再上调至 600（实测 450s 仍未到质检段；600 为 spawn
+         *  同步等待 clamp 上限，泳道必须 ≥ 同步等待上限）。yml 显式配置以 yml 为准 */
         private int slowLaneTimeoutSeconds = 300;
         /** 模型单次调用超时（秒，LlmGatewayModel 装饰器） */
         private int modelTimeoutSeconds = 30;
@@ -296,7 +336,10 @@ public class AppProperties {
         private int cbMinimumNumberOfCalls = 5;
         /** 熔断：OPEN 状态持续时间（秒），过后转 HALF_OPEN 探测 */
         private int cbWaitDurationOpenSeconds = 10;
-        /** fallback 降级开关（主模型失败 → qwen-turbo 重试一次） */
+        /** fallback 降级开关（主模型失败 → 轻量模型 deepseek-v4-flash-0731 重试一次） */
         private boolean fallbackEnabled = true;
+        /** 主模型探测回切间隔（秒）：粘滞 fallback 期间定时对 primary 发最小探测调用
+         *  （走熔断器，HALF_OPEN 惰性触发），成功即自动回切——替代「重启恢复」 */
+        private int probeIntervalSeconds = 30;
     }
 }
