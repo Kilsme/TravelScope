@@ -151,8 +151,10 @@ travelscope:
     vector-weight: 0.7
     # 全文检索权重（0~1，双路融合时使用）
     fulltext-weight: 0.3
-    # 返回结果数量
-    top-k: 5
+    # 融合后进上下文的最终条数（2026-10-11 P1-E：原 top-k，与召回扇出拆分）
+    context-top-k: 5
+    # 每路召回扇出（想大保召回）；不变式 recall-fanout ≥ context-top-k，违反启动报错
+    recall-fanout: 15
     # 融合算法: rrf - Reciprocal Rank Fusion / weighted - 加权分数
     fusion: rrf
     # RRF 参数（仅当 fusion=rrf 时生效）

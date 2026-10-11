@@ -66,4 +66,39 @@ class RagServiceImplParallelTest {
                         "ES".equals(f.source()) || "RAG".equals(f.source()) || "RAG+ES".equals(f.source())),
                 "来源标记应合法");
     }
+
+    @Test
+    @DisplayName("P1-E 扇出/最终条数拆分：召回走 recallFanout(15)，融合截取=contextTopK")
+    void testFanoutAndContextTopKSplit() {
+        EsBm25Client es = Mockito.mock(EsBm25Client.class);
+        Mockito.when(es.isAvailable()).thenReturn(true);
+        // 召回侧返回 20 条（≥ 默认扇出 15 与最终条数 5，足以区分两个旋钮）
+        List<RrfFusion.Entry> recalled = new java.util.ArrayList<>();
+        for (int i = 1; i <= 20; i++) {
+            recalled.add(new RrfFusion.Entry("d" + i + ":1", "片段" + i));
+        }
+        Mockito.when(es.search(Mockito.anyString(), Mockito.anyInt())).thenReturn(recalled);
+        RagServiceImpl service = newService(es, 200);
+
+        List<RetrievedFragment> result = service.dualRetrieveWithSource("杭州 景点", 5);
+        service.shutdownRetrievalExecutor();
+
+        Mockito.verify(es).search(Mockito.anyString(), Mockito.eq(15));
+        // 召回侧应使用 recallFanout 默认值 15（而非入参 5）——「一个 int 三义」拆分
+        assertEquals(5, result.size(), "融合后截取应等于 contextTopK 入参（不再等于召回数）");
+    }
+
+    @Test
+    @DisplayName("P1-E 启动校验：recallFanout < contextTopK 违反漏斗单调收窄 → 构造报错")
+    void testFanoutSmallerThanContextTopKFailsFast() {
+        AppProperties props = new AppProperties();
+        props.getRag().setRecallFanout(3);
+        props.getRag().setContextTopK(5);
+        EsBm25Client es = Mockito.mock(EsBm25Client.class);
+
+        IllegalStateException ex = org.junit.jupiter.api.Assertions.assertThrows(
+                IllegalStateException.class,
+                () -> new RagServiceImpl(props, es, null, "root", "root"));
+        assertTrue(ex.getMessage().contains("漏斗单调收窄"), "报错应点明不变式: " + ex.getMessage());
+    }
 }

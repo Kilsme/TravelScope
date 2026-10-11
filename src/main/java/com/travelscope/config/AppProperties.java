@@ -246,8 +246,12 @@ public class AppProperties {
         private double vectorWeight = 0.7;
         /** 全文检索权重（0~1，双路融合时使用） */
         private double fulltextWeight = 0.3;
-        /** 返回结果数量 */
-        private int topK = 5;
+        /** 融合后进上下文的最终条数（即原 topK 语义，2026-10-11 P1-E 改名——
+         *  与召回扇出拆开后语义不再三义） */
+        private int contextTopK = 5;
+        /** 每路召回扇出（P1-E：默认 15，想大保召回）。漏斗单调收窄不变式：
+         *  recallFanout ≥ contextTopK——违反时 RagServiceImpl 启动报错 */
+        private int recallFanout = 15;
         /** 融合算法: rrf-Reciprocal Rank Fusion / weighted-加权分数 */
         private String fusion = "rrf";
         /** RRF 参数 k（仅当 fusion=rrf 时生效） */

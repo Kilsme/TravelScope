@@ -67,7 +67,7 @@ public class ChatService {
     private final TaskWorkspaceService taskWorkspaceService;
     private final TripRequirementStore tripRequirementStore;
     private final LlmGateway llmGateway;
-    /** RAG 检索 topK（travelscope.rag.top-k，原硬编码 5） */
+    /** RAG 检索最终条数（travelscope.rag.context-top-k，原 top-k/硬编码 5；召回扇出走 rag.recall-fanout） */
     private final int ragTopK;
     /** 对话历史渲染器（travelscope.chat-history.*；enabled=false 时 render 返回空串） */
     private final ChatHistoryRenderer chatHistoryRenderer;
@@ -102,7 +102,7 @@ public class ChatService {
         this.taskWorkspaceService = taskWorkspaceService;
         this.tripRequirementStore = tripRequirementStore;
         this.llmGateway = llmGateway;
-        this.ragTopK = appProperties.getRag().getTopK();
+        this.ragTopK = appProperties.getRag().getContextTopK();
         this.chatHistoryRenderer = new ChatHistoryRenderer(
                 appProperties.getChatHistory().getRounds(),
                 appProperties.getChatHistory().getMaxCharsPerMessage(),
