@@ -30,10 +30,13 @@ import io.agentscope.core.model.ToolSchema;
  *   <li><b>熔断</b>：Resilience4j CircuitBreaker（滑动窗口失败率超阈值 → OPEN 快速失败
  *       → waitDuration 后 HALF_OPEN 探测恢复）——OPEN 期间请求不再打到模型网关</li>
  *   <li><b>单次调用超时</b>：Flux.timeout（默认 30s）</li>
- *   <li><b>fallback 降级</b>：失败（含中途失败）→ log.warn("fallback → …") →
- *       切换 deepseek-v4-flash-0731 实例重流并粘滞（防抖）；fallback 也失败则异常上抛，
- *       由 ChatService 转 SSE error。注意主/备同网关（2026-10-05 迁移后）：网关整体故障时
- *       fallback 同失效，由熔断 OPEN 快速失败 + SSE error 文案兜底</li>
+ *   <li><b>fallback 降级</b>（首包提交闸门，2026-10-11 P0-B）：<b>首包前失败</b>（连接失败 /
+ *       超时 / 401 / 模型不存在 / 熔断 OPEN——最常见失败形态）→ log.warn("fallback → …") →
+ *       切换 deepseek-v4-flash-0731 干净重发并粘滞（防抖），用户只看到 fallback 的响应；
+ *       <b>首包后中途失败</b>（首个非空块已下发）→ 已发块不可回收（Flux 语义），不再切换
+ *       （避免「primary 前半段 + fallback 全量重发」拼接输出），异常上抛由 ChatService
+ *       转 SSE error。注意主/备同网关（2026-10-05 迁移后）：网关整体故障时 fallback 同失效，
+ *       由熔断 OPEN 快速失败 + SSE error 文案兜底</li>
  *   <li><b>探测回切</b>：粘滞期间由 @Scheduled 定时任务对 primary 发最小探测调用（走熔断器，
  *       OPEN 未到期被 CallNotPermitted 快速拦截、零网络开销；到期经 HALF_OPEN 惰性转换放行），
  *       探测成功即自动回切 primary——替代早期的「重启恢复」（2026-10-11 熔断统计漂移修复）</li>
@@ -46,8 +49,10 @@ import io.agentscope.core.model.ToolSchema;
  * 不实现 ModelHttpException——框架原生重试不认它们，本装饰器是唯一处理点；
  * OpenAIChatModel 虽尊重 per-call GenerateOptions.modelName，但运行时无法在单实例上
  * 切换模型（per-call options 由框架传入），fallback 仍需持有独立的轻量模型实例。
- * 与框架原生 fallbackModel 的差异：原生只在「首个信号是错误」时切换（switchOnFirst），
- * 本装饰器 onErrorResume 覆盖中途失败（丢弃已发块、整流切到轻量模型重发）。
+ * 与框架原生 fallbackModel 的差异：原生只在「首个信号是错误」时切换（switchOnFirst）；
+ * 本装饰器经首包提交闸门把切换窗口扩展到「首包前失败」（连接失败/401/模型不存在——
+ * 最常见形态，用户无感）；首包后中途失败已发块不可回收，如实上抛转 SSE error，
+ * 不再拼接重发。
  * </p>
  */
 public class LlmGatewayModel implements Model {
@@ -134,16 +139,36 @@ public class LlmGatewayModel implements Model {
             // 已在 fallback 档：不再嵌套 fallback，失败直接上抛（由 ChatService 转 SSE error）
             return guarded;
         }
-        return guarded.onErrorResume(e -> {
-            // 主模型失败（熔断 OPEN / 超时 / 401 / 中途错误）→ 切 fallback 重流并粘滞
-            log.warn("fallback → {} (primary={} 失败原因: {})",
-                    fallback.getModelName(), current.getModelName(),
-                    e.getClass().getSimpleName() + ": " + e.getMessage());
-            activeModel.set(fallback);
-            // 打点内标：本次调用走了 fallback（外层 doOnComplete 的 success 经 tagIfAbsent 不覆盖）
-            span.tag("outcome", "fallback");
-            return fallback.stream(messages, tools, options);
-        });
+        // 首包提交闸门（2026-10-11，P0-B；即 P2-G 首包探测的共用缓冲层）：首个非空块到达前，
+        // 用户尚未看到任何内容，失败可干净切 fallback 重发；首个非空块下发后（committed），
+        // 已发块经 ChatService 转成 SSE 事件推给前端、Flux 语义上不可回收——中途失败不再切
+        // fallback（根治「primary 前半段 + fallback 全量重发」的拼接输出），异常上抛转 SSE error。
+        // 注意 committed 为 per-subscription 局部状态（本方法在 stream() 的 Flux.defer 内被调用）。
+        AtomicBoolean committed = new AtomicBoolean();
+        return guarded
+                .doOnNext(chunk -> {
+                    if (chunk.getContent() != null && !chunk.getContent().isEmpty()) {
+                        committed.set(true);   // 首个非空块 = 首包（role-only 等空块不提交）
+                    }
+                })
+                .onErrorResume(e -> {
+                    if (committed.get()) {
+                        // 首包后中途失败：不再切换，已发前缀保留，如实失败
+                        log.warn("首包已提交，中途失败不切 fallback（primary={} 失败原因: {}）",
+                                current.getModelName(),
+                                e.getClass().getSimpleName() + ": " + e.getMessage());
+                        return Flux.error(e);
+                    }
+                    // 首包前失败（连接失败 / 超时 / 401 / 模型不存在 / 熔断 OPEN CallNotPermitted）
+                    // → fallback 干净重发并粘滞
+                    log.warn("fallback → {} (primary={} 失败原因: {})",
+                            fallback.getModelName(), current.getModelName(),
+                            e.getClass().getSimpleName() + ": " + e.getMessage());
+                    activeModel.set(fallback);
+                    // 打点内标：本次调用走了 fallback（外层 doOnComplete 的 success 经 tagIfAbsent 不覆盖）
+                    span.tag("outcome", "fallback");
+                    return fallback.stream(messages, tools, options);
+                });
     }
 
     @Override
