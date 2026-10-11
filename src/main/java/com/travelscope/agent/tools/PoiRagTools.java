@@ -25,10 +25,21 @@ import java.util.Map;
  * userId 经 RuntimeContext 注入（不带 @ToolParam 的参数），sessionId 由委派说明给出
  * （经 RequirementTools 同款 resolveSessionId 逻辑：子代理 ctx.sessionId 是 sub-xxx，
  * 不能作键——从 ctx 的协作目录键解析主会话 ID）。
+ * </p>
+ * <p>
+ * 证据门控轻量版（2026-10-11 P1-F）：search_pois_with_rag 出口加共识度判定——
+ * 双路共识（RAG+ES 条数）= 0 且总条数过少时，在输出末尾追加低置信警告，
+ * 让 agent 知情降级（不硬编）。边界（诚实标注）：RRF 融合分衡量双路共识度而非
+ * 相关性（满分 ≈0.033），没有绝对质量信号——绝对分数门控（rerank/pgvector
+ * 相似度）为后续演进，见优化清单 4.4。
+ * </p>
  */
 public class PoiRagTools {
 
     private static final Logger log = LoggerFactory.getLogger(PoiRagTools.class);
+
+    /** 低置信门控：共识 0 且总条数低于此值才警告（可调——仅共识 0 但片段充足时不打扰，防误报） */
+    private static final int LOW_CONFIDENCE_MIN_FRAGMENTS = 3;
 
     /** master 注入的协作目录键（值形如 "tasks/conv-29"，值内含主会话 ID） */
     private static final String CTX_COLLAB_DIR_KEY = "travelscope.collab.dir";
@@ -79,6 +90,13 @@ public class PoiRagTools {
         }
         sb.append("\n提示：以上为知识库游记攻略片段（POI 名称/坐标/开放时间等硬字段可能不全），"
                 + "用 searchPois 补全硬字段；引用时标注来源（RAG / ES / RAG+ES）");
+        // 证据门控轻量版（P1-F）：双路共识=0 且总条数过少 → 低置信，让 agent 知情降级而非硬编
+        long consensus = fragments.stream().filter(f -> "RAG+ES".equals(f.source())).count();
+        if (consensus == 0 && fragments.size() < LOW_CONFIDENCE_MIN_FRAGMENTS) {
+            log.info("rag_low_confidence query='{}' 共识=0 总数={}", query, fragments.size());
+            sb.append("\n警告：本次召回置信度低（双路无共识命中）。以上片段可能不相关，"
+                    + "请勿据此编造 POI 信息；建议换关键词重查或改用 searchPois 实时检索。");
+        }
         return sb.toString();
     }
 
