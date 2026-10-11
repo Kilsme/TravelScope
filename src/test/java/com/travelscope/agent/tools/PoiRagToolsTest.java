@@ -60,6 +60,29 @@ class PoiRagToolsTest {
         }
     }
 
+    /** 可变检索桩（P1-F 门控用）：返回片段由用例设置 */
+    static class MutableStubRagService extends RagServiceImpl {
+        private List<RetrievedFragment> fragments = List.of();
+
+        MutableStubRagService() {
+            super(new AppProperties(), null, null, "u", "p");
+        }
+
+        void setFragments(List<RetrievedFragment> fragments) {
+            this.fragments = fragments;
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return true;
+        }
+
+        @Override
+        public List<RetrievedFragment> dualRetrieveWithSource(String query, int topK) {
+            return fragments;
+        }
+    }
+
     private PoiRagTools tools;
     private TaskResultCache cache;
 
@@ -119,5 +142,50 @@ class PoiRagToolsTest {
         // 用正确的 conv-99 查（证明落键用了主会话而非 sub-xxx）
         String got = tools.get_cached_task_result("poi", "conv-99", ctx());
         assertTrue(got.contains("缓存命中"), "应解析到主会话 conv-99: " + got);
+    }
+
+    /** 组装带可变桩的 tools（P1-F 门控用例） */
+    private PoiRagTools toolsWith(List<RetrievedFragment> fragments) {
+        MutableStubRagService stub = new MutableStubRagService();
+        stub.setFragments(fragments);
+        return new PoiRagTools(stub, cache);
+    }
+
+    @Test
+    @DisplayName("P1-F 门控触发：双路共识=0 且总条数<3 → 输出末尾追加低置信警告")
+    void testLowConfidenceGateTriggered() {
+        PoiRagTools t = toolsWith(List.of(
+                new RetrievedFragment("某某攻略片段A", "RAG", 0.016, "d1:1"),
+                new RetrievedFragment("某某攻略片段B", "RAG", 0.015, "d2:1")));
+
+        String result = t.search_pois_with_rag("不存在的地方 景点", 5, ctx());
+
+        assertTrue(result.contains("置信度低"), "共识 0 + 条数过少应警告: " + result);
+        assertTrue(result.contains("请勿据此编造 POI 信息"), "应含知情降级指引");
+    }
+
+    @Test
+    @DisplayName("P1-F 门控不触发：含双路共识命中（RAG+ES）→ 无警告")
+    void testGateSilentWhenConsensusExists() {
+        PoiRagTools t = toolsWith(List.of(
+                new RetrievedFragment("西湖攻略", "RAG+ES", 0.031, "seed-1:1"),
+                new RetrievedFragment("灵隐寺攻略", "RAG", 0.016, "seed-2:1")));
+
+        String result = t.search_pois_with_rag("杭州 景点", 5, ctx());
+
+        assertTrue(!result.contains("置信度低"), "有共识命中不应警告: " + result);
+    }
+
+    @Test
+    @DisplayName("P1-F 门控不触发：共识=0 但条数充足（≥3）→ 无警告（AND 语义防误报）")
+    void testGateSilentWhenFragmentsEnough() {
+        PoiRagTools t = toolsWith(List.of(
+                new RetrievedFragment("片段A", "RAG", 0.016, "d1:1"),
+                new RetrievedFragment("片段B", "ES", 0.015, "d2:1"),
+                new RetrievedFragment("片段C", "RAG", 0.014, "d3:1")));
+
+        String result = t.search_pois_with_rag("杭州 景点", 5, ctx());
+
+        assertTrue(!result.contains("置信度低"), "条数充足时仅共识 0 不应警告: " + result);
     }
 }
