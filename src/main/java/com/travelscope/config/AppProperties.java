@@ -247,6 +247,9 @@ public class AppProperties {
         private String fusion = "rrf";
         /** RRF 参数 k（仅当 fusion=rrf 时生效） */
         private int rrfK = 60;
+        /** 双路检索通道级超时（毫秒，2026-10-11 P1-C 并行化）：每路独立计时，超时路按空结果
+         *  降级——只放弃等待、不中断池内任务；15s 起步（过小等于整路白算，任务仍在池内跑完） */
+        private int laneTimeoutMs = 15000;
         /** 种子知识库开关（开发/检测用：启动时灌入内置攻略片段，幂等跳过已存在 doc） */
         private boolean seedEnabled = false;
     }
