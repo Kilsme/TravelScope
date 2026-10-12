@@ -15,11 +15,13 @@ import com.travelscope.entity.Message;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEndEvent;
 import io.agentscope.core.event.AgentEvent;
+import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallStartEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.model.Model;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tool.AgentSpawnTool;
 import org.slf4j.Logger;
@@ -83,6 +85,9 @@ public class ChatService {
     private final com.travelscope.config.AppProperties appProperties;
     /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
     private final LoadShedService loadShedService;
+    /** 装饰后主链路模型 Bean（P1-K：persistReply 读 getModelName() 记当轮实际生效模型——
+     *  粘滞切换下 fallback 轮返回 fallback 名，修复 Token 报表固定写主链路模型的记错对象） */
+    private final Model gatewayChatModel;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -94,7 +99,8 @@ public class ChatService {
                        LoadShedService loadShedService,
                        ConversationSummaryService conversationSummaryService,
                        TracingHelper tracing,
-                       com.travelscope.config.AppProperties appProperties) {
+                       com.travelscope.config.AppProperties appProperties,
+                       Model gatewayChatModel) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -117,6 +123,7 @@ public class ChatService {
                 appProperties.getIntentCascade().getContextSummaryMaxChars());
         this.intentContextEnabled = appProperties.getIntentCascade().isContextEnabled();
         this.tracing = tracing;
+        this.gatewayChatModel = gatewayChatModel;
     }
 
     /**
@@ -149,6 +156,9 @@ public class ChatService {
         // THINKING 全文副本（PLANNING 轮 master 当轮输出的兜底来源）——每轮局部变量，
         // 并发轮次互不干扰（2026-09-23 串话修复：原为单例实例字段，并发 PLANNING 轮互相覆盖）
         StringBuilder thinkingFull = new StringBuilder();
+        // 当轮 token 用量累计器（P1-K 真实采集）：每轮局部变量，同 thinkingFull——事件流中
+        // 的 ModelCallEndEvent 累加真实 usage，轮末经 persistReply 落库；并发轮次互不干扰
+        TurnUsageTracker usageTracker = new TurnUsageTracker();
 
         // LLM Gateway 准入（FR-S09）：全局/单用户并发 + QPS；被拒 → SSE error 降级文案（不白屏）
         LlmGateway.AcquireResult admission = llmGateway.tryAcquire(String.valueOf(userId));
@@ -203,7 +213,7 @@ public class ChatService {
                         }
                         return Flux.concat(
                             Flux.just(toIntentEvent(intent)),
-                            runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull))
+                            runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull, usageTracker))
                             // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
                             // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
                             // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
@@ -215,8 +225,8 @@ public class ChatService {
                     .doFinally(signal -> turnSpan.end())
                     .subscribe(
                             event -> sendEvent(emitter, event),
-                            error -> handleError(emitter, replyBuf, conversation, userId, error),
-                            () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull));
+                            error -> handleError(emitter, replyBuf, conversation, userId, error, usageTracker),
+                            () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull, usageTracker));
         }
 
         emitter.onTimeout(disposable::dispose);
@@ -281,7 +291,8 @@ public class ChatService {
      * 运行主 Agent 并把事件流映射为 SSE 事件
      */
     private Flux<ChatEvent> runAgent(Conversation conversation, Long userId, String userMessage,
-                                     IntentResult intent, StringBuilder replyBuf, StringBuilder thinkingFull) {
+                                     IntentResult intent, StringBuilder replyBuf, StringBuilder thinkingFull,
+                                     TurnUsageTracker usageTracker) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(String.valueOf(userId))
                 .sessionId(SESSION_PREFIX + conversation.getId())
@@ -361,6 +372,14 @@ public class ChatService {
         java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
                 ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
         return travelMasterAgent.streamEvents(msg, ctx)
+                // Token 真实采集（P1-K，2026-10-11）：模型调用结束事件携带真实 ChatUsage，
+                // 在过滤前挂点累计（ModelCallEnd 不是主 Agent 可见事件，过滤后会被滤掉）；
+                // 每个 ModelCallEndEvent 对应一次模型调用（ReAct 多轮迭代各一次）
+                .doOnNext(event -> {
+                    if (event instanceof ModelCallEndEvent mce) {
+                        usageTracker.onModelCallEnd(mce.getUsage());
+                    }
+                })
                 // 主 Agent 自身事件 + intake 反问 + 子 Agent 工具活动（前端可见性改造：
                 // master 同步等待期间，子 Agent 的工具 Start/End 转为 agent_status 推送；
                 // 子 Agent 文本 delta 仍被 isMainAgentEvent 拦截——思维链不外泄）
@@ -634,10 +653,10 @@ public class ChatService {
     }
 
     private void handleError(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
-                             Long userId, Throwable error) {
+                             Long userId, Throwable error, TurnUsageTracker usageTracker) {
         log.error("对话处理异常: conversationId={}", conversation.getId(), error);
         llmGateway.release(String.valueOf(userId));
-        persistReply(conversation, userId, replyBuf);
+        persistReply(conversation, userId, replyBuf, usageTracker);
         // 部分回复也已落库计入消息总数，同样检查摘要是否到期
         conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
         try {
@@ -650,7 +669,7 @@ public class ChatService {
     }
 
     private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
-                                Long userId, StringBuilder thinkingFull) {
+                                Long userId, StringBuilder thinkingFull, TurnUsageTracker usageTracker) {
         llmGateway.release(String.valueOf(userId));
         // 过程/结果分离（2026-09-22）：PLANNING 轮 replyBuf 为空（过程文本未进缓冲），
         // 最终方案从协作目录整合生成——itinerary_draft.md 优先，缺则 execution_result.md；
@@ -675,7 +694,7 @@ public class ChatService {
                 replyBuf.append(reply);
             }
         }
-        persistReply(conversation, userId, replyBuf);
+        persistReply(conversation, userId, replyBuf, usageTracker);
         // 记忆摘要到期检查（每满 10 轮后台折叠一次，fire-and-forget 不阻塞 done 事件）
         conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
         // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
@@ -759,13 +778,24 @@ public class ChatService {
         return null;
     }
 
-    private void persistReply(Conversation conversation, Long userId, StringBuilder replyBuf) {
+    private void persistReply(Conversation conversation, Long userId, StringBuilder replyBuf,
+                              TurnUsageTracker usageTracker) {
         String reply = replyBuf.toString();
         if (reply.isBlank()) {
             return;
         }
         try {
-            conversationService.saveAssistantMessage(conversation, userId, reply);
+            // P1-K 真实口径：有 usage 则记真实 token + 当轮实际生效模型名（fallback 轮记 fallback）；
+            // 无 usage（网关未回）传 null → ConversationService 回落估算
+            Integer realTokens = usageTracker.hasRealUsage()
+                    ? (int) usageTracker.totalTokens() : null;
+            String actualModel = usageTracker.hasRealUsage()
+                    ? gatewayChatModel.getModelName() : null;
+            conversationService.saveAssistantMessage(conversation, userId, reply, realTokens, actualModel);
+            if (realTokens == null) {
+                log.debug("本轮无真实 usage（网关未回），回落估算口径: conversationId={}",
+                        conversation.getId());
+            }
         } catch (Exception e) {
             log.error("保存助手回复失败: conversationId={}", conversation.getId(), e);
         }
