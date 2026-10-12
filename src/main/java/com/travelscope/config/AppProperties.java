@@ -340,6 +340,11 @@ public class AppProperties {
         private int slowLaneTimeoutSeconds = 300;
         /** 模型单次调用超时（秒，LlmGatewayModel 装饰器） */
         private int modelTimeoutSeconds = 30;
+        /** 首包探测超时（秒，2026-10-11 P2-G）：首个 token 的到达判据——整流 30s 超时无法
+         *  区分「模型坏了」（挂死无响应）与「慢慢生成长行程」（慢但在流式输出），
+         *  首包限时内未到达即判失败切 fallback（快速失败）；首包后每块间隙仍用
+         *  modelTimeoutSeconds 保护。应明显小于 modelTimeoutSeconds */
+        private int firstPacketTimeoutSeconds = 10;
         /** 熔断：滑动窗口大小（次） */
         private int cbSlidingWindowSize = 10;
         /** 熔断：失败率阈值（%，窗口内失败率超此值即 OPEN） */

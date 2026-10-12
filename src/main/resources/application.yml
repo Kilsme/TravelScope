@@ -218,6 +218,9 @@ travelscope:
     # qwen 时期为 300→420；FR-S09 容量假设（2000 在线）待 B4 回归复核
     slow-lane-timeout-seconds: 600
     model-timeout-seconds: 30
+    # 首包探测超时（2026-10-11 P2-G）：首个 token 的到达判据——挂死 10s 快速失败切 fallback；
+    # 首包到达后恢复 model-timeout-seconds 的间隙保护（区分「模型坏了」与「慢慢生成长行程」）
+    first-packet-timeout-seconds: 10
     cb-sliding-window-size: 10
     cb-failure-rate-threshold: 50
     cb-minimum-number-of-calls: 5
