@@ -146,19 +146,39 @@ public class ConversationService {
     }
 
     /**
-     * 更新会话记忆摘要与覆盖进度（2026-09-29 失忆修复：增量折叠落库）
+     * 更新会话记忆摘要与覆盖进度（2026-10-11 P2-H：升级为「短事务双校验」写入协议）
      * <p>
      * 事务内重读实体再写入——调用方（后台折叠任务）持有的可能是请求域的陈旧实体，
      * 直接 save 会用旧字段覆盖标题等其他列。
      * </p>
+     * <p>
+     * 双校验（对照 ragent AgentMemoryPipeline「读快照 → 不持锁仲裁 → 短事务双校验」）：
+     * ①乐观并发——事务内重读的当前水位 ≠ expectedCovered（折叠起点快照值），说明他方
+     * （多实例/并发任务）已推进或改写，放弃本次提交（防 last-write-wins 覆盖、防旧摘要
+     * 覆盖新摘要）；②水位单调——newCovered 小于当前水位属回退，拒绝。双过才写。
+     * </p>
+     *
+     * @param expectedCovered 折叠起点读到的水位线（快照）
+     * @param newCovered      本次要写回的新水位线
+     * @return true=校验通过已提交；false=校验拒绝（调用方按 ABORTED 结算，不重试）
      */
     @Transactional
-    public void updateSummary(Long conversationId, String summary, int coveredMessages) {
-        conversationRepository.findById(conversationId).ifPresent(conversation -> {
+    public boolean updateSummaryChecked(Long conversationId, String summary,
+                                        int expectedCovered, int newCovered) {
+        return conversationRepository.findById(conversationId).map(conversation -> {
+            int current = conversation.getSummaryCoveredMessages() == null
+                    ? 0 : conversation.getSummaryCoveredMessages();
+            if (current != expectedCovered || newCovered < current) {
+                log.warn("摘要写回双校验拒绝（并发推进/水位回退，放弃提交）: conversationId={} "
+                        + "当前水位={} 期望快照={} 新水位={}", conversationId, current,
+                        expectedCovered, newCovered);
+                return false;
+            }
             conversation.setSummary(summary);
-            conversation.setSummaryCoveredMessages(coveredMessages);
+            conversation.setSummaryCoveredMessages(newCovered);
             conversationRepository.save(conversation);
-        });
+            return true;
+        }).orElse(false);
     }
 
     // ==================== FR-A01 Token 估算（轻量近似，真实链路采集的可测近似） ====================

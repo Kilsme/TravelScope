@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -139,7 +140,7 @@ class ConversationSummaryServiceTest {
         conv.setSummaryCoveredMessages(0);
         when(conversationRepository.findById(1L)).thenReturn(Optional.of(conv));
         assertFalse(service.tryBeginFold(1L));
-        verify(conversationService, never()).updateSummary(anyLong(), anyString(), anyInt());
+        verify(conversationService, never()).updateSummaryChecked(anyLong(), anyString(), anyInt(), anyInt());
     }
 
     @Test
@@ -148,7 +149,7 @@ class ConversationSummaryServiceTest {
         when(conversationService.listMessages(1L)).thenReturn(rounds(10));
         when(conversationRepository.findById(1L)).thenReturn(Optional.empty());
         assertFalse(service.tryBeginFold(1L));
-        verify(conversationService, never()).updateSummary(anyLong(), anyString(), anyInt());
+        verify(conversationService, never()).updateSummaryChecked(anyLong(), anyString(), anyInt(), anyInt());
     }
 
     @Test
@@ -165,7 +166,7 @@ class ConversationSummaryServiceTest {
         // 用会话缺失的早退路径执行 doFold → finally 释放占位
         when(conversationRepository.findById(1L)).thenReturn(Optional.empty());
         service.doFold(1L, 9L);
-        verify(conversationService, never()).updateSummary(anyLong(), anyString(), anyInt());
+        verify(conversationService, never()).updateSummaryChecked(anyLong(), anyString(), anyInt(), anyInt());
 
         // 占位已释放，可再次触发
         when(conversationRepository.findById(1L)).thenReturn(Optional.of(conv));
@@ -173,7 +174,7 @@ class ConversationSummaryServiceTest {
     }
 
     @Test
-    @DisplayName("折叠输入全为空内容时：只推进覆盖进度保留原摘要，不调模型")
+    @DisplayName("折叠输入全为空内容时：DROPPED_BLANK 结算——只推进覆盖进度保留原摘要，不调模型")
     void doFold_blankInputAdvancesCoveredOnly() {
         List<Message> blanks = new ArrayList<>();
         for (int i = 0; i < 20; i++) {
@@ -184,10 +185,35 @@ class ConversationSummaryServiceTest {
         conv.setSummary("旧摘要");
         conv.setSummaryCoveredMessages(0);
         when(conversationRepository.findById(1L)).thenReturn(Optional.of(conv));
+        when(conversationService.updateSummaryChecked(1L, "旧摘要", 0, 20)).thenReturn(true);
 
-        service.doFold(1L, 9L);
+        ConversationSummaryService.FoldOutcome outcome = service.doFold(1L, 9L);
 
-        verify(conversationService).updateSummary(1L, "旧摘要", 20);
+        assertEquals(ConversationSummaryService.FoldOutcome.DROPPED_BLANK, outcome,
+                "空批次应显式记 DROPPED_BLANK（推水位 ≠ 折叠成功）");
+        verify(conversationService).updateSummaryChecked(1L, "旧摘要", 0, 20);
         verifyNoInteractions(summaryModel);
+    }
+
+    @Test
+    @DisplayName("P2-H：空批次水位推进被双校验拒绝 → ABORTED_CONCURRENT（他方已推进，不重试）")
+    void doFold_blankInputAbortedConcurrent() {
+        List<Message> blanks = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            blanks.add(msg(i % 2 == 0 ? Message.ROLE_USER : Message.ROLE_ASSISTANT, " "));
+        }
+        when(conversationService.listMessages(1L)).thenReturn(blanks);
+        Conversation conv = new Conversation();
+        conv.setSummary("旧摘要");
+        conv.setSummaryCoveredMessages(0);
+        when(conversationRepository.findById(1L)).thenReturn(Optional.of(conv));
+        // updateSummaryChecked 默认返回 false（模拟他方已推进水位线）
+
+        ConversationSummaryService.FoldOutcome outcome = service.doFold(1L, 9L);
+
+        assertEquals(ConversationSummaryService.FoldOutcome.ABORTED_CONCURRENT, outcome,
+                "双校验拒绝应按 ABORTED_CONCURRENT 结算");
+        verify(conversationService).updateSummaryChecked(1L, "旧摘要", 0, 20);
+        assertEquals(0, conv.getSummaryCoveredMessages(), "校验拒绝时水位不被本地推进");
     }
 }

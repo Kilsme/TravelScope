@@ -42,6 +42,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * 摘要与窗口约有 10 轮重叠（无害，利于连贯）；偶发折叠失败由 ChatHistoryRenderer
  * 的窗口前移自愈 + 本服务的补折触发兜底。
  * </p>
+ * <p>
+ * <b>写入协议（2026-10-11 P2-H，对照 ragent AgentMemoryPipeline 3.1 四要素）</b>：
+ * ①<b>水位线</b>：{@code summaryCoveredMessages} 划分「已固化/待折叠」边界，水位前不重复
+ * 折叠；②<b>事务外仲裁</b>：读快照 + 模型慢调用全部在事务外（{@link #doFold} 非事务），
+ * 不占库锁；③<b>短事务双校验</b>：写回经
+ * {@link ConversationService#updateSummaryChecked}——事务内重读并校验「当前水位=折叠起点
+ * 快照 + 新水位不回退」，他方（多实例/并发任务）已推进则放弃提交（防 last-write-wins、
+ * 防旧摘要覆盖新摘要）；④<b>失败结算</b>：{@link FoldOutcome} 显式结算——空批次推水位记
+ * DROPPED_BLANK（「推水位 ≠ 折叠成功」，即 ragent 警示的 DROPPED 推水位把失败报成成功之
+ * 坑的 TravelScope 对应物）；校验拒绝记 ABORTED_CONCURRENT 不重试；异常记 FAILED 水位
+ * 不动、下到期点重试。
+ * </p>
  */
 @Service
 public class ConversationSummaryService {
@@ -84,6 +96,22 @@ public class ConversationSummaryService {
             """;
 
     /**
+     * 折叠结算（2026-10-11 P2-H 写入协议：「推水位 ≠ 折叠成功」，结算类型显式化）
+     */
+    enum FoldOutcome {
+        /** 模型产出摘要 + 双校验写回通过 */
+        COMMITTED,
+        /** 空批次结算：新增消息全空内容，只推水位不调模型（DROPPED 式结算——非折叠成功） */
+        DROPPED_BLANK,
+        /** 写回被短事务双校验拒绝（他方已推进水位线，不重试） */
+        ABORTED_CONCURRENT,
+        /** 未执行（条件不满足/模型空结果），水位不动 */
+        SKIPPED,
+        /** 异常失败，水位不动，下个到期点重试 */
+        FAILED
+    }
+
+    /**
      * 到期即异步折叠（fire-and-forget）：消息总数 - 已覆盖 ≥ intervalRounds×2 时触发。
      * 调用点：每轮回复落库后（handleComplete/handleError）+ 历史注入时（缺口自愈补折）。
      * 预检在调用方线程同步执行（2 次索引查询，与 runAgent 内已有的 listMessages 同量级）。
@@ -92,9 +120,11 @@ public class ConversationSummaryService {
         if (!tryBeginFold(conversationId)) {
             return;
         }
-        Mono.fromRunnable(() -> doFold(conversationId, userId))
+        Mono.fromCallable(() -> doFold(conversationId, userId))
                 .subscribeOn(summaryScheduler)
-                .subscribe(ignored -> { }, e -> inFlight.remove(conversationId));
+                .subscribe(outcome -> log.debug("记忆摘要结算: conversationId={}, outcome={}",
+                                conversationId, outcome),
+                        e -> inFlight.remove(conversationId));
     }
 
     /**
@@ -132,43 +162,61 @@ public class ConversationSummaryService {
 
     /**
      * 执行一次增量折叠（后台线程）：messages[covered..T) 渲染后并入已有摘要，
-     * 成功则落库 summary + covered=T。所有异常吞掉——折叠失败不影响主链路，
-     * 保留原状等下个到期点重试。
+     * 成功则经「短事务双校验」落库 summary + covered=T（P2-H：模型慢调用在事务外仲裁，
+     * 仅写回进短事务；校验拒绝说明他方已推进水位线，按 ABORTED_CONCURRENT 结算不重试）。
+     * 所有异常吞掉——折叠失败不影响主链路，保留原状等下个到期点重试。
      */
-    void doFold(Long conversationId, Long userId) {
+    FoldOutcome doFold(Long conversationId, Long userId) {
         try {
             AppProperties.SummaryConfig cfg = config.getSummary();
             // 折叠前重读：预检与实际执行之间可能有新消息落库，以最新为准
             List<Message> messages = conversationService.listMessages(conversationId);
             Conversation conv = conversationRepository.findById(conversationId).orElse(null);
             if (conv == null || messages.isEmpty()) {
-                return;
+                return FoldOutcome.SKIPPED;
             }
+            // 水位线快照：本次折叠的起点，写回时作双校验的期望值
             int covered = coveredOf(conv);
             if (covered >= messages.size()) {
-                return;
+                return FoldOutcome.SKIPPED;
             }
             String newRounds = renderFoldInput(messages, covered, cfg);
             if (newRounds.isBlank()) {
-                // 新增消息全为空内容（异常数据）：仅推进覆盖进度，不浪费一次模型调用
-                conversationService.updateSummary(conversationId, conv.getSummary(), messages.size());
-                return;
+                // 空批次 DROPPED 式结算：只推水位不调模型（显式非折叠成功——「没有待处理
+                // ≠ 处理成功」，见类 javadoc 协议段）；同样经双校验防并发覆盖
+                boolean committed = conversationService.updateSummaryChecked(
+                        conversationId, conv.getSummary(), covered, messages.size());
+                if (!committed) {
+                    log.warn("空批次水位推进被双校验拒绝（并发）: conversationId={}", conversationId);
+                    return FoldOutcome.ABORTED_CONCURRENT;
+                }
+                log.info("记忆摘要空批次结算（DROPPED_BLANK：仅推进水位，未折叠）: conversationId={}",
+                        conversationId);
+                return FoldOutcome.DROPPED_BLANK;
             }
             String prompt = buildFoldPrompt(conv.getSummary(), newRounds);
             String summary = callSummarizer(prompt, String.valueOf(userId), conversationId, cfg);
             if (summary == null || summary.isBlank()) {
                 log.warn("记忆摘要生成为空，保留原状（下个到期点重试）: conversationId={}", conversationId);
-                return;
+                return FoldOutcome.SKIPPED;
             }
             if (summary.length() > cfg.getMaxChars()) {
                 summary = summary.substring(0, cfg.getMaxChars()) + "…（截断）";
             }
-            conversationService.updateSummary(conversationId, summary, messages.size());
+            boolean committed = conversationService.updateSummaryChecked(
+                    conversationId, summary, covered, messages.size());
+            if (!committed) {
+                log.warn("记忆摘要写回被双校验拒绝（他方已推进水位线，不重试）: conversationId={}",
+                        conversationId);
+                return FoldOutcome.ABORTED_CONCURRENT;
+            }
             log.info("记忆摘要折叠完成: conversationId={}, 覆盖 {} 条消息, 摘要 {} 字符",
                     conversationId, messages.size(), summary.length());
+            return FoldOutcome.COMMITTED;
         } catch (Exception e) {
             log.warn("记忆摘要折叠失败（保留原状，下个到期点重试）: conversationId={}, 原因: {}",
                     conversationId, e.getMessage());
+            return FoldOutcome.FAILED;
         } finally {
             inFlight.remove(conversationId);
         }
