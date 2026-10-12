@@ -116,20 +116,31 @@ public class ConversationService {
     /**
      * 保存助手回复
      * <p>
-     * FR-A01 Token 采集：assistant 消息 = 主链输出 token（估算）+ 意图分类成本
-     * （L2 轻量模型 ~80 token / L3 主链模型 ~200 token 固定量级）。
-     * modelName 填主链路模型（模型网关配置；L2/L3 分类 token 已按固定成本计入）。
+     * FR-A01 Token 采集（2026-10-11 P1-K 升级为真实口径）：realTokens 非空时按当轮 agent
+     * 事件流内可见模型调用的真实 usage 之和记账（采集点 ModelCallEndEvent，见
+     * TurnUsageTracker），modelName 记实际生效模型（fallback 轮记 fallback——修复固定写
+     * 主链路模型导致 fallback 轮报表记错对象）；realTokens 为空（网关未回 usage，如
+     * GLMFormatter 剥离 stream_options 后）时回落旧估算口径。
+     * 意图分类 L2/L3 不在 agent 事件流内，其成本仍按固定 120 token 估算附加（唯一保留的
+     * 估算项）；user 消息仍为文本估算（保存时无真实输入 token 可言）。
      * </p>
      */
     @Transactional
-    public void saveAssistantMessage(Conversation conversation, Long userId, String content) {
+    public void saveAssistantMessage(Conversation conversation, Long userId, String content,
+                                     Integer realTokens, String actualModelName) {
         Message message = new Message();
         message.setConversationId(conversation.getId());
         message.setUserId(userId);
         message.setRole(Message.ROLE_ASSISTANT);
         message.setContent(content);
-        message.setModelName(estimateAssistantModel());
-        message.setTokenCount(estimateTokens(content) + INTENT_CLASSIFY_COST_TOKENS);
+        if (realTokens != null && actualModelName != null) {
+            message.setModelName(actualModelName);
+            message.setTokenCount(realTokens + INTENT_CLASSIFY_COST_TOKENS);
+        } else {
+            // 降级：网关未回 usage → 旧估算口径（报表不因升级变差）
+            message.setModelName(estimateAssistantModel());
+            message.setTokenCount(estimateTokens(content) + INTENT_CLASSIFY_COST_TOKENS);
+        }
         messageRepository.save(message);
         conversationRepository.save(conversation);
     }
