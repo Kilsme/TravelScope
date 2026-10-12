@@ -2,6 +2,7 @@ package com.travelscope.service;
 
 import com.travelscope.config.AppProperties;
 import io.minio.BucketExistsArgs;
+import io.minio.GetObjectArgs;
 import io.minio.MakeBucketArgs;
 import io.minio.MinioClient;
 import io.minio.PutObjectArgs;
@@ -60,6 +61,23 @@ public class MinioService {
         } catch (Exception e) {
             log.error("MinIO 上传异常: object={}", objectName, e);
             throw new IllegalStateException("MinIO 上传异常: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 下载文件（P1-L 文档摄入：取回上传原件做解析）
+     *
+     * @param objectName 对象名（documents.file_path 存的那个）
+     * @return 对象流（<b>调用方负责关闭</b>——随 try-with-resources 用）
+     */
+    public InputStream download(String objectName) {
+        try {
+            return minioClient.getObject(GetObjectArgs.builder()
+                    .bucket(bucketName)
+                    .object(objectName)
+                    .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("MinIO 下载失败: " + objectName + " - " + e.getMessage(), e);
         }
     }
 

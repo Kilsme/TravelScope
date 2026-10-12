@@ -34,6 +34,9 @@
         <!-- MinIO -->
         <minio.version>8.5.14</minio.version>
 
+        <!-- Apache Tika（P1-L 文档摄入：PDF/DOCX/HTML 文本抽取） -->
+        <tika.version>2.9.4</tika.version>
+
         <!-- Elasticsearch -->
         <elasticsearch.version>9.0.2</elasticsearch.version>
 
@@ -179,6 +182,13 @@
             <groupId>co.elastic.clients</groupId>
             <artifactId>elasticsearch-java</artifactId>
             <version>${elasticsearch.version}</version>
+        </dependency>
+
+        <!-- Apache Tika 解析器集（P1-L：PDF/DOCX/HTML → 纯文本；md/txt 直读不经此） -->
+        <dependency>
+            <groupId>org.apache.tika</groupId>
+            <artifactId>tika-parsers-standard-package</artifactId>
+            <version>${tika.version}</version>
         </dependency>
 
         <!-- ES Rest5Client 低层传输依赖 -->

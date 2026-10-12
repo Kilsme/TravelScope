@@ -180,7 +180,7 @@ public class EsBm25Client {
                 doc.put("chunk_id", c.chunkSeq());
                 doc.put("title", c.title());
                 doc.put("content", c.content());
-                doc.put("file_type", "seed");
+                doc.put("file_type", c.fileType());
                 doc.put("source", c.source());
                 doc.put("created_at", LocalDateTime.now().format(FMT));
                 bulk.operations(BulkOperation.of(o -> o
@@ -224,8 +224,9 @@ public class EsBm25Client {
         }
     }
 
-    /** 种子/摄取的单条 chunk（ES 侧文档） */
-    public record SeedChunk(String docId, String chunkSeq, String title, String content, String source) {
+    /** 种子/摄取的单条 chunk（ES 侧文档；P1-L 起 fileType 不再硬编码 seed） */
+    public record SeedChunk(String docId, String chunkSeq, String title, String content, String source,
+                            String fileType) {
     }
 
     private void logFailure(String operation, Exception e) {

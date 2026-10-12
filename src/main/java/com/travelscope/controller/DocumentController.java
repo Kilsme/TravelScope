@@ -71,6 +71,23 @@ public class DocumentController {
         return ResponseEntity.ok(docs.stream().map(this::toVO).toList());
     }
 
+    /**
+     * 摄入失败重试（2026-10-11 P1-L）：FAILED / 卡死 PARSING 的文档重新触发摄入
+     */
+    @PostMapping("/{id}/retry")
+    public ResponseEntity<?> retry(@org.springframework.web.bind.annotation.PathVariable("id") Long id,
+                                   HttpServletRequest request) {
+        ResponseEntity<?> forbidden = requireAdmin(request);
+        if (forbidden != null) {
+            return forbidden;
+        }
+        documentService.retryParse(id);
+        Map<String, Object> body = new HashMap<>();
+        body.put("id", id);
+        body.put("message", "已重新触发摄入（PARSING）");
+        return ResponseEntity.ok(body);
+    }
+
     private ResponseEntity<?> requireAdmin(HttpServletRequest request) {
         String role = (String) request.getAttribute(AuthInterceptor.ATTR_USER_ROLE);
         if (!"admin".equals(role)) {
