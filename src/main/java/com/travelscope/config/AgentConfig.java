@@ -288,7 +288,9 @@ public class AgentConfig {
                         .build());
         return new LlmGatewayModel(primary,
                 gw.isFallbackEnabled() ? gatewayLightModel : null, cb,
-                Duration.ofSeconds(gw.getModelTimeoutSeconds()), gw.isFallbackEnabled(), tracingHelper);
+                Duration.ofSeconds(gw.getModelTimeoutSeconds()),
+                Duration.ofSeconds(gw.getFirstPacketTimeoutSeconds()),
+                gw.isFallbackEnabled(), tracingHelper);
     }
 
     /**

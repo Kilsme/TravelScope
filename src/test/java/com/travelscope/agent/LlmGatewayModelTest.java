@@ -39,6 +39,8 @@ class LlmGatewayModelTest {
         volatile boolean failNext;
         volatile boolean failMidStream;        // 发 1 个有内容的块后中途失败（首包已提交）
         volatile boolean failAfterEmptyChunk;  // 发 1 个空内容块后失败（首包未提交）
+        volatile long delayBeforeFirstChunkMs; // 首块前延迟（P2-G 首包探测测试）
+        volatile long delayBetweenChunksMs;    // 两块之间间隙（P2-G 慢生成测试）
 
         CountingModel(String name) {
             this.name = name;
@@ -63,6 +65,22 @@ class LlmGatewayModelTest {
                 ChatResponse empty = ChatResponse.builder().id("role").build();
                 return Flux.just(empty).concatWith(Flux.error(new RuntimeException("401 after role chunk")));
             }
+            if (delayBeforeFirstChunkMs > 0 || delayBetweenChunksMs > 0) {
+                ChatResponse c1 = ChatResponse.builder().id("c1")
+                        .content(List.of(io.agentscope.core.message.TextBlock.builder()
+                                .text("p1-").build()))
+                        .build();
+                ChatResponse c2 = ChatResponse.builder().id("ok-" + name).build();
+                Flux<ChatResponse> body = Flux.just(c1);
+                body = delayBetweenChunksMs > 0
+                        ? body.concatWith(reactor.core.publisher.Mono
+                                .delay(Duration.ofMillis(delayBetweenChunksMs)).thenMany(Flux.just(c2)))
+                        : body.concatWith(Flux.just(c2));
+                return delayBeforeFirstChunkMs > 0
+                        ? reactor.core.publisher.Mono
+                                .delay(Duration.ofMillis(delayBeforeFirstChunkMs)).thenMany(body)
+                        : body;
+            }
             return Flux.just(ChatResponse.builder().id("ok-" + name).build());
         }
 
@@ -83,7 +101,9 @@ class LlmGatewayModelTest {
 
     private static LlmGatewayModel gateway(CountingModel primary, CountingModel fallback,
                                            CircuitBreaker cb) {
-        return new LlmGatewayModel(primary, fallback, cb, Duration.ofSeconds(2), true);
+        // callTimeout 2s / 首包探测 500ms（P2-G：延迟类用例靠这两档时间窗区分）
+        return new LlmGatewayModel(primary, fallback, cb, Duration.ofSeconds(2),
+                Duration.ofMillis(500), true);
     }
 
     @Test
@@ -290,5 +310,40 @@ class LlmGatewayModelTest {
         // 非粘滞时探测为 no-op（零调用，探测任务常态零开销）
         assertFalse(model.probePrimaryRecovery().block(Duration.ofSeconds(5)));
         assertEquals(primaryBefore + 2, primary.calls.get(), "非粘滞探测不应触达主模型");
+    }
+
+    @Test
+    @DisplayName("P2-G 首包超时：首块 1.2s 才来（> 探测窗 0.5s）→ 快速失败切 fallback（不白等 callTimeout）")
+    void testFirstPacketTimeoutTriggersFallback() {
+        CountingModel primary = new CountingModel("qwen-plus");
+        CountingModel fallback = new CountingModel("qwen-turbo");
+        // 首块延迟 1.2s：超过首包探测窗 0.5s 但未达 callTimeout 2s——旧单档超时会放行等待，
+        // P2-G 在 0.5s 判挂死快速失败（证明「模型坏了」与「慢慢生成」被区分开）
+        primary.delayBeforeFirstChunkMs = 1200;
+        LlmGatewayModel model = gateway(primary, fallback, fastCb());
+
+        List<ChatResponse> responses = model.stream(List.of(), List.of(), null)
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertEquals(1, fallback.calls.get(), "首包超时（挂死）应快速切 fallback");
+        assertEquals("ok-qwen-turbo", responses.get(responses.size() - 1).getId(),
+                "用户应看到 fallback 的干净响应（首包前失败未提交）");
+    }
+
+    @Test
+    @DisplayName("P2-G 慢生成不误杀：首块 0.2s 过探测窗 + 块间间隙 1.5s（< callTimeout）→ primary 正常完成")
+    void testSlowGenerationNotKilled() {
+        CountingModel primary = new CountingModel("qwen-plus");
+        CountingModel fallback = new CountingModel("qwen-turbo");
+        primary.delayBeforeFirstChunkMs = 200;   // 首块在探测窗 0.5s 内到达（探测通过）
+        primary.delayBetweenChunksMs = 1500;     // 块间间隙 1.5s：> 探测窗但 < callTimeout 2s
+        LlmGatewayModel model = gateway(primary, fallback, fastCb());
+
+        List<ChatResponse> responses = model.stream(List.of(), List.of(), null)
+                .collectList().block(Duration.ofSeconds(5));
+
+        assertEquals(0, fallback.calls.get(), "慢生成不应误判为挂死（间隙不受首包窗限制）");
+        assertEquals(2, responses.size(), "两个块都应到达");
+        assertEquals("ok-qwen-plus", responses.get(1).getId(), "响应应来自 primary");
     }
 }

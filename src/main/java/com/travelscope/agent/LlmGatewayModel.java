@@ -29,7 +29,9 @@ import io.agentscope.core.model.ToolSchema;
  * <ol>
  *   <li><b>熔断</b>：Resilience4j CircuitBreaker（滑动窗口失败率超阈值 → OPEN 快速失败
  *       → waitDuration 后 HALF_OPEN 探测恢复）——OPEN 期间请求不再打到模型网关</li>
- *   <li><b>单次调用超时</b>：Flux.timeout（默认 30s）</li>
+ *   <li><b>超时分段</b>（2026-10-11 P2-G）：首包探测超时（首个 token 默认 10s 未到达 →
+ *       挂死快速失败切 fallback，区分「模型坏了」与「慢慢生成长行程」）+ 首包后每块
+ *       间隙 callTimeout（默认 30s）保护</li>
  *   <li><b>fallback 降级</b>（首包提交闸门，2026-10-11 P0-B）：<b>首包前失败</b>（连接失败 /
  *       超时 / 401 / 模型不存在 / 熔断 OPEN——最常见失败形态）→ log.warn("fallback → …") →
  *       切换 deepseek-v4-flash-0731 干净重发并粘滞（防抖），用户只看到 fallback 的响应；
@@ -63,6 +65,8 @@ public class LlmGatewayModel implements Model {
     private final Model fallback;
     private final CircuitBreaker circuitBreaker;
     private final Duration callTimeout;
+    /** 首包探测超时（P2-G）：首个 token 到达判据，挂死快速失败；应明显小于 callTimeout */
+    private final Duration firstPacketTimeout;
     private final boolean fallbackEnabled;
     /** 业务链路打点（model-call span，2026-10-02） */
     private final TracingHelper tracing;
@@ -76,15 +80,30 @@ public class LlmGatewayModel implements Model {
 
     public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
                            Duration callTimeout, boolean fallbackEnabled) {
-        this(primary, fallback, circuitBreaker, callTimeout, fallbackEnabled, TracingHelper.NOOP);
+        this(primary, fallback, circuitBreaker, callTimeout, Duration.ofSeconds(10),
+                fallbackEnabled, TracingHelper.NOOP);
     }
 
     public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
                            Duration callTimeout, boolean fallbackEnabled, TracingHelper tracing) {
+        this(primary, fallback, circuitBreaker, callTimeout, Duration.ofSeconds(10),
+                fallbackEnabled, tracing);
+    }
+
+    public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
+                           Duration callTimeout, Duration firstPacketTimeout, boolean fallbackEnabled) {
+        this(primary, fallback, circuitBreaker, callTimeout, firstPacketTimeout, fallbackEnabled,
+                TracingHelper.NOOP);
+    }
+
+    public LlmGatewayModel(Model primary, Model fallback, CircuitBreaker circuitBreaker,
+                           Duration callTimeout, Duration firstPacketTimeout,
+                           boolean fallbackEnabled, TracingHelper tracing) {
         this.primary = primary;
         this.fallback = fallback;
         this.circuitBreaker = circuitBreaker;
         this.callTimeout = callTimeout;
+        this.firstPacketTimeout = firstPacketTimeout;
         this.fallbackEnabled = fallbackEnabled;
         this.tracing = tracing;
         this.activeModel = new AtomicReference<>(primary);
@@ -129,8 +148,14 @@ public class LlmGatewayModel implements Model {
         // 熔断器是主模型的保护开关——fallback 直调不套熔断（2026-10-11 统计目标漂移修复：
         // 修复前熔断器经 activeModel.get() 间接挂载，粘滞后统计/探测对象漂移到 fallback）。
         // OPEN 期间主模型流直接快速失败（CallNotPermitted），仍可经 fallback 提供服务。
+        // 超时分段（2026-10-11 P2-G 首包探测）：整流单档 30s 无法区分「模型坏了」（挂死无
+        // 响应）与「慢慢生成长行程」——首块限时 firstPacketTimeout（默认 10s）内未到达即判失败
+        // （挂死快速失败，经 P0-B 闸门未提交 → 干净切 fallback）；首块到达后探测通过，后续
+        // 每块间隙恢复 callTimeout 保护（慢生成不误杀）。
+        // 注意重载坑：timeout(Duration, lambda) 会把 lambda 误绑为 fallback Publisher
+        // （timeout 挂起不换流）——必须用 timeout(Publisher 首档, Function 后续档)。
         Flux<ChatResponse> call = Flux.defer(() -> current.stream(messages, tools, options))
-                .timeout(callTimeout);
+                .timeout(Mono.delay(firstPacketTimeout), chunk -> Mono.delay(callTimeout));
         Flux<ChatResponse> guarded = (current == primary)
                 ? call.transformDeferred(CircuitBreakerOperator.of(circuitBreaker))
                 : call;
