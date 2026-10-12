@@ -4,7 +4,6 @@ import com.travelscope.entity.Document;
 import com.travelscope.repository.DocumentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -15,9 +14,10 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * 文档管理服务（FR-A03：上传 → MinIO + documents 状态机 UPLOADED→PARSING 占位）
+ * 文档管理服务（FR-A03：上传 → MinIO + documents 状态机驱动）
  * <p>
- * 状态机：上传即 UPLOADED（入库）→ 异步流转 PARSING（占位，真实解析由 RAG 摄入接）。
+ * 状态机：上传即 UPLOADED（入库）→ DocumentIngestService 真实摄入
+ * （2026-10-11 P1-L：原 sleep 1s 占位线程已移除）→ PARSED / FAILED，失败可重试。
  * 文件存储在 MinIO（对象名含日期前缀与 UUID 防冲突）。
  * </p>
  */
@@ -28,10 +28,13 @@ public class DocumentService {
 
     private final MinioService minioService;
     private final DocumentRepository documentRepository;
+    private final DocumentIngestService documentIngestService;
 
-    public DocumentService(MinioService minioService, DocumentRepository documentRepository) {
+    public DocumentService(MinioService minioService, DocumentRepository documentRepository,
+                           DocumentIngestService documentIngestService) {
         this.minioService = minioService;
         this.documentRepository = documentRepository;
+        this.documentIngestService = documentIngestService;
     }
 
     /**
@@ -68,8 +71,8 @@ public class DocumentService {
         log.info("文档已上传入库: id={} file={} size={} path={}",
                 saved.getId(), originalName, file.getSize(), objectName);
 
-        // 异步流转 PARSING（占位状态机；真实解析在 RAG 摄入时接）
-        triggerParsing(saved.getId());
+        // 异步真实摄入（P1-L：下载 → 解析 → 切块 → embedding → 双写，状态机 PARSED/FAILED）
+        documentIngestService.parseAsync(saved.getId());
         return saved;
     }
 
@@ -81,26 +84,10 @@ public class DocumentService {
     }
 
     /**
-     * 触发解析（异步占位：1s 后流转 UPLOADED → PARSING；真实解析在 RAG 摄入时接）
-     * <p>
-     * 用线程池异步而非 @Async 自调用（@Async 同类自调用不走代理不生效）。
-     * </p>
+     * 失败重试（管理端入口）：FAILED / 卡死 PARSING 的文档重新触发摄入
      */
-    private void triggerParsing(Long documentId) {
-        new Thread(() -> {
-            try {
-                Thread.sleep(1000);
-                documentRepository.findById(documentId).ifPresent(d -> {
-                    if (Document.STATUS_UPLOADED.equals(d.getStatus())) {
-                        d.setStatus(Document.STATUS_PARSING);
-                        documentRepository.save(d);
-                        log.info("文档状态流转 UPLOADED → PARSING（占位）: id={}", documentId);
-                    }
-                });
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }, "doc-parsing-placeholder-" + documentId).start();
+    public void retryParse(Long documentId) {
+        documentIngestService.retryParse(documentId);
     }
 
     private static String extOf(String fileName) {

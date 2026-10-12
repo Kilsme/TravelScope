@@ -3,8 +3,10 @@ package com.travelscope.service;
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
 import io.agentscope.core.embedding.dashscope.DashScopeTextEmbedding;
+import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.rag.knowledge.SimpleKnowledge;
 import io.agentscope.core.rag.model.Document;
+import io.agentscope.core.rag.model.DocumentMetadata;
 import io.agentscope.core.rag.model.RetrieveConfig;
 import io.agentscope.core.rag.store.PgVectorStore;
 import jakarta.annotation.PreDestroy;
@@ -14,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -218,6 +221,35 @@ public class RagServiceImpl implements RagService {
     @PreDestroy
     void shutdownRetrievalExecutor() {
         ragRetrievalExecutor.shutdownNow();
+    }
+
+    /**
+     * 知识库写入（2026-10-11 P1-L 上传文档摄入入口）：chunk 列表 → DashScope embedding
+     * → pgvector（与 KnowledgeIngestRunner 同通道 SimpleKnowledge.addDocuments）。
+     * chunkIdOf 拼出的 {@code docId:chunkId} 与 ES 侧同构——跨路 RRF 去重键天然对齐；
+     * ES 侧写入由调用方（DocumentIngestService）经 EsBm25Client.bulkIndex 完成。
+     *
+     * @return 实际写入条数；vectorKnowledge 构造降级为 null 时 warn 返回 0（退化为纯 ES 路）
+     */
+    public int addKnowledgeChunks(List<EsBm25Client.SeedChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return 0;
+        }
+        if (vectorKnowledge == null) {
+            log.warn("语义路不可用，{} 条 chunk 跳过 pgvector 写入（退化为纯 ES 路）", chunks.size());
+            return 0;
+        }
+        List<Document> documents = chunks.stream()
+                .map(c -> new Document(DocumentMetadata.builder()
+                        .content(TextBlock.builder().text(c.content()).build())
+                        .docId(c.docId())
+                        .chunkId(c.chunkSeq())
+                        .payload(Map.of("title", c.title() != null ? c.title() : "",
+                                "source", c.source()))
+                        .build()))
+                .toList();
+        vectorKnowledge.addDocuments(documents).block(java.time.Duration.ofMinutes(5));
+        return documents.size();
     }
 
     /** 语义路文档 → chunk 标识（docId:chunkId，与 ES 侧拼接规则对齐，RRF 去重键） */

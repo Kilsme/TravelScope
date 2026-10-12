@@ -147,7 +147,7 @@ public class KnowledgeIngestRunner implements ApplicationRunner {
         for (int i = 0; i < SEED_DOCS.size(); i++) {
             String docId = "seed-" + (i + 1);
             esChunks.add(new EsBm25Client.SeedChunk(docId, "1",
-                    seedTitle(i), SEED_DOCS.get(i), "seed"));
+                    seedTitle(i), SEED_DOCS.get(i), "seed", "seed"));
         }
         esBm25Client.bulkIndex(esChunks);
         esBm25Client.refresh();
