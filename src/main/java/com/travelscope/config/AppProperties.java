@@ -53,6 +53,9 @@ public class AppProperties {
     /** 对话历史注入配置（多轮上下文，2026-09-21 失忆修复） */
     private ChatHistoryConfig chatHistory = new ChatHistoryConfig();
 
+    /** 提示词按需加载配置（2026-10-11 P2-I） */
+    private PromptMaskingConfig promptMasking = new PromptMaskingConfig();
+
     /** 过载降级配置（2026-09-23 并发改造：弹性降级优先） */
     private LoadShedConfig loadShed = new LoadShedConfig();
 
@@ -358,5 +361,19 @@ public class AppProperties {
         /** 主模型探测回切间隔（秒）：粘滞 fallback 期间定时对 primary 发最小探测调用
          *  （走熔断器，HALF_OPEN 惰性触发），成功即自动回切——替代「重启恢复」 */
         private int probeIntervalSeconds = 30;
+    }
+
+    /**
+     * 提示词按需加载配置（2026-10-11 P2-I，对照 ragent AgentSkillMaskingMiddleware）
+     * <p>
+     * 主 Agent 的「行程规划流程 + 共享任务区间 + 规划委派规则」（~45% 篇幅）仅 PLANNING
+     * 轮有意义；开启后由 PromptMaskingMiddleware 按本轮意图掩码——非规划轮只发常驻段
+     * （SYS_PROMPT_CORE），控制每轮每次 ReAct 迭代的 token 成本。关闭即回退全量常驻。
+     * </p>
+     */
+    @Data
+    public static class PromptMaskingConfig {
+        /** 总开关（false 时主 Agent 提示词回退为全量常驻） */
+        private boolean enabled = true;
     }
 }
