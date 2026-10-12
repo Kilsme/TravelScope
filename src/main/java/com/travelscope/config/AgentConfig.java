@@ -8,6 +8,7 @@ import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.LightweightIntentClassifier;
 import com.travelscope.agent.PlanningGateMiddleware;
 import com.travelscope.agent.PoiResearchAgent;
+import com.travelscope.agent.PromptMaskingMiddleware;
 import com.travelscope.agent.ReviewerAgent;
 import com.travelscope.agent.ReviewerRetryMiddleware;
 import com.travelscope.agent.RouteOptimizerAgent;
@@ -429,10 +430,13 @@ public class AgentConfig {
                 // 后续每条消息都抛 IllegalStateException（Pending tool calls exist without results），
                 // 会话永久卡死。开启后框架自动为 pending 调用生成错误结果，对话可继续。
                 .enablePendingToolRecovery(true)
-                // 责任链：意图路由（onSystemPrompt 注入本轮路由指令）
+                // 责任链：提示词按需加载（P2-I：onSystemPrompt 按意图掩掉规划按需段，order=-10 最先）
+                //         + 意图路由（onSystemPrompt 注入本轮路由指令）
                 //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
                 //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
-                .middlewares(List.of(new IntentRouterMiddleware(),
+                .middlewares(List.of(new PromptMaskingMiddleware(
+                                appProperties.getPromptMasking().isEnabled()),
+                        new IntentRouterMiddleware(),
                         new PlanningGateMiddleware(taskRegistry),
                         new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
