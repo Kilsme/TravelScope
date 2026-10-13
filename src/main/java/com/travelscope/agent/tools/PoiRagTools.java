@@ -27,11 +27,12 @@ import java.util.Map;
  * 不能作键——从 ctx 的协作目录键解析主会话 ID）。
  * </p>
  * <p>
- * 证据门控轻量版（2026-10-11 P1-F）：search_pois_with_rag 出口加共识度判定——
- * 双路共识（RAG+ES 条数）= 0 且总条数过少时，在输出末尾追加低置信警告，
- * 让 agent 知情降级（不硬编）。边界（诚实标注）：RRF 融合分衡量双路共识度而非
- * 相关性（满分 ≈0.033），没有绝对质量信号——绝对分数门控（rerank/pgvector
- * 相似度）为后续演进，见优化清单 4.4。
+ * 证据门控（P1-F 轻量版 + 2026-10-11 完整形态）：轻量版=共识度判定（双路共识=0 且总条数
+ * 过少 → 输出末尾追加低置信警告，agent 知情降级）；完整形态=绝对分门控（RagServiceImpl
+ * 融合后按 pgvector 余弦相似度丢弃低于阈值片段，全灭时本工具输出「门控后无可用证据」
+ * 区别于「检索无结果」——前者召到了但相关性不足，后者知识库无此内容）。
+ * 边界（诚实标注）：RRF 融合分衡量双路共识度而非相关性，两个信号并存互补——排序用共识、
+ * 门控用相关、共识度警告兜底无分片段。
  * </p>
  */
 public class PoiRagTools {
@@ -75,8 +76,17 @@ public class PoiRagTools {
         if (!ragService.isAvailable()) {
             return "知识库暂不可用（pgvector/ES 未就绪），请直接使用 searchPois 等高德工具检索";
         }
-        List<RetrievedFragment> fragments = ragService.dualRetrieveWithSource(query, topK);
+        RagServiceImpl.GatedResult result = ragService.dualRetrieveGated(query, topK);
+        List<RetrievedFragment> fragments = result.fragments();
         if (fragments.isEmpty()) {
+            // 证据门控完整形态（2026-10-11）：「召到了但全被门掉」与「没召到」分开——
+            // 前者是相关性不足（附门控阈值），后者是知识库无此内容
+            if (result.gateEmpty()) {
+                log.info("rag_evidence_gate 全灭: query='{}'", query);
+                return "本次召回经相关性门控后无可用证据（相似度均低于阈值 "
+                        + ragService.evidenceGateMinScore() + "）。请勿编造 POI 信息；"
+                        + "建议换关键词重查或改用 searchPois 实时检索";
+            }
             return "知识库检索无结果（query=" + query + "）。建议换关键词重试，或直接使用 searchPois 检索";
         }
         StringBuilder sb = new StringBuilder("双路检索结果（query=").append(query).append("）共 ")

@@ -162,6 +162,12 @@ travelscope:
     # 双路检索通道级超时（2026-10-11 P1-C 并行化）：每路独立计时，超时路按空结果降级——
     # 只放弃等待不中断任务；15s 起步（过小等于整路白算）
     lane-timeout-ms: 15000
+    # 证据门控（2026-10-11 清单 4.4 完整形态）：融合后按绝对相关性（pgvector 余弦相似度）
+    # 丢弃低于阈值的片段；全灭时工具层输出「无相关证据」而非装配噪声喂给 agent
+    evidence-gate-enabled: true
+    # 阈值=相似度下限（COSINE：score=1-余弦距离，实际值域约 [0,1]）；校准见
+    # EvidenceGateCalibrationTest（env 门控），调距离类型需重新标定
+    evidence-gate-min-score: 0.5
 
   # ---- 提示词按需加载（2026-10-11 P2-I）----
   # 主 Agent 规划按需段（行程规划流程/共享任务区间/规划委派规则，~45% 篇幅）仅 PLANNING 轮发送；

@@ -24,10 +24,15 @@ public final class RrfFusion {
     /**
      * 单路输入条目（rank 由列表顺序隐含：index 0 = rank 1）
      *
-     * @param chunkId 去重键
-     * @param content 片段原文
+     * @param chunkId     去重键
+     * @param content     片段原文
+     * @param vectorScore 语义路余弦相似度分（2026-10-11 证据门控：可空——ES 路无此分）
      */
-    public record Entry(String chunkId, String content) {
+    public record Entry(String chunkId, String content, Double vectorScore) {
+        /** 兼容旧构造（无 vectorScore，等价 ES 路片段） */
+        public Entry(String chunkId, String content) {
+            this(chunkId, content, null);
+        }
     }
 
     /**
@@ -49,7 +54,7 @@ public final class RrfFusion {
         return byChunk.values().stream()
                 .sorted((a, b) -> Double.compare(b.score, a.score))
                 .limit(Math.max(0, topK))
-                .map(a -> new RetrievedFragment(a.content, a.source, a.score, a.chunkId))
+                .map(a -> new RetrievedFragment(a.content, a.source, a.score, a.chunkId, a.vectorScore))
                 .toList();
     }
 
@@ -67,10 +72,11 @@ public final class RrfFusion {
             double contribution = 1.0 / (rrfK + rank);
             byChunk.compute(e.chunkId(), (id, acc) -> {
                 if (acc == null) {
-                    return new Accumulator(e.chunkId(), e.content(), laneLabel, contribution);
+                    return new Accumulator(e.chunkId(), e.content(), laneLabel, contribution,
+                            e.vectorScore());
                 }
                 acc.score += contribution;
-                acc.source = "RAG+ES";   // 双路命中
+                acc.source = "RAG+ES";   // 双路命中（vectorScore 保留语义路分值，不覆盖）
                 return acc;
             });
         }
@@ -79,14 +85,16 @@ public final class RrfFusion {
     private static final class Accumulator {
         final String chunkId;
         final String content;
+        final Double vectorScore;   // 语义路相似度分（证据门控信号；双路命中保留首次即语义路的）
         String source;
         double score;
 
-        Accumulator(String chunkId, String content, String source, double score) {
+        Accumulator(String chunkId, String content, String source, double score, Double vectorScore) {
             this.chunkId = chunkId;
             this.content = content;
             this.source = source;
             this.score = score;
+            this.vectorScore = vectorScore;
         }
     }
 }
