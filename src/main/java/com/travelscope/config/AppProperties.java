@@ -262,6 +262,12 @@ public class AppProperties {
         /** 双路检索通道级超时（毫秒，2026-10-11 P1-C 并行化）：每路独立计时，超时路按空结果
          *  降级——只放弃等待、不中断池内任务；15s 起步（过小等于整路白算，任务仍在池内跑完） */
         private int laneTimeoutMs = 15000;
+        /** 证据门控总开关（2026-10-11 清单 4.4 完整形态）：false 时融合结果直通不门控 */
+        private boolean evidenceGateEnabled = true;
+        /** 证据门控绝对分阈值（余弦相似度下限，低于即丢弃）。量纲前提：PgVectorStore COSINE
+         *  ——score = 1 - 余弦距离（实际值域约 [0,1]，越大越相关；字节码核验
+         *  convertDistanceToScore）；切换距离类型（L2/INNER_PRODUCT）时阈值需重新标定 */
+        private double evidenceGateMinScore = 0.5;
         /** 种子知识库开关（开发/检测用：启动时灌入内置攻略片段，幂等跳过已存在 doc） */
         private boolean seedEnabled = false;
     }

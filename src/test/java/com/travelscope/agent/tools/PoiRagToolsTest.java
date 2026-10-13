@@ -53,16 +53,18 @@ class PoiRagToolsTest {
         }
 
         @Override
-        public List<RetrievedFragment> dualRetrieveWithSource(String query, int topK) {
-            return List.of(
+        public RagServiceImpl.GatedResult dualRetrieveGated(String query, int topK) {
+            return new RagServiceImpl.GatedResult(List.of(
                     new RetrievedFragment("西湖是杭州最著名景点…坐标120.15,30.24", "RAG+ES", 0.031, "seed-1:1"),
-                    new RetrievedFragment("灵隐寺千年古刹…开放07:00-18:00", "RAG", 0.016, "seed-2:1"));
+                    new RetrievedFragment("灵隐寺千年古刹…开放07:00-18:00", "RAG", 0.016, "seed-2:1")),
+                    0, false);
         }
     }
 
-    /** 可变检索桩（P1-F 门控用）：返回片段由用例设置 */
+    /** 可变检索桩（P1-F 门控用）：返回片段与全灭标记由用例设置 */
     static class MutableStubRagService extends RagServiceImpl {
         private List<RetrievedFragment> fragments = List.of();
+        private boolean gateEmpty;
 
         MutableStubRagService() {
             super(new AppProperties(), null, null, "u", "p");
@@ -72,14 +74,23 @@ class PoiRagToolsTest {
             this.fragments = fragments;
         }
 
+        void setGateEmpty(boolean gateEmpty) {
+            this.gateEmpty = gateEmpty;
+        }
+
         @Override
         public boolean isAvailable() {
             return true;
         }
 
         @Override
-        public List<RetrievedFragment> dualRetrieveWithSource(String query, int topK) {
-            return fragments;
+        public RagServiceImpl.GatedResult dualRetrieveGated(String query, int topK) {
+            return new RagServiceImpl.GatedResult(fragments, 0, gateEmpty);
+        }
+
+        @Override
+        public double evidenceGateMinScore() {
+            return 0.5;
         }
     }
 
@@ -187,5 +198,35 @@ class PoiRagToolsTest {
         String result = t.search_pois_with_rag("杭州 景点", 5, ctx());
 
         assertTrue(!result.contains("置信度低"), "条数充足时仅共识 0 不应警告: " + result);
+    }
+
+    @Test
+    @DisplayName("证据门控全灭：召到了但全被门掉 → 「门控后无可用证据」文案（区别于检索无结果）")
+    void testGateEmptyMessage() {
+        MutableStubRagService stub = new MutableStubRagService();
+        stub.setFragments(List.of());       // 门控后为空
+        stub.setGateEmpty(true);            // 但门控前非空（召到了）
+        PoiRagTools t = new PoiRagTools(stub, cache);
+
+        String result = t.search_pois_with_rag("哈尔滨 冰雪大世界", 5, ctx());
+
+        assertTrue(result.contains("相关性门控后无可用证据"), "全灭应有门控文案: " + result);
+        assertTrue(result.contains("请勿编造 POI 信息"), "应含知情降级指引");
+        assertTrue(result.contains("0.5"), "应带门控阈值");
+        assertTrue(!result.contains("检索无结果"), "不应混用无结果文案");
+    }
+
+    @Test
+    @DisplayName("真·检索无结果（gateEmpty=false）→ 原无结果文案不动")
+    void testPlainEmptyMessage() {
+        MutableStubRagService stub = new MutableStubRagService();
+        stub.setFragments(List.of());
+        stub.setGateEmpty(false);
+        PoiRagTools t = new PoiRagTools(stub, cache);
+
+        String result = t.search_pois_with_rag("不存在的 xxx", 5, ctx());
+
+        assertTrue(result.contains("知识库检索无结果"), "没召到应走原文案: " + result);
+        assertTrue(!result.contains("相关性门控"), "不应混用门控文案");
     }
 }

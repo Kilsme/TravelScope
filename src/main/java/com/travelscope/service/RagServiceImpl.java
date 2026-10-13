@@ -157,9 +157,9 @@ public class RagServiceImpl implements RagService {
      * </p>
      *
      * @param contextTopK 融合后截取的最终条数（应 ≤ recall-fanout，漏斗单调收窄）
-     * @return 带来源标记（RAG / ES / RAG+ES）的融合排序片段
+     * @return 过证据门控的融合结果（GatedResult：片段 + 丢弃数 + 全灭标记）
      */
-    public List<RetrievedFragment> dualRetrieveWithSource(String query, int contextTopK) {
+    private GatedResult dualRetrieveInternal(String query, int contextTopK) {
         long start = System.nanoTime();
         long laneTimeoutMs = ragConfig.getLaneTimeoutMs();
         int recallFanout = ragConfig.getRecallFanout();
@@ -176,7 +176,8 @@ public class RagServiceImpl implements RagService {
                                 RetrieveConfig.builder().limit(recallFanout).build())
                         .block(java.time.Duration.ofMillis(laneTimeoutMs));
                 return docs == null ? List.<RrfFusion.Entry>of()
-                        : docs.stream().map(d -> new RrfFusion.Entry(chunkIdOf(d), textOf(d))).toList();
+                        : docs.stream().map(d -> new RrfFusion.Entry(chunkIdOf(d), textOf(d),
+                                d.getScore())).toList();   // 携带余弦相似度分（证据门控信号）
             } catch (Exception e) {
                 log.warn("语义路检索失败（本轮退化为关键词路）: {}", e.getMessage());
                 return List.of();
@@ -199,7 +200,59 @@ public class RagServiceImpl implements RagService {
         log.info("rag_retrieve query='{}' 语义路={}条 BM25路={}条 融合={}条 latency={}ms",
                 abbreviate(query), vectorRanked.size(), keywordRanked.size(), fused.size(),
                 (System.nanoTime() - start) / 1_000_000);
-        return fused;
+        return applyEvidenceGate(query, fused);
+    }
+
+    /** 门控结果（P1-F 完整形态：fragments 过门后片段 + 丢弃数 + 全灭标记） */
+    public record GatedResult(List<RetrievedFragment> fragments, int dropped, boolean gateEmpty) {
+    }
+
+    /**
+     * 证据门控（绝对分数门控，2026-10-11 清单 4.4 完整形态——对照 ragent EvidenceGatePostProcessor）：
+     * 融合后按「绝对相关性信号」过滤——{@code vectorScore}（pgvector 余弦相似度，越大越相关）
+     * 低于 {@code rag.evidence-gate-min-score} 的片段丢弃；
+     * ES-only 片段无向量分（BM25 无量纲可比分）——放行但参与全灭判定；
+     * 全灭（召到了但全被门掉）置 {@code gateEmpty=true}，由工具层区分于「检索无结果」。
+     * RRF 融合分（双路共识度）与绝对分（相关性）双信号并存：排序用共识、门控用相关。
+     */
+    GatedResult applyEvidenceGate(String query, List<RetrievedFragment> fused) {
+        if (!ragConfig.isEvidenceGateEnabled() || fused.isEmpty()) {
+            return new GatedResult(fused, 0, false);
+        }
+        double minScore = ragConfig.getEvidenceGateMinScore();
+        List<RetrievedFragment> kept = fused.stream()
+                .filter(f -> f.vectorScore() == null || f.vectorScore() >= minScore)
+                .toList();
+        int dropped = fused.size() - kept.size();
+        boolean gateEmpty = kept.isEmpty();
+        if (dropped > 0 || gateEmpty) {
+            log.info("rag_evidence_gate query='{}' kept={} dropped={} gateEmpty={}",
+                    abbreviate(query), kept.size(), dropped, gateEmpty);
+        } else {
+            log.debug("rag_evidence_gate query='{}' kept={} dropped=0", abbreviate(query), kept.size());
+        }
+        return new GatedResult(kept, dropped, gateEmpty);
+    }
+
+    /**
+     * 双路检索 + RRF 融合（带门控结果包装，poi-research 的 search_pois_with_rag 工具入口用）
+     */
+    public GatedResult dualRetrieveGated(String query, int contextTopK) {
+        return dualRetrieveInternal(query, contextTopK);
+    }
+
+    /** 当前生效的证据门控阈值（工具层全灭文案引用） */
+    public double evidenceGateMinScore() {
+        return ragConfig.getEvidenceGateMinScore();
+    }
+
+    /**
+     * 双路检索 + RRF 融合（对外兼容签名，ChatService RAG 分支等用；内部经证据门控）
+     *
+     * @return 过门控后的融合排序片段（带来源标记 RAG / ES / RAG+ES）
+     */
+    public List<RetrievedFragment> dualRetrieveWithSource(String query, int contextTopK) {
+        return dualRetrieveInternal(query, contextTopK).fragments();
     }
 
     /**
