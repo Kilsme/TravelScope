@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -173,5 +174,57 @@ class AdminApiWebMvcTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.fileName").value("test.pdf"))
                 .andExpect(jsonPath("$.status").value("UPLOADED"));
+    }
+
+    // ==================== 积分制度 + 邀请码（2026-10-11） ====================
+
+    @Test
+    @DisplayName("admin 调整用户积分 → 200 返回调整后余额；非 admin → 403")
+    void testAdjustPoints() throws Exception {
+        when(authService.resolveUser("admin-token")).thenReturn(Optional.of(adminUser()));
+        when(userAdminService.adjustPoints(2L, 500L)).thenReturn(1000L);
+
+        mockMvc.perform(put("/admin/users/2/points?delta=500")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.balance").value(1000))
+                .andExpect(jsonPath("$.userId").value(2));
+
+        when(authService.resolveUser("user-token")).thenReturn(Optional.of(normalUser()));
+        mockMvc.perform(put("/admin/users/2/points?delta=500")
+                        .header("Authorization", "Bearer user-token"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("admin 发放并列出邀请码 → 201/200")
+    void testInvitationCodes() throws Exception {
+        when(authService.resolveUser("admin-token")).thenReturn(Optional.of(adminUser()));
+        com.travelscope.entity.InvitationCode ic = new com.travelscope.entity.InvitationCode();
+        ic.setId(1L);
+        ic.setCode("ABCD2345");
+        ic.setCreatedBy(1L);
+        ic.setCreatedAt(java.time.LocalDateTime.now());
+        when(userAdminService.generateInvitationCode(1L)).thenReturn(ic);
+        when(userAdminService.listInvitationCodes()).thenReturn(List.of(ic));
+
+        mockMvc.perform(post("/admin/invitation-codes")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.code").value("ABCD2345"));
+
+        mockMvc.perform(get("/admin/invitation-codes")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].code").value("ABCD2345"));
+    }
+
+    @Test
+    @DisplayName("非 admin 发放邀请码 → 403")
+    void testInvitationCodeForbidden() throws Exception {
+        when(authService.resolveUser("user-token")).thenReturn(Optional.of(normalUser()));
+        mockMvc.perform(post("/admin/invitation-codes")
+                        .header("Authorization", "Bearer user-token"))
+                .andExpect(status().isForbidden());
     }
 }

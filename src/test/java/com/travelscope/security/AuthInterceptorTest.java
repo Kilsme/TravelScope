@@ -28,7 +28,7 @@ class AuthInterceptorTest {
         Optional<User> nextUser = Optional.empty();
 
         FakeAuthService() {
-            super(null, null);
+            super(null, null, null, null);   // 拦截器测试只用 resolveUser，注册链路依赖用不到
         }
 
         @Override

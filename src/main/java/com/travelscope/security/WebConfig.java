@@ -7,8 +7,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 /**
  * Web MVC 配置：注册认证拦截器
  * <p>
- * 生效范围 {@code /api/**}（context-path /api），放行登录端点
- * {@code /api/auth/login}（认证本身的入口）。
+ * 生效范围 {@code /api/**}（context-path /api），放行登录与注册端点
+ * {@code /api/auth/login}、{@code /api/auth/register}（认证本身的入口）。
  * </p>
  */
 @Configuration
@@ -24,6 +24,6 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/**")
-                .excludePathPatterns("/auth/login");
+                .excludePathPatterns("/auth/login", "/auth/register");
     }
 }

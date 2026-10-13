@@ -56,6 +56,9 @@ public class AppProperties {
     /** 提示词按需加载配置（2026-10-11 P2-I） */
     private PromptMaskingConfig promptMasking = new PromptMaskingConfig();
 
+    /** 积分制度配置（2026-10-11） */
+    private PointsConfig points = new PointsConfig();
+
     /** 过载降级配置（2026-09-23 并发改造：弹性降级优先） */
     private LoadShedConfig loadShed = new LoadShedConfig();
 
@@ -381,5 +384,20 @@ public class AppProperties {
     public static class PromptMaskingConfig {
         /** 总开关（false 时主 Agent 提示词回退为全量常驻） */
         private boolean enabled = true;
+    }
+
+    /**
+     * 积分制度配置（2026-10-11）：对话按意图差异化计费，调用前原子预扣
+     * （UserRepository.deductPoints 单 UPDATE 完成校验+扣减，并发不超支）。
+     * v1 不退款（失败轮次成本已在模型网关发生；退款策略列为后续演进）。
+     */
+    @Data
+    public static class PointsConfig {
+        /** 普通对话消耗积分（CHAT/TOOL_CALL/RAG 及意图分类失败兜底档） */
+        private int chatCost = 50;
+        /** 行程规划消耗积分（PLANNING） */
+        private int planningCost = 200;
+        /** 新用户注册初始积分（否则注册即不可用，需管理员逐人发放） */
+        private long initialBalance = 500;
     }
 }

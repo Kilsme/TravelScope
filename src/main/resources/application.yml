@@ -169,6 +169,14 @@ travelscope:
     # EvidenceGateCalibrationTest（env 门控），调距离类型需重新标定
     evidence-gate-min-score: 0.5
 
+  # ---- 积分制度（2026-10-11）----
+  # 对话按意图差异化计费：普通对话 50 / 行程规划 200，调用前原子预扣（余额不足拒绝）；
+  # 新用户注册初始 500（v1 失败轮不退款，成本已在模型网关发生）
+  points:
+    chat-cost: 50
+    planning-cost: 200
+    initial-balance: 500
+
   # ---- 提示词按需加载（2026-10-11 P2-I）----
   # 主 Agent 规划按需段（行程规划流程/共享任务区间/规划委派规则，~45% 篇幅）仅 PLANNING 轮发送；
   # false 回退全量常驻

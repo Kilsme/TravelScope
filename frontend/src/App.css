@@ -391,6 +391,8 @@
 }
 .login-card button:disabled { opacity: 0.6; cursor: not-allowed; }
 .login-error { color: #ef4444; font-size: 13px; text-align: center; }
+.login-link { margin: 0; text-align: center; font-size: 13px; color: #555; }
+.login-link a { color: #3b82f6; text-decoration: none; }
 
 .admin-layout { display: flex; height: 100vh; }
 .admin-sidebar {
@@ -431,11 +433,14 @@
 .admin-message { color: #16a34a; margin-bottom: 12px; font-size: 13px; }
 .admin-actions { display: flex; gap: 8px; }
 
-.badge { padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }
-.badge-admin { background: #fef3c7; color: #92400e; }
+.badge { padding: 3px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }.badge-admin { background: #fef3c7; color: #92400e; }
 .badge-user { background: #e0e7ff; color: #3730a3; }
 .badge-on { background: #dcfce7; color: #166534; }
 .badge-off { background: #fee2e2; color: #991b1b; }
+.points-grant { display: inline-flex; gap: 6px; margin-left: 10px; align-items: center; }
+.points-grant input {
+  width: 76px; padding: 4px 6px; border: 1px solid #d5dbe6; border-radius: 5px; font-size: 12px;
+}
 .status-uploaded { background: #dbeafe; color: #1e40af; }
 .status-parsing { background: #fef3c7; color: #92400e; }
 .status-parsed { background: #dcfce7; color: #166534; }

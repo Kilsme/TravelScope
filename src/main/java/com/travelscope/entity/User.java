@@ -16,8 +16,9 @@ import java.time.LocalDateTime;
 /**
  * 用户实体（对应 users 表）
  * <p>
- * 当前无认证体系，仅用于满足 conversations/messages 表的 user_id 外键约束：
- * 应用启动时确保存在匿名用户（username=guest），所有会话归属于该用户。
+ * 认证体系已落地（AuthService Redis Token）；积分制度（2026-10-11）：pointsBalance 为
+ * 对话积分余额，每次对话调用前判断额度并预扣（普通对话 50 / 行程规划 200，
+ * 见 PointsService）。
  * </p>
  */
 @Getter
@@ -44,6 +45,10 @@ public class User {
 
     @Column(nullable = false)
     private Short status = 1;
+
+    /** 对话积分余额（每次调用前判断额度充足并预扣；管理员发放/回收） */
+    @Column(name = "points_balance", nullable = false)
+    private Long pointsBalance = 0L;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;

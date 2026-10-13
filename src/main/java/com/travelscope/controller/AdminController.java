@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -119,6 +120,67 @@ public class AdminController {
         return ResponseEntity.ok(Map.of("message", "角色已修改", "userId", id, "role", role));
     }
 
+    // ==================== 积分制度（2026-10-11） ====================
+
+    /**
+     * 调整用户积分（发放/回收；delta 可负，回收扣到 0 止）
+     */
+    @PutMapping("/users/{id}/points")
+    public ResponseEntity<?> adjustPoints(@PathVariable Long id,
+                                          @RequestParam long delta,
+                                          HttpServletRequest request) {
+        ResponseEntity<?> forbidden = requireAdmin(request);
+        if (forbidden != null) {
+            return forbidden;
+        }
+        try {
+            long balance = userAdminService.adjustPoints(id, delta);
+            return ResponseEntity.ok(Map.of("message", "积分已调整", "userId", id,
+                    "delta", delta, "balance", balance));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("code", 400, "message", e.getMessage()));
+        }
+    }
+
+    // ==================== 邀请码（2026-10-11 注册准入） ====================
+
+    /**
+     * 发放邀请码（生成随机 8 位码）
+     */
+    @PostMapping("/invitation-codes")
+    public ResponseEntity<?> generateInvitationCode(HttpServletRequest request) {
+        ResponseEntity<?> forbidden = requireAdmin(request);
+        if (forbidden != null) {
+            return forbidden;
+        }
+        User admin = (User) request.getAttribute(AuthInterceptor.ATTR_CURRENT_USER);
+        var ic = userAdminService.generateInvitationCode(admin.getId());
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "id", ic.getId(), "code", ic.getCode(), "createdAt", ic.getCreatedAt()));
+    }
+
+    /**
+     * 邀请码列表（新→旧：码/使用人/使用时间）
+     */
+    @GetMapping("/invitation-codes")
+    public ResponseEntity<?> listInvitationCodes(HttpServletRequest request) {
+        ResponseEntity<?> forbidden = requireAdmin(request);
+        if (forbidden != null) {
+            return forbidden;
+        }
+        return ResponseEntity.ok(userAdminService.listInvitationCodes().stream().map(ic -> {
+            Map<String, Object> vo = new HashMap<String, Object>();
+            vo.put("id", ic.getId());
+            vo.put("code", ic.getCode());
+            vo.put("createdBy", ic.getCreatedBy());
+            vo.put("usedBy", ic.getUsedBy());
+            vo.put("usedAt", ic.getUsedAt());
+            vo.put("createdAt", ic.getCreatedAt());
+            return vo;
+        }).toList());
+    }
+
     // ==================== Token 用量（FR-A01） ====================
 
     /**
@@ -166,6 +228,7 @@ public class AdminController {
         vo.put("nickname", u.getNickname());
         vo.put("role", u.getRole());
         vo.put("status", u.getStatus());
+        vo.put("pointsBalance", u.getPointsBalance());
         vo.put("createdAt", u.getCreatedAt());
         vo.put("updatedAt", u.getUpdatedAt());
         return vo;

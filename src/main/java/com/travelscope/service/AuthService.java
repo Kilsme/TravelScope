@@ -2,11 +2,13 @@ package com.travelscope.service;
 
 import com.travelscope.entity.User;
 import com.travelscope.repository.UserRepository;
+import com.travelscope.config.AppProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.Optional;
@@ -34,11 +36,49 @@ public class AuthService {
 
     private final UserRepository userRepository;
     private final StringRedisTemplate redisTemplate;
+    private final InvitationCodeService invitationCodeService;
+    private final AppProperties appProperties;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
-    public AuthService(UserRepository userRepository, StringRedisTemplate redisTemplate) {
+    public AuthService(UserRepository userRepository, StringRedisTemplate redisTemplate,
+                       InvitationCodeService invitationCodeService, AppProperties appProperties) {
         this.userRepository = userRepository;
         this.redisTemplate = redisTemplate;
+        this.invitationCodeService = invitationCodeService;
+        this.appProperties = appProperties;
+    }
+
+    /**
+     * 注册（2026-10-11 邀请码准入）：仅凭有效邀请码开放。
+     * 单事务：用户名唯一校验 → 创建用户（role=user，初始积分 points.initial-balance）
+     * → 消费邀请码；任一步失败整体回滚（码无效则用户不落库）。
+     *
+     * @return 新用户；失败抛 IllegalArgumentException（控制器转 400）
+     */
+    @Transactional
+    public User register(String username, String password, String nickname, String invitationCode) {
+        if (username == null || username.isBlank() || password == null || password.isBlank()) {
+            throw new IllegalArgumentException("用户名与密码不能为空");
+        }
+        // 先验码（无效/已用直接拒，不建用户）；consume 在落库后复查（权威判定）
+        invitationCodeService.validateUsable(invitationCode);
+        username = username.trim();
+        if (userRepository.findByUsername(username).isPresent()) {
+            throw new IllegalArgumentException("用户名已被占用");
+        }
+        User user = new User();
+        user.setUsername(username);
+        user.setPassword(passwordEncoder.encode(password));
+        user.setNickname(nickname != null && !nickname.isBlank() ? nickname.trim() : username);
+        user.setRole("user");
+        user.setStatus((short) 1);
+        user.setPointsBalance(appProperties.getPoints().getInitialBalance());
+        User saved = userRepository.saveAndFlush(user);
+        // 邀请码消费在同事务：极端并发下码被抢用 → 抛异常回滚（用户不落库）
+        invitationCodeService.consume(invitationCode, saved.getId());
+        log.info("注册成功: {} userId={}（初始积分 {}）", username, saved.getId(),
+                appProperties.getPoints().getInitialBalance());
+        return saved;
     }
 
     /**

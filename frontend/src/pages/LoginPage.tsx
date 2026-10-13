@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { login } from '../api/auth'
 
 /**
@@ -55,6 +55,9 @@ export default function LoginPage() {
         <button type="submit" disabled={loading}>
           {loading ? '登录中…' : '登录'}
         </button>
+        <p className="login-link">
+          没有账号？<Link to="/register">凭邀请码注册</Link>
+        </p>
       </form>
     </div>
   )

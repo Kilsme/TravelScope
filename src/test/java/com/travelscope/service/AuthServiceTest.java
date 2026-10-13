@@ -82,14 +82,35 @@ class AuthServiceTest {
         }
 
         User save(User u) {
+            if (u.getId() == null) {
+                u.setId((long) (byId.size() + 10));   // 注册路径：分配 id
+            }
             byUsername.put(u.getUsername(), u);
             byId.put(u.getId(), u);
             return u;
         }
     }
 
+    /** 内存邀请码表 */
+    static class FakeInvitationCodeRepository {
+        final Map<String, com.travelscope.entity.InvitationCode> byCode = new HashMap<>();
+
+        Optional<com.travelscope.entity.InvitationCode> findByCode(String code) {
+            return Optional.ofNullable(byCode.get(code));
+        }
+
+        com.travelscope.entity.InvitationCode save(com.travelscope.entity.InvitationCode ic) {
+            if (ic.getId() == null) {
+                ic.setId((long) (byCode.size() + 1));
+            }
+            byCode.put(ic.getCode(), ic);
+            return ic;
+        }
+    }
+
     private FakeRedisTemplate redis;
     private FakeUserRepository userRepo;
+    private FakeInvitationCodeRepository icRepo;
     private AuthService authService;
     private static final BCryptPasswordEncoder ENCODER = new BCryptPasswordEncoder();
 
@@ -107,7 +128,8 @@ class AuthServiceTest {
     void setUp() {
         redis = new FakeRedisTemplate();
         userRepo = new FakeUserRepository();
-        // AuthService 构造需要 UserRepository 接口——用动态代理只实现用到的两个方法
+        icRepo = new FakeInvitationCodeRepository();
+        // AuthService 构造需要 UserRepository 接口——用动态代理只实现用到的方法
         UserRepository repo = (UserRepository) java.lang.reflect.Proxy.newProxyInstance(
                 getClass().getClassLoader(),
                 new Class<?>[]{UserRepository.class},
@@ -115,9 +137,20 @@ class AuthServiceTest {
                     case "findByUsername" -> userRepo.findByUsername((String) args[0]);
                     case "findById" -> userRepo.findById((Long) args[0]);
                     case "save" -> userRepo.save((User) args[0]);
+                    case "saveAndFlush" -> userRepo.save((User) args[0]);
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
-        authService = new AuthService(repo, redis);
+        com.travelscope.repository.InvitationCodeRepository icProxy =
+                (com.travelscope.repository.InvitationCodeRepository) java.lang.reflect.Proxy
+                        .newProxyInstance(getClass().getClassLoader(),
+                                new Class<?>[]{com.travelscope.repository.InvitationCodeRepository.class},
+                                (proxy, method, args) -> switch (method.getName()) {
+                                    case "findByCode" -> icRepo.findByCode((String) args[0]);
+                                    case "save" -> icRepo.save((com.travelscope.entity.InvitationCode) args[0]);
+                                    default -> throw new UnsupportedOperationException(method.getName());
+                                });
+        authService = new AuthService(repo, redis, new InvitationCodeService(icProxy),
+                new com.travelscope.config.AppProperties());
         userRepo.save(makeUser(1L, "admin", "admin123", (short) 1, "admin"));
         userRepo.save(makeUser(2L, "user1", "pass1", (short) 1, "user"));
         userRepo.save(makeUser(3L, "banned", "pass3", (short) 0, "user"));
@@ -185,5 +218,60 @@ class AuthServiceTest {
         authService.enableUser(2L);
         assertEquals((short) 1, userRepo.byId.get(2L).getStatus());
         assertNull(authService.resolveUser(token).orElse(null), "启用后旧 token 不再有效（需重新登录）");
+    }
+
+    // ==================== 注册（2026-10-11 邀请码准入） ====================
+
+    private com.travelscope.entity.InvitationCode seedCode(String code) {
+        com.travelscope.entity.InvitationCode ic = new com.travelscope.entity.InvitationCode();
+        ic.setCode(code);
+        ic.setCreatedBy(1L);
+        return icRepo.save(ic);
+    }
+
+    @Test
+    @DisplayName("注册成功：有效邀请码 → 用户落库（role=user、初始积分 500），码被消费")
+    void testRegisterSuccess() {
+        seedCode("ABCD2345");
+
+        User created = authService.register("newbie", "pass123", "新人", "ABCD2345");
+
+        assertEquals("newbie", created.getUsername());
+        assertEquals("user", created.getRole());
+        assertEquals(500L, created.getPointsBalance(), "初始积分应取 points.initial-balance 默认 500");
+        assertTrue(icRepo.byCode.get("ABCD2345").getUsedBy() != null, "邀请码应被消费");
+        assertTrue(ENCODER.matches("pass123", created.getPassword()), "密码应 BCrypt 加密落库");
+    }
+
+    @Test
+    @DisplayName("注册拒绝：邀请码无效/已使用、用户名冲突 → 均不落库")
+    void testRegisterRejected() {
+        seedCode("USED9999");
+        seedCode("OKOKOK22");
+
+        // 无效码
+        try {
+            authService.register("u-x", "p", null, "NOEXIST1");
+        } catch (IllegalArgumentException expected) {
+            // 预期
+        }
+        assertTrue(userRepo.byUsername.get("u-x") == null, "无效码时用户不应落库");
+
+        // 已使用码：先成功注册一个，再复用同码
+        authService.register("u-y", "p", null, "USED9999");
+        try {
+            authService.register("u-z", "p", null, "USED9999");
+        } catch (IllegalArgumentException expected) {
+            // 预期
+        }
+        assertTrue(userRepo.byUsername.get("u-z") == null, "已使用码时用户不应落库");
+
+        // 用户名冲突（码有效也拒）
+        try {
+            authService.register("user1", "p", null, "OKOKOK22");
+        } catch (IllegalArgumentException expected) {
+            // 预期
+        }
+        assertTrue(icRepo.byCode.get("OKOKOK22").getUsedBy() == null, "用户名冲突时码不应被消费");
     }
 }
