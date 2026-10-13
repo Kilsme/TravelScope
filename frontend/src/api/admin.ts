@@ -21,6 +21,8 @@ export interface AdminUser {
   nickname: string
   role: string
   status: number
+  /** 对话积分余额（2026-10-11 积分制度） */
+  pointsBalance: number
   createdAt: string
   updatedAt: string
 }
@@ -97,5 +99,42 @@ export async function uploadDocument(file: File): Promise<AdminDocument> {
 export async function listDocuments(): Promise<AdminDocument[]> {
   const resp = await apiFetch(`${BASE}/documents`)
   if (!resp.ok) throw new Error('加载文档列表失败')
+  return resp.json()
+}
+
+// ==================== 积分制度 + 邀请码（2026-10-11） ====================
+
+/** 调整用户积分（发放 delta>0 / 回收 delta<0；回收扣到 0 止），返回调整后余额 */
+export async function adjustPoints(id: number, delta: number): Promise<number> {
+  const resp = await apiFetch(`${BASE}/users/${id}/points?delta=${delta}`, { method: 'PUT' })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ message: '调整积分失败' }))
+    throw new Error(err.message || '调整积分失败')
+  }
+  const body = (await resp.json()) as { balance: number }
+  return body.balance
+}
+
+export interface InvitationCode {
+  id: number
+  code: string
+  createdBy: number
+  /** 使用人用户 ID（未使用为 null） */
+  usedBy: number | null
+  usedAt: string | null
+  createdAt: string
+}
+
+/** 发放邀请码（生成随机 8 位码） */
+export async function generateInvitationCode(): Promise<InvitationCode> {
+  const resp = await apiFetch(`${BASE}/invitation-codes`, { method: 'POST' })
+  if (!resp.ok) throw new Error('发放邀请码失败')
+  return resp.json()
+}
+
+/** 邀请码列表（新→旧） */
+export async function listInvitationCodes(): Promise<InvitationCode[]> {
+  const resp = await apiFetch(`${BASE}/invitation-codes`)
+  if (!resp.ok) throw new Error('加载邀请码列表失败')
   return resp.json()
 }

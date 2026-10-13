@@ -31,6 +31,24 @@ CREATE TABLE IF NOT EXISTS users (
 -- 用户名索引
 CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 
+-- 对话积分余额（2026-10-11 积分制度；ADD COLUMN IF NOT EXISTS 保证存量库可重跑本脚本升级）
+ALTER TABLE users ADD COLUMN IF NOT EXISTS points_balance BIGINT NOT NULL DEFAULT 0;
+COMMENT ON COLUMN users.points_balance IS '对话积分余额（普通对话 50 / 行程规划 200，调用前预扣）';
+
+-- ============================================================================
+-- 1.1 邀请码表 (invitation_codes) - 新用户注册准入（2026-10-11）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS invitation_codes (
+    id              BIGSERIAL PRIMARY KEY,
+    code            VARCHAR(32)  NOT NULL UNIQUE,                            -- 邀请码
+    created_by      BIGINT       NOT NULL REFERENCES users(id),              -- 发放人（管理员）
+    used_by         BIGINT       REFERENCES users(id),                       -- 使用人（未使用为 NULL）
+    used_at         TIMESTAMP,                                               -- 使用时间
+    created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP          -- 创建时间
+);
+CREATE INDEX IF NOT EXISTS idx_invitation_codes_code ON invitation_codes (code);
+COMMENT ON TABLE invitation_codes IS '邀请码表（新用户仅凭有效邀请码注册，管理员发放）';
+
 COMMENT ON TABLE  users IS '用户表';
 COMMENT ON COLUMN users.id IS '主键ID';
 COMMENT ON COLUMN users.username IS '用户名（唯一）';

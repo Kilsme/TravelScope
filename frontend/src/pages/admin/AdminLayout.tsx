@@ -27,6 +27,9 @@ export default function AdminLayout() {
           <NavLink to="/admin/documents" className={({ isActive }) => isActive ? 'active' : ''}>
             📄 文档上传
           </NavLink>
+          <NavLink to="/admin/invitation-codes" className={({ isActive }) => isActive ? 'active' : ''}>
+            🎫 邀请码
+          </NavLink>
         </nav>
         <div className="admin-user">
           <span className="admin-nickname">{nickname || 'admin'}</span>

@@ -2,6 +2,7 @@ package com.travelscope.controller;
 
 import com.travelscope.dto.LoginRequest;
 import com.travelscope.dto.LoginResponse;
+import com.travelscope.dto.RegisterRequest;
 import com.travelscope.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -68,5 +69,26 @@ public class AuthController {
         Map<String, Object> body = new HashMap<>();
         body.put("message", "已登出");
         return ResponseEntity.ok(body);
+    }
+
+    /**
+     * 注册（2026-10-11 邀请码准入）：仅凭有效邀请码开放；AuthInterceptor 放行（/auth/register 排除）
+     */
+    @PostMapping("/register")
+    public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
+        try {
+            var user = authService.register(request.getUsername(), request.getPassword(),
+                    request.getNickname(), request.getInvitationCode());
+            Map<String, Object> body = new HashMap<>();
+            body.put("message", "注册成功，请登录");
+            body.put("userId", user.getId());
+            body.put("username", user.getUsername());
+            return ResponseEntity.status(HttpStatus.CREATED).body(body);
+        } catch (IllegalArgumentException e) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("code", HttpStatus.BAD_REQUEST.value());
+            body.put("message", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+        }
     }
 }

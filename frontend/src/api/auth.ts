@@ -88,3 +88,29 @@ export async function logout(): Promise<void> {
     clearAuth()
   }
 }
+
+/** 注册结果（2026-10-11 邀请码准入；注册成功后需另行登录，不发 token） */
+export interface RegisterResult {
+  message: string
+  userId: number
+  username: string
+}
+
+/** 注册（仅凭有效邀请码开放；拦截器放行 /auth/register） */
+export async function register(
+  username: string,
+  password: string,
+  nickname: string,
+  invitationCode: string,
+): Promise<RegisterResult> {
+  const resp = await fetch('/api/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ username, password, nickname, invitationCode }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ message: '注册失败' }))
+    throw new Error(err.message || '注册失败')
+  }
+  return resp.json()
+}

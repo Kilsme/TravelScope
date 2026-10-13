@@ -3,10 +3,12 @@ import './App.css'
 import { getRole, isLoggedIn } from './api/auth'
 import ChatPage from './pages/ChatPage'
 import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
 import AdminLayout from './pages/admin/AdminLayout'
 import TokenUsagePage from './pages/admin/TokenUsagePage'
 import UsersPage from './pages/admin/UsersPage'
 import DocUploadPage from './pages/admin/DocUploadPage'
+import InvitationCodesPage from './pages/admin/InvitationCodesPage'
 
 /**
  * 受保护路由：未登录 → /login
@@ -29,6 +31,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
         <Route
           path="/"
           element={
@@ -49,6 +52,7 @@ export default function App() {
           <Route path="token-usage" element={<TokenUsagePage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="documents" element={<DocUploadPage />} />
+          <Route path="invitation-codes" element={<InvitationCodesPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

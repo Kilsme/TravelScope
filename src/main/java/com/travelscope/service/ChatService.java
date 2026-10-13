@@ -85,6 +85,8 @@ public class ChatService {
     private final com.travelscope.config.AppProperties appProperties;
     /** 过载降级（2026-09-23 并发改造：GREEN/YELLOW/RED 三级，意图分类后准入） */
     private final LoadShedService loadShedService;
+    /** 积分制度（2026-10-11）：意图分类后按档预扣（普通 50 / 规划 200，余额不足拒绝） */
+    private final PointsService pointsService;
     /** 装饰后主链路模型 Bean（P1-K：persistReply 读 getModelName() 记当轮实际生效模型——
      *  粘滞切换下 fallback 轮返回 fallback 名，修复 Token 报表固定写主链路模型的记错对象） */
     private final Model gatewayChatModel;
@@ -100,7 +102,8 @@ public class ChatService {
                        ConversationSummaryService conversationSummaryService,
                        TracingHelper tracing,
                        com.travelscope.config.AppProperties appProperties,
-                       Model gatewayChatModel) {
+                       Model gatewayChatModel,
+                       PointsService pointsService) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -124,6 +127,7 @@ public class ChatService {
         this.intentContextEnabled = appProperties.getIntentCascade().isContextEnabled();
         this.tracing = tracing;
         this.gatewayChatModel = gatewayChatModel;
+        this.pointsService = pointsService;
     }
 
     /**
@@ -198,6 +202,24 @@ public class ChatService {
                         // （慢泳道内存大头），快请求继续服务；RED 挡全部新对话。
                         // 注意：此时网关槽位已持有，拒绝路径须 release
                         boolean planningIntent = intent != null && intent.toIntentType() == IntentType.PLANNING;
+                        // 积分制度（2026-10-11）：意图明确后按档预扣（普通对话/规划差异计费，
+                        // 意图分类失败 null 按普通档）；余额不足 → 拒绝本轮。
+                        // 注意：此时网关槽位已持有，拒绝路径须 release（与 loadShed 同款配对）
+                        int turnCost = pointsService.costOf(planningIntent);
+                        if (!pointsService.tryDeduct(userId, turnCost)) {
+                            llmGateway.release(String.valueOf(userId));
+                            try {
+                                emitter.send(SseEmitter.event()
+                                        .name(ChatEvent.TYPE_INTENT).data(toIntentPayload(intent)));
+                                emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
+                                        .data("积分不足：本次对话需 " + turnCost
+                                                + " 积分，请联系管理员发放后再试"));
+                            } catch (Exception ignored) {
+                                // 客户端已断开
+                            }
+                            emitter.complete();
+                            return Flux.<ChatEvent>empty();
+                        }
                         String shed = loadShedService.tryAdmit(planningIntent);
                         if (shed != null) {
                             llmGateway.release(String.valueOf(userId));
