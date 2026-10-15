@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 
 /**
  * 确定性规则断言器（FR-S15 双轨评估的规则轨；A5 约束：纯函数、零 LLM、可独立单测）。
@@ -166,18 +166,18 @@ public final class RuleAsserters {
         if (dir == null) {
             return RuleAssertion.skip("TOOL_ORDER", "无协作目录，无法判断产物时间序（降级跳过）");
         }
-        Path poi = dir.resolve(TaskWorkspaceService.FILE_POI_SHORTLIST);
-        Path route = dir.resolve(TaskWorkspaceService.FILE_ROUTE_PLAN);
-        Path itinerary = dir.resolve(TaskWorkspaceService.FILE_ITINERARY_DRAFT);
+        Path poi = dir.resolve(TaskWorkspace.FILE_POI_SHORTLIST_MD);
+        Path route = dir.resolve(TaskWorkspace.FILE_ROUTE_PLAN_MD);
+        Path itinerary = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
         List<String> missing = new ArrayList<>();
         if (!Files.isRegularFile(poi)) {
-            missing.add(TaskWorkspaceService.FILE_POI_SHORTLIST);
+            missing.add(TaskWorkspace.FILE_POI_SHORTLIST_MD);
         }
         if (!Files.isRegularFile(route)) {
-            missing.add(TaskWorkspaceService.FILE_ROUTE_PLAN);
+            missing.add(TaskWorkspace.FILE_ROUTE_PLAN_MD);
         }
         if (!Files.isRegularFile(itinerary)) {
-            missing.add(TaskWorkspaceService.FILE_ITINERARY_DRAFT);
+            missing.add(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
         }
         if (!missing.isEmpty()) {
             return RuleAssertion.skip("TOOL_ORDER",
@@ -238,8 +238,8 @@ public final class RuleAsserters {
         if (dir == null) {
             return RuleAssertion.skip("REWORK_OCCURRED", "无协作目录，无法判断回炉产物（降级跳过）");
         }
-        boolean failedReport = Files.isRegularFile(dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT));
-        boolean passedReport = Files.isRegularFile(dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED));
+        boolean failedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD));
+        boolean passedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
         if (!passedReport) {
             return RuleAssertion.fail("REWORK_OCCURRED",
                     "review_passed.md 缺失（最终未通过审核，回炉恢复链路断裂）");

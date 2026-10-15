@@ -38,7 +38,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
-import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 
 /**
  * 对话编排服务
@@ -66,7 +66,7 @@ public class ChatService {
     private final IntentCascadeRouter intentCascadeRouter;
     private final RagService ragService;
     private final ConversationService conversationService;
-    private final TaskWorkspaceService taskWorkspaceService;
+    private final TaskWorkspace taskWorkspaceService;
     private final TripRequirementStore tripRequirementStore;
     private final LlmGateway llmGateway;
     /** RAG 检索最终条数（travelscope.rag.context-top-k，原 top-k/硬编码 5；召回扇出走 rag.recall-fanout） */
@@ -95,7 +95,7 @@ public class ChatService {
                        IntentCascadeRouter intentCascadeRouter,
                        RagService ragService,
                        ConversationService conversationService,
-                       TaskWorkspaceService taskWorkspaceService,
+                       TaskWorkspace taskWorkspaceService,
                        TripRequirementStore tripRequirementStore,
                        LlmGateway llmGateway,
                        LoadShedService loadShedService,
@@ -748,7 +748,8 @@ public class ChatService {
     private String assemblePlanningReply(String userId, String agentSessionId) {
         try {
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
-            java.nio.file.Path draft = dir.resolve(TaskWorkspaceService.FILE_ITINERARY_DRAFT);
+            // 过渡（S0.5）：planner 产物 JSON 化（S2.6）前仍读 .md
+            java.nio.file.Path draft = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
             if (java.nio.file.Files.exists(draft)) {
                 String content = java.nio.file.Files.readString(draft, java.nio.charset.StandardCharsets.UTF_8);
                 if (!content.isBlank()) {
@@ -756,7 +757,7 @@ public class ChatService {
                     return content;
                 }
             }
-            java.nio.file.Path execution = dir.resolve(TaskWorkspaceService.FILE_EXECUTION_RESULT);
+            java.nio.file.Path execution = dir.resolve(TaskWorkspace.FILE_EXECUTION_RESULT_MD);
             if (java.nio.file.Files.exists(execution)) {
                 String content = java.nio.file.Files.readString(execution, java.nio.charset.StandardCharsets.UTF_8);
                 if (!content.isBlank()) {
@@ -783,14 +784,15 @@ public class ChatService {
         }
         try {
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
+            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍读 .md
             java.nio.file.Path target = passed
-                    ? dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED)
-                    : dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT);
+                    ? dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD)
+                    : dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
             if (java.nio.file.Files.exists(target)) {
                 return java.nio.file.Files.readString(target, java.nio.charset.StandardCharsets.UTF_8);
             }
             // 通过标注但 passed 文件缺失（防御）：退化读 report
-            java.nio.file.Path fallback = dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT);
+            java.nio.file.Path fallback = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
             if (passed && java.nio.file.Files.exists(fallback)) {
                 return java.nio.file.Files.readString(fallback, java.nio.charset.StandardCharsets.UTF_8);
             }

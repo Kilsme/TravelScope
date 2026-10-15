@@ -1,6 +1,8 @@
 package com.travelscope.service;
 
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.CollabFileReader;
+import com.travelscope.collab.CollabFileWriter;
+import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.config.AppProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -19,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * TaskRegistry 四维覆盖校验单测（FR-S03：交通/住宿/景点/天气缺维报错重拆）
  * <p>
- * TaskWorkspaceService 的 workspaceRoot 指向 @TempDir，落盘副作用不污染仓库。
+ * TaskWorkspace 的 workspaceRoot 指向 @TempDir，落盘副作用不污染仓库。
  * </p>
  */
 class TaskRegistryDimensionTest {
@@ -31,9 +33,9 @@ class TaskRegistryDimensionTest {
 
     @BeforeEach
     void setUp() {
-        AppProperties props = new AppProperties();
-        props.getAgentscope().setWorkspacePath(tempDir.toString());
-        registry = new TaskRegistry(new TaskWorkspaceService(props));
+        // S0.5 迁移：TaskWorkspace 组合 writer/reader，workspace 根用 @TempDir
+        registry = new TaskRegistry(new TaskWorkspace(
+                new CollabFileWriter(tempDir.toString()), new CollabFileReader()));
     }
 
     // ==================== 工具方法 ====================

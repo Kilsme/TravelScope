@@ -3,7 +3,7 @@ package com.travelscope.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.dto.PlanningTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,12 +63,12 @@ public class TaskRegistry {
             new DimensionRule("天气", List.of("weather-query"),
                     List.of("天气", "气温", "降水", "穿衣", "预报")));
 
-    private final TaskWorkspaceService taskWorkspaceService;
+    private final TaskWorkspace taskWorkspaceService;
 
     /** 注册键 userId:sessionId → 会话任务容器 */
     private final Map<String, SessionTaskContainer> containers = new ConcurrentHashMap<>();
 
-    public TaskRegistry(TaskWorkspaceService taskWorkspaceService) {
+    public TaskRegistry(TaskWorkspace taskWorkspaceService) {
         this.taskWorkspaceService = taskWorkspaceService;
     }
 
@@ -94,7 +94,8 @@ public class TaskRegistry {
                     + dimensionHints(missingDimensions);
         }
         String md = renderBacklogMd(sessionId, parsed);
-        Path file = taskWorkspaceService.writeTaskBacklog(userId, sessionId, md);
+        // 过渡（S0.5）：旧 MD 落盘通道，S0.6 本类存储切 DTO 后删
+        Path file = taskWorkspaceService.writeTaskBacklogLegacy(userId, sessionId, md);
         SessionTaskContainer container = new SessionTaskContainer(userId, sessionId, file, parsed);
         containers.put(containerKey(userId, sessionId), container);
         log.info("任务清单已登记: {} 项任务, 四维校验通过, 用户={}, 会话={}, 文件={}",

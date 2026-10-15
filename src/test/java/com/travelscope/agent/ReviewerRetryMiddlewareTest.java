@@ -1,8 +1,9 @@
 package com.travelscope.agent;
 
+import com.travelscope.collab.CollabFileReader;
+import com.travelscope.collab.CollabFileWriter;
+import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.common.TracingHelper;
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
-import com.travelscope.config.AppProperties;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.ActingInput;
@@ -43,14 +44,14 @@ class ReviewerRetryMiddlewareTest {
     @TempDir
     Path tempDir;
 
-    private TaskWorkspaceService workspace;
+    private TaskWorkspace workspace;
     private ReviewerRetryMiddleware middleware;
 
     @BeforeEach
     void setUp() {
-        AppProperties props = new AppProperties();
-        props.getAgentscope().setWorkspacePath(tempDir.toString());
-        workspace = new TaskWorkspaceService(props);
+        // S0.5 迁移：TaskWorkspace 直接组合 writer/reader，workspace 根用 @TempDir
+        workspace = new TaskWorkspace(
+                new CollabFileWriter(tempDir.toString()), new CollabFileReader());
         middleware = new ReviewerRetryMiddleware(workspace);
     }
 
@@ -77,7 +78,7 @@ class ReviewerRetryMiddlewareTest {
     private void writeReviewPassed() throws Exception {
         Path dir = workspace.getTaskDir("u1", "conv-t");
         Files.createDirectories(dir);
-        Files.writeString(dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED),
+        Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD),
                 "# 质检通过\n- 总分: 88/100");
     }
 
@@ -208,7 +209,7 @@ class ReviewerRetryMiddlewareTest {
         // 首审产物：FAIL 总分 78（REVIEW_RESULT 首行的文件等价物）
         Path dir = workspace.getTaskDir("u1", "conv-t");
         Files.createDirectories(dir);
-        Files.writeString(dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT),
+        Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD),
                 "# 质检报告：不通过\n\n- 总分: 78/100（通过线 80）\n\n| 维度 | 得分 |\n|---|---|");
 
         // 回炉重送 → span 带 attempt=2 + 上一轮 result=FAIL + score=78

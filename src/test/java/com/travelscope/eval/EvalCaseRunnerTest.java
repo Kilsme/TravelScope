@@ -31,7 +31,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -63,7 +63,7 @@ class EvalCaseRunnerTest {
     @Autowired
     private EvaluationRecordService evaluationRecordService;
     @Autowired
-    private TaskWorkspaceService taskWorkspaceService;
+    private TaskWorkspace taskWorkspaceService;
     @Autowired
     private AppProperties appProperties;
     @Autowired
@@ -222,9 +222,9 @@ class EvalCaseRunnerTest {
         Path taskDir = taskWorkspaceService.getTaskDir(String.valueOf(userId), "conv-" + conversationId);
         return new EvalRunArtifact(
                 lastAssistantReply(conversationId),
-                readFileOrNull(taskDir.resolve(TaskWorkspaceService.FILE_ITINERARY_DRAFT)),
-                readFileOrNull(taskDir.resolve(TaskWorkspaceService.FILE_POI_SHORTLIST)),
-                readFileOrNull(taskDir.resolve(TaskWorkspaceService.FILE_ROUTE_PLAN)),
+                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD)),
+                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_POI_SHORTLIST_MD)),
+                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_ROUTE_PLAN_MD)),
                 taskDir);
     }
 

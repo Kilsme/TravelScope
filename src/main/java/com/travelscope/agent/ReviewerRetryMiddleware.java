@@ -1,7 +1,7 @@
 package com.travelscope.agent;
 
 import com.travelscope.common.TracingHelper;
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -57,8 +57,8 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     /** 被拦截时替换执行的工具名（必须在 Toolkit 中真实注册，见 TaskTools.reviewRetryHint） */
     public static final String RETRY_HINT_TOOL = "review_retry_hint";
 
-    private final TaskWorkspaceService taskWorkspaceService;
-    /** 业务链路打点（review-attempt span，2026-10-02） */
+    private final TaskWorkspace taskWorkspaceService;
+    /** 业务打点（review-attempt span，2026-10-02） */
     private final TracingHelper tracing;
 
     /** userId:sessionId → 送审计数（跨轮持久于进程内；会话粒度隔离） */
@@ -67,11 +67,11 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     /** 评审产物中的总分行（review_passed.md / review_report.md 均含「总分: xx/100」） */
     private static final Pattern SCORE_PATTERN = Pattern.compile("总分[:：]\\s*(\\d+)");
 
-    public ReviewerRetryMiddleware(TaskWorkspaceService taskWorkspaceService) {
+    public ReviewerRetryMiddleware(TaskWorkspace taskWorkspaceService) {
         this(taskWorkspaceService, TracingHelper.NOOP);
     }
 
-    public ReviewerRetryMiddleware(TaskWorkspaceService taskWorkspaceService, TracingHelper tracing) {
+    public ReviewerRetryMiddleware(TaskWorkspace taskWorkspaceService, TracingHelper tracing) {
         this.taskWorkspaceService = taskWorkspaceService;
         this.tracing = tracing;
     }
@@ -166,8 +166,9 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     private void readLatestReviewOutcome(String userId, String sessionId, Map<String, String> attrs) {
         try {
             Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            Path passed = dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED);
-            Path report = dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT);
+            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍检查 .md
+            Path passed = dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD);
+            Path report = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
             Path file = Files.exists(passed) ? passed : (Files.exists(report) ? report : null);
             if (file == null) {
                 return;
@@ -186,7 +187,8 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     private boolean reviewPassedFileExists(String userId, String sessionId) {
         try {
             Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            return Files.exists(dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED));
+            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍检查 .md
+            return Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
         } catch (Exception e) {
             log.debug("检查 review_passed.md 失败（按不存在处理）: {}", e.getMessage());
             return false;
