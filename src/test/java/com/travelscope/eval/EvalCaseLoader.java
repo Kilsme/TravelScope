@@ -208,6 +208,16 @@ public final class EvalCaseLoader {
                     throw new IllegalArgumentException(ruleWhere + ": NO_HALLUCINATION 规则必须提供非空 params.poi（待核验的虚构地点名）");
                 }
             }
+            if (type == RuleType.BUDGET_DEVIATION) {
+                String budget = params.get("budget");
+                if (budget == null || !budget.trim().matches("\\d+(\\.\\d+)?")) {
+                    throw new IllegalArgumentException(ruleWhere + ": BUDGET_DEVIATION 规则必须提供数字 params.budget（预算金额）");
+                }
+                String tolerance = params.get("tolerancePct");
+                if (tolerance != null && !tolerance.trim().matches("\\d+(\\.\\d+)?")) {
+                    throw new IllegalArgumentException(ruleWhere + ": BUDGET_DEVIATION 的 params.tolerancePct 必须是数字（允许偏差百分比）");
+                }
+            }
             rules.add(new EvalCase.Rule(type, desc, params));
         }
         return List.copyOf(rules);

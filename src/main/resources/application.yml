@@ -168,6 +168,9 @@ travelscope:
     # 阈值=相似度下限（COSINE：score=1-余弦距离，实际值域约 [0,1]）；校准见
     # EvidenceGateCalibrationTest（env 门控），调距离类型需重新标定
     evidence-gate-min-score: 0.5
+    # 种子攻略语料灌库（2026-10-15 PG 收编进 compose 后重灌）：内置 22 条杭州为主攻略
+    # → embedding → 双写 pgvector + ES；幂等（按 doc_id 查 ES 命中则跳过），重复启动不重复写
+    seed-enabled: true
 
   # ---- 积分制度（2026-10-11）----
   # 对话按意图差异化计费：普通对话 50 / 行程规划 200，调用前原子预扣（余额不足拒绝）；

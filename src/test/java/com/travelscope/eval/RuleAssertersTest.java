@@ -171,7 +171,74 @@ class RuleAssertersTest {
     }
 
     @Test
-    @DisplayName("assertRule 分发：五类规则按 type 路由到对应断言器")
+    @DisplayName("REWORK_OCCURRED：双产物齐 PASS / 只通过未回炉 SKIP / 最终未通过 FAIL / 无目录 SKIP")
+    void reworkOccurredChecks(@TempDir Path tempDir) throws IOException {
+        // 回炉发生且恢复：review_report.md + review_passed.md 同时存在
+        Files.writeString(tempDir.resolve("review_report.md"), "REVIEW_RESULT: FAIL 总分=72 失败段=1");
+        Files.writeString(tempDir.resolve("review_passed.md"), "REVIEW_RESULT: PASS 总分=88 失败段=无");
+        assertTrue(RuleAsserters.reworkOccurred(new EvalRunArtifact(null, "itinerary", null, null, tempDir)).passed(),
+                "双产物齐备应 PASS");
+
+        // 单向守护：一次通过（无失败报告）→ SKIP 不误报
+        Path onceOnly = Files.createDirectory(tempDir.resolve("once"));
+        Files.writeString(onceOnly.resolve("review_passed.md"), "REVIEW_RESULT: PASS");
+        RuleAssertion skipped = RuleAsserters.reworkOccurred(
+                new EvalRunArtifact(null, "itinerary", null, null, onceOnly));
+        assertTrue(skipped.skipped(), "一次通过未回炉应 SKIP: " + skipped.details());
+
+        // 最终未通过 → FAIL
+        Path failed = Files.createDirectory(tempDir.resolve("failed"));
+        Files.writeString(failed.resolve("review_report.md"), "REVIEW_RESULT: FAIL");
+        assertFalse(RuleAsserters.reworkOccurred(
+                new EvalRunArtifact(null, "itinerary", null, null, failed)).passed(),
+                "review_passed.md 缺失应 FAIL");
+
+        assertTrue(RuleAsserters.reworkOccurred(new EvalRunArtifact(null, "itinerary", null, null, null)).skipped(),
+                "无协作目录应 SKIP");
+    }
+
+    @Test
+    @DisplayName("BUDGET_DEVIATION：容差内 PASS / 超容差 FAIL / 万千单位换算 / 无金额 SKIP")
+    void budgetDeviationChecks() {
+        String itinerary = """
+                # 杭州 3 日游
+                ## 预算汇总
+                - 住宿 1200元
+                - 餐饮 900元
+                - 门票与交通 800元
+                - 总计 2900元
+                """;
+        EvalRunArtifact artifact = new EvalRunArtifact(null, itinerary, null, null, null);
+        EvalCase.Rule within = new EvalCase.Rule(RuleType.BUDGET_DEVIATION, null,
+                Map.of("budget", "3000", "tolerancePct", "10"));
+        assertTrue(RuleAsserters.budgetDeviation(within, artifact).passed(),
+                "2900 vs 3000 偏差 3.3% ≤10% 应 PASS");
+
+        EvalCase.Rule over = new EvalCase.Rule(RuleType.BUDGET_DEVIATION, null,
+                Map.of("budget", "3000", "tolerancePct", "10"));
+        String overBudgetItinerary = itinerary.replace("总计 2900元", "总计 3500元");
+        assertFalse(RuleAsserters.budgetDeviation(over,
+                        new EvalRunArtifact(null, overBudgetItinerary, null, null, null)).passed(),
+                "3500 vs 3000 偏差 16.7% >10% 应 FAIL");
+
+        String wanItinerary = itinerary.replace("总计 2900元", "总费用约 0.29万元");
+        EvalCase.Rule noTolerance = new EvalCase.Rule(RuleType.BUDGET_DEVIATION, null, Map.of("budget", "3000"));
+        assertTrue(RuleAsserters.budgetDeviation(noTolerance,
+                        new EvalRunArtifact(null, wanItinerary, null, null, null)).passed(),
+                "0.29万 应换算为 2900 且默认容差 10%");
+
+        String noAmount = "# 杭州 3 日游\n## 预算汇总\n详见上文安排";
+        assertTrue(RuleAsserters.budgetDeviation(within,
+                        new EvalRunArtifact(null, noAmount, null, null, null)).skipped(),
+                "预算行无金额应 SKIP（缺预算行由 FIELD_COMPLETE 判罚）");
+
+        EvalCase.Rule missingParam = new EvalCase.Rule(RuleType.BUDGET_DEVIATION, null, Map.of());
+        assertFalse(RuleAsserters.budgetDeviation(missingParam, artifact).passed(),
+                "缺 params.budget 应 FAIL（加载器应已拦截）");
+    }
+
+    @Test
+    @DisplayName("assertRule 分发：七类规则按 type 路由到对应断言器")
     void dispatchesByRuleType() {
         EvalRunArtifact artifact = new EvalRunArtifact(
                 "查无此处，推荐替代景点", COMPLETE_ITINERARY, "poi", "route", null);
@@ -186,6 +253,12 @@ class RuleAssertersTest {
         assertTrue(RuleAsserters.assertRule(
                 new EvalCase.Rule(RuleType.TOOL_ORDER, null, Map.of()), artifact).skipped(),
                 "无 taskDir 时 TOOL_ORDER 应 SKIP");
+        assertTrue(RuleAsserters.assertRule(
+                new EvalCase.Rule(RuleType.REWORK_OCCURRED, null, Map.of()), artifact).skipped(),
+                "无 taskDir 时 REWORK_OCCURRED 应 SKIP");
+        assertTrue(RuleAsserters.assertRule(
+                new EvalCase.Rule(RuleType.BUDGET_DEVIATION, null, Map.of("budget", "8000")), artifact).passed(),
+                "样例行程总计 8000元、预算 8000 → 偏差 0 应 PASS");
     }
 
     private static void writeWithMtime(Path file, String isoInstant) throws IOException {

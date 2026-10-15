@@ -45,6 +45,13 @@ public class EvaluationRecord {
     @Column(name = "case_id", length = 64)
     private String caseId;
 
+    /**
+     * 用例类别（如 MULTI_CITY；线上评估为空）。2026-10-14 P2-M 看板按类别聚合补列——
+     * 由评估 runner 落库时从 EvalCase 带出；存量历史记录为 NULL（看板归「未分类」组）。
+     */
+    @Column(name = "category", length = 32)
+    private String category;
+
     /** 确定性规则各项通过与否（JSON 文本，JSONB 存储） */
     @Column(name = "rule_results", columnDefinition = "jsonb")
     private String ruleResults;

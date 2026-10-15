@@ -1,3 +1,5 @@
+> ⚠️ **Under v4 refactoring**: The project is undergoing a major architecture refactor (six agents → three, JSON contract communication, code-based route computation). This document still describes v3 and will be rewritten; the authoritative plan is [docs/TravelScope重构计划-v4.md](docs/TravelScope重构计划-v4.md).
+
 <div align="center">
 
 # 🧭 TravelScope

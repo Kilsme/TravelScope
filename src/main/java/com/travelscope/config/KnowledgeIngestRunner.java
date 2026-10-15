@@ -40,12 +40,14 @@ public class KnowledgeIngestRunner implements ApplicationRunner {
     private final AppProperties appProperties;
     private final RagServiceImpl ragService;
     private final EsBm25Client esBm25Client;
+    private final javax.sql.DataSource dataSource;
 
     public KnowledgeIngestRunner(AppProperties appProperties, RagServiceImpl ragService,
-                                 EsBm25Client esBm25Client) {
+                                 EsBm25Client esBm25Client, javax.sql.DataSource dataSource) {
         this.appProperties = appProperties;
         this.ragService = ragService;
         this.esBm25Client = esBm25Client;
+        this.dataSource = dataSource;
     }
 
     /** 种子片段：杭州主要 POI 攻略（检测标准 1/2 的数据基础） + 少量其他热门城市 */
@@ -133,14 +135,19 @@ public class KnowledgeIngestRunner implements ApplicationRunner {
         log.info("种子知识库注入开始: {} 条片段（pgvector + ES 双写）", SEED_DOCS.size());
         long start = System.currentTimeMillis();
 
-        // ES 路：幂等建索引 + 检查是否已灌过（按 doc_id 前缀查一条）
+        // ES 路：幂等建索引 + 检查是否已灌过
         esBm25Client.ensureIndex();
-        boolean alreadySeeded = !esBm25Client.search("seed 杭州攻略", 1).isEmpty()
-                && !esBm25Client.search("西湖", 1).isEmpty();
-        if (alreadySeeded && ragService.isAvailable()) {
-            log.info("种子数据已存在（ES 检索命中），跳过注入");
+        // 2026-10-15 修复跨系统漂移：ES 卷持久化而 pgvector 可能重建（PG 收编 compose 后）——
+        // 单查 ES 命中会误判「已灌过」导致 pgvector 侧空库。改为双路核查：ES 命中 AND
+        // pgvector 有种子块才算真已灌，否则照常注入（双写幂等：ES id 定址覆盖、
+        // pgvector 侧 uuid 主键可能产生重复，故 pgvector 空库时才走写入）
+        boolean esSeeded = !esBm25Client.search("西湖", 1).isEmpty();
+        boolean pgSeeded = countSeedChunks() > 0;
+        if (esSeeded && pgSeeded && ragService.isAvailable()) {
+            log.info("种子数据已存在（ES + pgvector 双路命中），跳过注入");
             return;
         }
+        log.info("种子注入: ES 已有={}, pgvector 已有={}（漂移侧补灌）", esSeeded, pgSeeded);
 
         // ES 写入（BM25 可检索）
         List<EsBm25Client.SeedChunk> esChunks = new ArrayList<>();
@@ -175,6 +182,19 @@ public class KnowledgeIngestRunner implements ApplicationRunner {
 
         log.info("种子知识库注入完成: {} 条, 耗时 {}ms", SEED_DOCS.size(),
                 System.currentTimeMillis() - start);
+    }
+
+    /** pgvector 侧种子块数（漂移判定用；查不到按 0 走补灌，失败也按 0 不误判已灌） */
+    private int countSeedChunks() {
+        try (var conn = dataSource.getConnection();
+             var st = conn.prepareStatement(
+                     "SELECT count(*) FROM document_chunks WHERE doc_id LIKE 'seed-%'");
+             var rs = st.executeQuery()) {
+            return rs.next() ? rs.getInt(1) : 0;
+        } catch (Exception e) {
+            log.warn("pgvector 种子块计数失败（按未灌处理，触发补灌）: {}", e.getMessage());
+            return 0;
+        }
     }
 
     /** 与 RagServiceImpl 同配置构建一次性写入器（避免暴露内部 knowledge 字段） */

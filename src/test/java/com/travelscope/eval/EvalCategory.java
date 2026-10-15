@@ -1,7 +1,7 @@
 package com.travelscope.eval;
 
 /**
- * EvalCase 场景类别（FR-S15：5 类固定用例，对齐参考项目）。
+ * EvalCase 场景类别（FR-S15 用例分类）。
  */
 public enum EvalCategory {
     /** 多城市串联 */
@@ -13,5 +13,7 @@ public enum EvalCategory {
     /** 地点不存在（纠错） */
     POI_NOT_EXIST,
     /** 路线过密（时间冲突） */
-    ROUTE_TOO_DENSE
+    ROUTE_TOO_DENSE,
+    /** 回炉恢复（2026-10-14 P2-M）：审核 fail → 按段回炉 → 最终通过审核的恢复链路 */
+    REWORK_RECOVERY
 }

@@ -1,0 +1,15 @@
+{
+  "caseId": "EC-014",
+  "category": "STRICT_BUDGET",
+  "userMessages": [
+    "周六日去南京玩2天，一个人，总预算1500元，帮我安排"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "2天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},
+      {"type": "CONSTRAINT_COVERED", "desc": "回复/行程需体现1500元预算约束", "params": {"keyword": "1500"}},
+      {"type": "BUDGET_DEVIATION", "desc": "行程总费用与1500元预算偏差≤±8%（更严容差的预算边缘断言）", "params": {"budget": "1500", "tolerancePct": "8"}}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

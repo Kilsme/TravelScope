@@ -62,6 +62,8 @@ public final class RuleAsserters {
             case NO_HALLUCINATION -> noHallucination(rule, artifact);
             case TOOL_ORDER -> toolOrder(artifact);
             case TIME_CONFLICT_HANDLED -> timeConflictHandled(artifact);
+            case REWORK_OCCURRED -> reworkOccurred(artifact);
+            case BUDGET_DEVIATION -> budgetDeviation(rule, artifact);
         };
     }
 
@@ -223,6 +225,100 @@ public final class RuleAsserters {
         return RuleAssertion.fail("TIME_CONFLICT_HANDLED",
                 "回复与行程均未指出时间冲突/过密问题，也未拆分多天（可能直接输出了不可行的时刻表）");
     }
+
+    /**
+     * REWORK_OCCURRED（2026-10-14 P2-M，REWORK_RECOVERY 专用）：回炉发生且最终恢复——
+     * review_report.md（某次审核 fail 产物）与 review_passed.md（最终通过产物）同时存在。
+     * <b>单向守护语义</b>：reviewer 一次通过（无 review_report.md）时 SKIP 而非 FAIL——
+     * 「没触发回炉」不等于「回炉坏了」；只守「触发了回炉却没恢复」这个回归方向。
+     * review_passed.md 缺失（最终都没通过审核）→ FAIL。
+     */
+    public static RuleAssertion reworkOccurred(EvalRunArtifact artifact) {
+        Path dir = artifact.taskDir();
+        if (dir == null) {
+            return RuleAssertion.skip("REWORK_OCCURRED", "无协作目录，无法判断回炉产物（降级跳过）");
+        }
+        boolean failedReport = Files.isRegularFile(dir.resolve(TaskWorkspaceService.FILE_REVIEW_REPORT));
+        boolean passedReport = Files.isRegularFile(dir.resolve(TaskWorkspaceService.FILE_REVIEW_PASSED));
+        if (!passedReport) {
+            return RuleAssertion.fail("REWORK_OCCURRED",
+                    "review_passed.md 缺失（最终未通过审核，回炉恢复链路断裂）");
+        }
+        if (!failedReport) {
+            return RuleAssertion.skip("REWORK_OCCURRED",
+                    "review_report.md 缺失（审核一次通过，未触发回炉）——单向守护不误报");
+        }
+        return RuleAssertion.pass("REWORK_OCCURRED",
+                "review_report.md 与 review_passed.md 同时存在：审核 fail → 回炉 → 最终通过");
+    }
+
+    /**
+     * BUDGET_DEVIATION（2026-10-14 P2-M）：预算偏差确定性断言，补齐 reviewer 提示词层
+     * ±10% 纯 LLM 判定无代码层硬校验的缺口。
+     * <p>
+     * 算法：从行程草案（缺失时最终回复）的预算关键词行提取全部金额（支持 万/千 单位换算），
+     * 取最大值作为实际花费上界——偏保守（草案常复述用户预算行，高估花费宁可误报超支、
+     * 不放过超支；低于预算永远不违规）。断言 |实际-预算|/预算 ≤ params.tolerancePct（默认 10）。
+     * 预算行无金额数字 → SKIP（FIELD_COMPLETE 已独立判罚「缺预算行」）。
+     * </p>
+     */
+    public static RuleAssertion budgetDeviation(EvalCase.Rule rule, EvalRunArtifact artifact) {
+        String budgetRaw = rule.params().get("budget");
+        if (budgetRaw == null || budgetRaw.isBlank()) {
+            return RuleAssertion.fail("BUDGET_DEVIATION", "规则缺少 params.budget（应由加载器校验拦截）");
+        }
+        double budget;
+        double tolerancePct;
+        try {
+            budget = Double.parseDouble(budgetRaw.trim());
+            tolerancePct = Double.parseDouble(rule.params().getOrDefault("tolerancePct", "10").trim());
+        } catch (NumberFormatException e) {
+            return RuleAssertion.fail("BUDGET_DEVIATION",
+                    "params.budget/tolerancePct 非数字（应由加载器校验拦截）: " + e.getMessage());
+        }
+        String text = artifact.itineraryOrReply();
+        if (text == null || text.isBlank()) {
+            return RuleAssertion.skip("BUDGET_DEVIATION", "无行程产物，无法提取花费（降级跳过）");
+        }
+        double actual = maxAmountInBudgetLines(text);
+        if (actual < 0) {
+            return RuleAssertion.skip("BUDGET_DEVIATION",
+                    "预算行无金额数字，无法计算偏差（降级跳过；缺预算行由 FIELD_COMPLETE 判罚）");
+        }
+        double deviationPct = Math.abs(actual - budget) / budget * 100.0;
+        String detail = "预算 %.0f，预算行最大金额 %.0f，偏差 %.1f%%（阈值 %.1f%%）"
+                .formatted(budget, actual, deviationPct, tolerancePct);
+        if (deviationPct <= tolerancePct) {
+            return RuleAssertion.pass("BUDGET_DEVIATION", detail);
+        }
+        return RuleAssertion.fail("BUDGET_DEVIATION", "超预算偏差阈值: " + detail);
+    }
+
+    /** 预算关键词行内全部金额的最大值（万/千换算；无金额返回 -1） */
+    private static double maxAmountInBudgetLines(String text) {
+        double max = -1;
+        for (String line : text.split("\n")) {
+            if (!containsAny(line, BUDGET_KEYWORDS)) {
+                continue;
+            }
+            var matcher = AMOUNT_PATTERN.matcher(line);
+            while (matcher.find()) {
+                double value = Double.parseDouble(matcher.group(1));
+                String unit = matcher.group(2);
+                if ("万".equals(unit)) {
+                    value *= 10_000;
+                } else if ("千".equals(unit)) {
+                    value *= 1_000;
+                }
+                max = Math.max(max, value);
+            }
+        }
+        return max;
+    }
+
+    /** 金额提取：数字 + 可选 万/千 单位（前缀 ¥/￥ 由行内容自然包含，不参与换算） */
+    private static final Pattern AMOUNT_PATTERN =
+            Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*(万|千)?\\s*(?:元|块|人民币|RMB)?");
 
     // ==================== 工具方法 ====================
 

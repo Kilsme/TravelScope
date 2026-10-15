@@ -1,0 +1,100 @@
+package com.travelscope.collab;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * 工作区契约：review_report.json（schemaVersion=4）
+ * <p>
+ * 生产者：reviewer-agent（质检不通过时）；消费者：itinerary-agent（按失败段回炉）。
+ * 对应 v3 的 review_report.md；通过标准（总分≥80 + 无单维&lt;12 + 三段全 pass）不变。
+ * </p>
+ * <p>
+ * schemaVersion 恒为 {@link #SCHEMA_VERSION}（紧凑构造器强校验）；JSON 键与组件同名。
+ * </p>
+ */
+public record ReviewReport(
+        int schemaVersion,
+        List<ReviewSegment> segments,
+        ReviewScores scores,
+        int total,
+        Map<String, List<String>> suggestionsBySegment,
+        String reviewedAt) {
+
+    /** 契约版本 */
+    public static final int SCHEMA_VERSION = 4;
+
+    public ReviewReport {
+        if (schemaVersion != SCHEMA_VERSION) {
+            throw new IllegalArgumentException(
+                    "schemaVersion 必须为 " + SCHEMA_VERSION + "，实际: " + schemaVersion);
+        }
+        segments = List.copyOf(Objects.requireNonNull(segments, "segments"));
+        Objects.requireNonNull(scores, "scores");
+        if (total < 0 || total > 100) {
+            throw new IllegalArgumentException("total 须在 0~100: " + total);
+        }
+        suggestionsBySegment = deepUnmodifiable(
+                Objects.requireNonNull(suggestionsBySegment, "suggestionsBySegment"));
+        // reviewedAt 可空
+    }
+
+    /** 便捷构造：schemaVersion 固定为 {@link #SCHEMA_VERSION} */
+    public ReviewReport(List<ReviewSegment> segments, ReviewScores scores, int total,
+                        Map<String, List<String>> suggestionsBySegment, String reviewedAt) {
+        this(SCHEMA_VERSION, segments, scores, total, suggestionsBySegment, reviewedAt);
+    }
+
+    private static Map<String, List<String>> deepUnmodifiable(Map<String, List<String>> src) {
+        Map<String, List<String>> copy = new LinkedHashMap<>();
+        src.forEach((k, v) -> copy.put(Objects.requireNonNull(k, "suggestionsBySegment 键"),
+                v == null ? List.of() : List.copyOf(v)));
+        return Collections.unmodifiableMap(copy);
+    }
+
+    /**
+     * 分段结论。segment 取值：1=POI 有效性，2=路线连贯性+时间密度，3=预算+偏好匹配；
+     * issues 为该段问题清单（pass 时为空）。
+     */
+    public record ReviewSegment(
+            int segment,
+            boolean pass,
+            List<String> issues) {
+
+        public ReviewSegment {
+            if (segment < 1 || segment > 3) {
+                throw new IllegalArgumentException("segment 取值 1~3，实际: " + segment);
+            }
+            issues = issues == null ? List.of() : List.copyOf(issues);
+        }
+    }
+
+    /**
+     * 5 维评分（各 0~20，满分 100）：完备性 / 可行性 / 时间冲突 / 费用预算 / POI 合理性。
+     * 与 v3 reviewer 提示词的评分细则一一对应。
+     */
+    public record ReviewScores(
+            int completeness,
+            int feasibility,
+            int timeConflict,
+            int costBudget,
+            int poiReasonableness) {
+
+        public ReviewScores {
+            checkDimension("completeness", completeness);
+            checkDimension("feasibility", feasibility);
+            checkDimension("timeConflict", timeConflict);
+            checkDimension("costBudget", costBudget);
+            checkDimension("poiReasonableness", poiReasonableness);
+        }
+
+        private static void checkDimension(String name, int value) {
+            if (value < 0 || value > 20) {
+                throw new IllegalArgumentException(name + " 须在 0~20: " + value);
+            }
+        }
+    }
+}

@@ -1,0 +1,16 @@
+{
+  "caseId": "EC-013",
+  "category": "STRICT_BUDGET",
+  "userMessages": [
+    "十一假期去杭州玩3天，两个人，总预算3000元，住连锁酒店，帮我规划一下",
+    "预算千万别超，吃住行门票都算进去"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "3天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},
+      {"type": "CONSTRAINT_COVERED", "desc": "回复/行程需体现3000元预算约束", "params": {"keyword": "3000"}},
+      {"type": "BUDGET_DEVIATION", "desc": "行程总费用与3000元预算偏差≤±10%（确定性数值断言，覆盖预算边缘）", "params": {"budget": "3000", "tolerancePct": "10"}}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

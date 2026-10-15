@@ -1,0 +1,15 @@
+{
+  "caseId": "EC-012",
+  "category": "REWORK_RECOVERY",
+  "userMessages": [
+    "下周去上海玩3天，学生党穷游，全程总预算只有800元，住青旅，景点尽量免费",
+    "第二天的行程帮我排满一点，从早到晚"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "预算回炉后仍需产出3天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},
+      {"type": "REWORK_OCCURRED", "desc": "800元/3天极限预算大概率触发段3(预算匹配)审核fail→planner自修订（换青旅/删付费项目）→恢复；review_report.md与review_passed.md应同时存在（reviewer一次通过则单向跳过，不误报）"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

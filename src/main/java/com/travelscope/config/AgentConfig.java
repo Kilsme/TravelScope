@@ -602,7 +602,7 @@ public class AgentConfig {
             OpenAIChatModel gatewayLightModel) {
         LightweightIntentClassifier l2 = new LightweightIntentClassifier(gatewayLightModel);
         return new IntentCascadeRouter(appProperties, intentCache,
-                l2::classify, intentClassifier::classify, tracingHelper);
+                l2::classify, intentClassifier::classify);
     }
 
     /**

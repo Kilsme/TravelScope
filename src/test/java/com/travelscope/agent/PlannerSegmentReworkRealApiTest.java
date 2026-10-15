@@ -67,6 +67,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *       poi-research 不被 spawn</li>
  *   <li>场景2（conv-9102）：干净西湖小簇行程但预算整体超支（800 预算 / 1025 总计），
  *       裁决回放段3 fail → planner 自行修订草案（换酒店），不委派任何检索/排线子 Agent</li>
+ *   <li>场景3（conv-9103，2026-10-14 P2-M 补齐段1回归守护）：POI 池混入虚构景点
+ *       「西湖天空之镜观景台」且已编入草案，裁决回放段1 fail → 回炉只重跑
+ *       poi-research（重跑后覆盖登记），route-optimizer 不被 spawn，路线/天气/酒店
+ *       走缓存复用（cache_hit=route），planner 重组装后重审通过</li>
  * </ul>
  * <p>
  * <b>reviewer 为脚本化裁决回放桩</b>（读 scripted_verdict.md 按送审次数回放，格式复刻
@@ -246,6 +250,133 @@ class PlannerSegmentReworkRealApiTest {
             - 偏好: 自然风光 + 人文历史
             - 大交通: 无城际大交通需求
             - 状态: CONFIRMED
+            """;
+
+    // ==================== 场景3：段1 fail（虚构 POI 混入，2026-10-14 P2-M） ====================
+
+    /** POI 池混入虚构景点「西湖天空之镜观景台」（searchPois 桩查无此地），其余为真实小簇 */
+    private static final String SC3_POI_SHORTLIST = """
+            # 杭州景点候选清单（poi_shortlist）
+
+            | # | 景点 | 坐标（经度,纬度） | 门票 | 建议时长 | 开放时间 |
+            |---|---|---|---|---|---|
+            | 1 | 西湖天空之镜观景台 | 120.15200,30.26000 | 免费 | 1.5小时 | 全天开放 |
+            | 2 | 西湖（断桥—白堤—孤山） | 120.14912,30.25941 | 免费 | 2.5小时 | 全天开放 |
+            | 3 | 河坊街 | 120.17156,30.24472 | 免费 | 1.5小时 | 全天开放 |
+            | 4 | 雷峰塔 | 120.14885,30.23200 | 40元 | 1.5小时 | 08:00-19:00 |
+            """;
+
+    private static final String SC3_ROUTE_PLAN = """
+            # 分日路线方案（route_plan）
+
+            ## 第1天（2026-10-25 周日）
+            | 时段 | 安排 | 点间通勤 |
+            |---|---|---|
+            | 09:00-11:30 | 西湖环湖（断桥—白堤—孤山） | - |
+            | 13:00-14:30 | 西湖天空之镜观景台 | 步行 约15分钟 |
+            | 15:00-16:30 | 雷峰塔 | 步行 约10分钟 |
+
+            ## 第2天（2026-10-26 周一）
+            | 时段 | 安排 | 点间通勤 |
+            |---|---|---|
+            | 09:30-11:30 | 河坊街+南宋御街 | 公交 约20分钟 |
+            | 11:30 | 返程 | - |
+
+            调优过程：环湖小簇串联，各段通勤 20 分钟内。
+            """;
+
+    /** 虚构 POI 已编入草案第1天（段1 的审核靶子；预算 620 ≤ 700 达标，段3 无可挑剔） */
+    private static final String SC3_ITINERARY_DRAFT = """
+            # 杭州2日行程草案（2026-10-25 ~ 10-26，1人，预算700元）
+
+            ## 第1天（10月25日 周日）
+            | 时间 | 行程 | 地点 | 费用 | 点间通勤 |
+            |---|---|---|---|---|
+            | 09:00-11:30 | 西湖环湖（断桥→白堤→孤山） | 西湖 | 免费 | - |
+            | 11:30-13:00 | 午餐 | 湖滨 | 60元 | 步行 |
+            | 13:00-14:30 | 西湖天空之镜观景台打卡 | 天空之镜观景台 | 免费 | 步行 约15分钟 |
+            | 15:00-16:30 | 雷峰塔 | 雷峰塔 | 40元 | 步行 约10分钟 |
+            | 18:00 | 入住汉庭酒店（西湖店） | 上城区 | 180元/晚 | 公交 约10分钟 |
+
+            ## 第2天（10月26日 周一）
+            | 时间 | 行程 | 地点 | 费用 | 点间通勤 |
+            |---|---|---|---|---|
+            | 09:30-11:30 | 河坊街+南宋御街 | 河坊街 | 免费 | 公交 约20分钟 |
+            | 11:30-12:30 | 午餐后返程 | 河坊街 | 60元 | - |
+
+            ## 费用汇总（1人）
+            - 住宿: 180元
+            - 门票: 40元（雷峰塔）
+            - 餐饮: 180元
+            - 市内交通: 220元
+            - 总计: 620元（预算700元内，结余80元）
+
+            > 天气提示：两日晴，15~24℃，适合户外游览。
+            """;
+
+    private static final String SC3_INTAKE = """
+            # 需求收集结果（intake-agent 转交）
+
+            - 目的地: 杭州（市内游）
+            - 日期与天数: 2026-10-25 ~ 2026-10-26，共 2 天
+            - 同行人: 1 人
+            - 总预算: 700 元
+            - 住宿要求: 经济型酒店
+            - 偏好: 自然风光 + 打卡拍照
+            - 大交通: 无城际大交通需求
+            - 状态: CONFIRMED
+            """;
+
+    /** 场景3 首审裁决：段1 fail（虚构 POI 无检索记录；格式复刻 ReviewerAgent 第七节契约） */
+    private static final String SC3_VERDICT_FIRST = """
+            # 质检报告：不通过
+
+            - 总分: 66/100（通过线 80）
+            - 失败段: 1（POI 有效性：「西湖天空之镜观景台」在景点检索与地图核验中均无记录，疑似虚构地点，不得编入行程）
+
+            ## 分段结论
+
+            | 段 | 审核项 | 结论 | 问题 |
+            |---|---|---|---|
+            | 1 | POI 有效性 | fail | 「西湖天空之镜观景台」searchPois 检索与 geocode 核验均无真实记录，疑为用户口耳相传的虚构打卡点 |
+            | 2 | 路线连贯性+时间密度 | pass | 环湖小簇串联，各段通勤 10~20 分钟，时间衔接连贯 |
+            | 3 | 预算+偏好匹配 | pass | 总计 620 元在预算 700 元内；打卡偏好已覆盖 |
+
+            | 维度 | 得分 | 主要扣分项 |
+            |---|---|---|
+            | 完备性 | 14 | - |
+            | 可行性 | 13 | - |
+            | 时间冲突 | 14 | - |
+            | 费用预算 | 13 | - |
+            | POI 合理性 | 12 | 含疑似虚构 POI |
+
+            - 核验记录: searchPois(杭州, 天空之镜) 无结果；geocode(西湖天空之镜观景台) 返回泛化坐标，非真实 POI 落点
+
+            ## 改进建议（给 planning-agent 的回炉指令）
+            按失败段组织，每条标注对应段号，具体到改哪一天、哪一项：
+            1. [段1] 从 POI 候选中剔除「西湖天空之镜观景台」，重跑 poi-research 补充真实景点（如花港观鱼/曲院风荷/太子湾公园），并同步修订第1天排期与路线（路线沿用既有候选即可，无需重跑排线）
+
+            REVIEW_RESULT: FAIL 总分=66 失败段=1
+            """;
+
+    /** 场景3 重审裁决：通过 */
+    private static final String SC3_VERDICT_RECHECK = """
+            # 质检通过
+
+            - 总分: 88/100（通过线 80，单维最低线 12，三段全 pass）
+
+            ## 分段结论
+
+            | 段 | 审核项 | 结论 |
+            |---|---|---|
+            | 1 | POI 有效性 | pass |
+            | 2 | 路线连贯性+时间密度 | pass |
+            | 3 | 预算+偏好匹配 | pass |
+
+            - 核验声明: 虚构 POI 已剔除，替换为真实景点，排期与路线一致
+            - 一句话总评: 回炉后 POI 全部真实有效，预算达标
+
+            REVIEW_RESULT: PASS 总分=88
             """;
 
     /** 质检结果回放桩（reviewer-agent）：不做审核判断，按送审次数回放预设裁决（首审/重审双文件二选一） */
@@ -491,6 +622,60 @@ class PlannerSegmentReworkRealApiTest {
             System.out.println("[PLANNER-TEST] 终态: review_passed.md 存在="
                     + Files.exists(r.taskDir().resolve("review_passed.md"))
                     + "，最终回复见上方打印");
+        } finally {
+            deleteRecursivelyBestEffort(workspaceRoot);
+        }
+    }
+
+    @Test
+    @DisplayName("场景3 段1 fail（虚构POI混入）→ 回炉只重跑 poi-research，route-optimizer 不被 spawn，路线走缓存")
+    void segment1FailRoutesOnlyPoiResearch() throws Exception {
+        Path workspaceRoot = Files.createTempDirectory("planner-rework-sc3-");
+        try {
+            RunOutcome r = runPlanner(workspaceRoot, "conv-9103",
+                    Map.of(
+                            "task_backlog.md", TASK_BACKLOG,
+                            "intake_done.md", SC3_INTAKE,
+                            "poi_shortlist.md", SC3_POI_SHORTLIST,
+                            "route_plan.md", SC3_ROUTE_PLAN,
+                            "itinerary_draft.md", SC3_ITINERARY_DRAFT,
+                            "scripted_verdict_first.md", SC3_VERDICT_FIRST,
+                            "scripted_verdict_recheck.md", SC3_VERDICT_RECHECK),
+                    Map.of(
+                            TaskType.WEATHER, WEATHER_CACHE,
+                            TaskType.HOTEL, SC1_HOTEL_CACHE,
+                            TaskType.POI, SC3_POI_SHORTLIST,
+                            TaskType.ROUTE, SC3_ROUTE_PLAN));
+            List<SpawnCall> spawns = r.spawns();
+            long poiSpawns = count(spawns, PoiResearchAgent.AGENT_NAME);
+            long routeSpawns = count(spawns, RouteOptimizerAgent.AGENT_NAME);
+            long reviewerSpawns = count(spawns, ReviewerAgent.AGENT_NAME);
+
+            assertTrue(reviewerSpawns >= 2,
+                    "应至少两次送审（首审 + 回炉重审）。实际 spawn 序列: " + spawns);
+            long firstReviewAt = spawns.stream()
+                    .filter(s -> s.agentId().equals(ReviewerAgent.AGENT_NAME))
+                    .mapToLong(SpawnCall::at).min().orElseThrow();
+            assertTrue(poiSpawns >= 1,
+                    "段1 fail 回炉应重新 spawn poi-research（POI 池即失败结果，不得走缓存）。实际 spawn 序列: " + spawns);
+            assertTrue(spawns.stream()
+                            .filter(s -> s.agentId().equals(PoiResearchAgent.AGENT_NAME))
+                            .allMatch(s -> s.at() >= firstReviewAt),
+                    "poi-research 只应在回炉阶段重跑（首轮 POI 已有缓存/产物，不 spawn）。"
+                            + "实际 spawn 序列: " + spawns);
+            assertEquals(0, routeSpawns,
+                    "段1 fail 回炉不得 spawn route-optimizer（路线沿用既有候选，不重跑排线）。实际 spawn 序列: " + spawns);
+            assertTrue(r.cacheHits().stream()
+                            .anyMatch(h -> "route".equals(h.type()) && h.at() >= firstReviewAt),
+                    "段1 回炉重组装应复用路线缓存（cache_hit=route）。实际 cache_hit 日志: " + r.cacheHits());
+            String draftAfter = Files.readString(r.taskDir().resolve("itinerary_draft.md"),
+                    StandardCharsets.UTF_8);
+            assertNotEquals(SC3_ITINERARY_DRAFT, draftAfter,
+                    "planner 应重组装 itinerary_draft.md（剔除虚构 POI、替换为真实景点）");
+            // 软观测（非验收硬条件）：终态
+            System.out.println("[PLANNER-TEST] 终态: review_passed.md 存在="
+                    + Files.exists(r.taskDir().resolve("review_passed.md"))
+                    + "，修订后草案见上方打印");
         } finally {
             deleteRecursivelyBestEffort(workspaceRoot);
         }

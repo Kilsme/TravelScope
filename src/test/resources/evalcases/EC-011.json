@@ -1,0 +1,15 @@
+{
+  "caseId": "EC-011",
+  "category": "REWORK_RECOVERY",
+  "userMessages": [
+    "周末去杭州玩2天，听说「西湖天空之镜观景台」拍照特别出片，第一天上午务必安排去这里",
+    "住宿在西湖湖滨附近，其他景点你来推荐真实的经典去处"
+  ],
+  "expectations": {
+    "rules": [
+      {"type": "FIELD_COMPLETE", "desc": "纠错回炉后仍需产出2天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},
+      {"type": "REWORK_OCCURRED", "desc": "虚构POI「西湖天空之镜观景台」大概率触发段1(POI有效性)审核fail→回炉poi-research→恢复；review_report.md与review_passed.md应同时存在（reviewer一次通过则单向跳过，不误报）"}
+    ],
+    "rubric": {"minTotal": 80}
+  }
+}

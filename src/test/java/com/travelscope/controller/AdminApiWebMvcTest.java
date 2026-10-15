@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -82,6 +83,10 @@ class AdminApiWebMvcTest {
     // AdminController 的过载降级状态查询依赖（2026-09-23 并发改造新增）
     @MockBean
     private com.travelscope.service.LoadShedService loadShedService;
+
+    // AdminController 的评测看板依赖（2026-10-14 P2-M 新增）
+    @MockBean
+    private com.travelscope.service.EvaluationRecordService evaluationRecordService;
 
     private static User adminUser() {
         User u = new User();
@@ -226,5 +231,58 @@ class AdminApiWebMvcTest {
         mockMvc.perform(post("/admin/invitation-codes")
                         .header("Authorization", "Bearer user-token"))
                 .andExpect(status().isForbidden());
+    }
+
+    // ==================== 评测看板（2026-10-14 P2-M） ====================
+
+    @Test
+    @DisplayName("评测汇总：admin → 200 返回聚合；非 admin → 403；无 token → 401")
+    void testEvaluationSummary() throws Exception {
+        when(authService.resolveUser("admin-token")).thenReturn(Optional.of(adminUser()));
+        when(evaluationRecordService.summary()).thenReturn(new com.travelscope.dto.EvaluationSummaryVO(
+                14, 12, 85.7, 2,
+                java.util.List.of(new com.travelscope.dto.EvaluationSummaryVO.Group("MULTI_CITY", 4, 4, 100.0),
+                        new com.travelscope.dto.EvaluationSummaryVO.Group("未分类", 2, 1, 50.0)),
+                java.util.List.of(new com.travelscope.dto.EvaluationSummaryVO.Group("EC-001", 3, 3, 100.0))));
+
+        mockMvc.perform(get("/admin/evaluation/summary")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(14))
+                .andExpect(jsonPath("$.passRate").value(85.7))
+                .andExpect(jsonPath("$.byCategory[0].key").value("MULTI_CITY"))
+                .andExpect(jsonPath("$.byCase[0].key").value("EC-001"));
+
+        when(authService.resolveUser("user-token")).thenReturn(Optional.of(normalUser()));
+        mockMvc.perform(get("/admin/evaluation/summary")
+                        .header("Authorization", "Bearer user-token"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(get("/admin/evaluation/summary"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    @DisplayName("评测记录：admin 带过滤参数 → 200 透传查询；badCaseOnly=true 只看坏例")
+    void testEvaluationRecords() throws Exception {
+        when(authService.resolveUser("admin-token")).thenReturn(Optional.of(adminUser()));
+        com.travelscope.dto.EvaluationRecordVO vo = new com.travelscope.dto.EvaluationRecordVO(
+                7L, "trace-x", "EC-011", "REWORK_RECOVERY", "[{}]", "{}",
+                new java.math.BigDecimal("83.33"), true, java.time.LocalDateTime.now());
+        when(evaluationRecordService.records(eq("EC-011"), eq("REWORK_RECOVERY"), eq(true), eq(50)))
+                .thenReturn(java.util.List.of(vo));
+
+        mockMvc.perform(get("/admin/evaluation/records")
+                        .param("caseId", "EC-011")
+                        .param("category", "REWORK_RECOVERY")
+                        .param("badCaseOnly", "true")
+                        .header("Authorization", "Bearer admin-token"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].caseId").value("EC-011"))
+                .andExpect(jsonPath("$[0].category").value("REWORK_RECOVERY"))
+                .andExpect(jsonPath("$[0].isBadCase").value(true));
+
+        org.mockito.Mockito.verify(evaluationRecordService)
+                .records("EC-011", "REWORK_RECOVERY", true, 50);
     }
 }

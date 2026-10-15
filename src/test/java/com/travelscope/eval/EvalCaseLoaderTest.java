@@ -20,7 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * EvalCaseLoader 单元测试（FR-S15 验收：加载 10 条用例、字段校验通过）
+ * EvalCaseLoader 单元测试（FR-S15 验收：加载用例库、字段校验通过；
+ * 2026-10-14 P2-M 扩充至 14 条：10 条基础场景 + EC-011/012 回炉恢复 + EC-013/014 预算边缘）
  */
 class EvalCaseLoaderTest {
 
@@ -30,15 +31,15 @@ class EvalCaseLoaderTest {
             "{\"rules\": [{\"type\": \"TOOL_ORDER\", \"desc\": \"先 POI 后路线后组装\"}], \"rubric\": {\"minTotal\": 80}}";
 
     @Test
-    @DisplayName("加载全部用例：10 条、编号 EC-001..EC-010 有序且唯一")
+    @DisplayName("加载全部用例：14 条、编号 EC-001..EC-014 有序且唯一")
     void loadAllReturnsTenCasesInOrder() {
         List<EvalCase> cases = EvalCaseLoader.loadAll();
-        assertEquals(10, cases.size(), "用例总数应为 10");
+        assertEquals(14, cases.size(), "用例总数应为 14（10 基础 + 2 回炉恢复 + 2 预算边缘，P2-M 扩充）");
         for (int i = 0; i < cases.size(); i++) {
             String expected = "EC-" + String.format("%03d", i + 1);
             assertEquals(expected, cases.get(i).caseId(), "第 " + (i + 1) + " 条用例编号应为 " + expected);
         }
-        assertEquals(10, cases.stream().map(EvalCase::caseId).distinct().count(), "caseId 不得重复");
+        assertEquals(14, cases.stream().map(EvalCase::caseId).distinct().count(), "caseId 不得重复");
     }
 
     @Test
@@ -75,18 +76,26 @@ class EvalCaseLoaderTest {
     }
 
     @Test
-    @DisplayName("5 类场景每类恰好 2 条")
-    void coversAllCategoriesWithTwoCasesEach() {
+    @DisplayName("类别覆盖：基础五类各 2 条 + STRICT_BUDGET 4 条（含 2 条预算边缘）+ REWORK_RECOVERY 2 条")
+    void coversAllCategoriesWithExpectedCounts() {
         Map<EvalCategory, Long> counts = EvalCaseLoader.loadAll().stream()
                 .collect(Collectors.groupingBy(EvalCase::category, Collectors.counting()));
+        Map<EvalCategory, Long> expected = Map.of(
+                EvalCategory.MULTI_CITY, 2L,
+                EvalCategory.FAMILY, 2L,
+                EvalCategory.STRICT_BUDGET, 4L,
+                EvalCategory.POI_NOT_EXIST, 2L,
+                EvalCategory.ROUTE_TOO_DENSE, 2L,
+                EvalCategory.REWORK_RECOVERY, 2L);
+        assertEquals(expected.size(), EvalCategory.values().length, "期望表应覆盖全部枚举取值");
         for (EvalCategory category : EvalCategory.values()) {
-            assertEquals(2L, counts.getOrDefault(category, 0L),
-                    category + " 应恰好 2 条，实际: " + counts.get(category));
+            assertEquals(expected.get(category), counts.getOrDefault(category, 0L),
+                    category + " 条数不符，实际: " + counts.get(category));
         }
     }
 
     @Test
-    @DisplayName("规则按类别配置：POI_NOT_EXIST 配 NO_HALLUCINATION、STRICT_BUDGET 配 CONSTRAINT_COVERED、ROUTE_TOO_DENSE 配 TIME_CONFLICT_HANDLED")
+    @DisplayName("规则按类别配置：POI_NOT_EXIST 配 NO_HALLUCINATION、STRICT_BUDGET 配 CONSTRAINT_COVERED、ROUTE_TOO_DENSE 配 TIME_CONFLICT_HANDLED、REWORK_RECOVERY 配 REWORK_OCCURRED")
     void assignsRulesByCategory() {
         for (EvalCase evalCase : EvalCaseLoader.loadAll()) {
             List<RuleType> types = evalCase.expectations().rules().stream()
@@ -99,6 +108,9 @@ class EvalCaseLoaderTest {
                         context + " 应包含 CONSTRAINT_COVERED");
                 case ROUTE_TOO_DENSE -> assertTrue(types.contains(RuleType.TIME_CONFLICT_HANDLED),
                         context + " 应包含 TIME_CONFLICT_HANDLED");
+                case REWORK_RECOVERY -> assertTrue(
+                        types.contains(RuleType.REWORK_OCCURRED) && types.contains(RuleType.FIELD_COMPLETE),
+                        context + " 应包含 REWORK_OCCURRED 与 FIELD_COMPLETE");
                 default -> assertTrue(types.contains(RuleType.FIELD_COMPLETE) && types.contains(RuleType.TOOL_ORDER),
                         context + " 应包含 FIELD_COMPLETE 与 TOOL_ORDER");
             }

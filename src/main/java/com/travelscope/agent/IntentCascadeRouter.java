@@ -1,6 +1,6 @@
 package com.travelscope.agent;
 
-import com.travelscope.common.TracingHelper;
+import com.travelscope.common.trace.TraceNode;
 import com.travelscope.config.AppProperties;
 import com.travelscope.config.AppProperties.IntentCascadeConfig;
 import com.travelscope.config.AppProperties.L1Rule;
@@ -12,7 +12,6 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -69,21 +68,13 @@ public class IntentCascadeRouter {
     private final LlmClassifier l2;
     private final LlmClassifier l3;
     private final List<CompiledRule> compiledRules;
-    /** 业务链路打点（intent-cascade span，2026-10-02） */
-    private final TracingHelper tracing;
 
     public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
                                LlmClassifier l2, LlmClassifier l3) {
-        this(appProperties, cache, l2, l3, TracingHelper.NOOP);
-    }
-
-    public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
-                               LlmClassifier l2, LlmClassifier l3, TracingHelper tracing) {
         this.config = appProperties.getIntentCascade();
         this.cache = cache;
         this.l2 = l2;
         this.l3 = l3;
-        this.tracing = tracing;
         this.compiledRules = compileRules(config.getL1Rules());
         log.info("意图级联初始化: enabled={}, L1 规则 {} 条（{}）, L0={}, L2={} (model={}), L2 缓存={}",
                 config.isEnabled(), compiledRules.size(),
@@ -99,10 +90,20 @@ public class IntentCascadeRouter {
      * 仅送 L2/L3 语义层——L0/L1 是确定性快速层不消费上下文；有上下文时旁路 L2 文本
      * 缓存（同文本在不同会话语境下正确意图可能不同，且上下文逐轮变化键必 miss）。
      * </p>
+     * <p>
+     * 埋点（2026-10-14 P2-J）：span 由 {@link TraceNode} 注解切面开启（每调用一次
+     * duration span，属性在返回后求值——MISS 时 intent 记 'MISS'）；层命中/耗时统计
+     * 仍以 cascade_hit/cascade_miss 日志为锚点。
+     * </p>
      *
      * @param contextBlock 对话上下文块（ChatService 从 messages 表 + 记忆摘要构建；null/空白 = 无上下文）
      * @return 分类结果；全层失败返回 null（ChatService 保持既有容错：主 Agent 自主路由）
      */
+    @TraceNode(name = "intent-cascade", attrs = {
+            "intent=#result != null ? #result.intent : 'MISS'",
+            "reason=#result != null ? #result.reason : ''",
+            "latencyMs=#latencyMs"
+    })
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
         if (!config.isEnabled()) {
             return viaL3(userMessage, contextBlock, userId, sessionId, System.nanoTime());
@@ -182,8 +183,6 @@ public class IntentCascadeRouter {
             long ms = elapsedMs(start);
             log.info("cascade_miss latency={}ms userId={} sessionId={}（全层未命中，主 Agent 自主路由）",
                     ms, userId, sessionId);
-            // 业务打点（intent-cascade）：与 cascade_miss 埋点同锚点
-            tracing.recordSpan("intent-cascade", Map.of("layer", "MISS", "latencyMs", String.valueOf(ms)));
         }
         return result;
     }
@@ -257,13 +256,12 @@ public class IntentCascadeRouter {
 
     /**
      * 埋点日志（FR-S12 基础）：层命中 + 端到端延迟 + 意图
+     * （span 由 classify 上的 {@link TraceNode} 注解负责，这里只管统计日志）
      */
     private void logHit(String layer, long start, String userId, String sessionId, IntentResult result) {
         long latencyMs = elapsedMs(start);
         log.info("cascade_hit={} latency={}ms intent={} userId={} sessionId={}",
                 layer, latencyMs, result.intent, userId, sessionId);
-        // 业务打点（intent-cascade，2026-10-02）：与 cascade_hit 埋点同锚点同取值（layer/latencyMs）
-        tracing.recordSpan("intent-cascade", Map.of("layer", layer, "latencyMs", String.valueOf(latencyMs)));
     }
 
     private static long elapsedMs(long startNanos) {

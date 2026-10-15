@@ -250,6 +250,8 @@ class EvalCaseRunnerTest {
             EvaluationRecord record = new EvaluationRecord();
             record.setTraceId(traceId);
             record.setCaseId(evalCase.caseId());
+            // 2026-10-14 P2-M：带类别落库（看板按 category 聚合；存量历史行为 NULL 归「未分类」）
+            record.setCategory(evalCase.category().name());
             record.setRuleResults(ruleResultsJson(ruleResults));
             record.setRubricScores(rubricScoresJson(rubric));
             record.setTotalScore(rubric != null ? BigDecimal.valueOf(rubric.normalizedTotal()) : null);

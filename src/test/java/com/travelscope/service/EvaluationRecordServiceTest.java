@@ -97,6 +97,68 @@ class EvaluationRecordServiceTest {
         verifyNoInteractions(repo);
     }
 
+    // ==================== 评测看板（2026-10-14 P2-M） ====================
+
+    @Test
+    @DisplayName("summary：总数/通过率/坏例数 + 两聚合；category NULL 归「未分类」")
+    void summary_aggregatesWithUncategorizedBucket() {
+        EvaluationRecordRepository repo = mock(EvaluationRecordRepository.class);
+        when(repo.count()).thenReturn(5L);
+        when(repo.countByIsBadCaseTrue()).thenReturn(1L);
+        when(repo.summarizeByCategory()).thenReturn(java.util.List.of(
+                new Object[]{"MULTI_CITY", 3L, 3L},
+                new Object[]{null, 2L, 1L}));        // 存量行（补列前落库）归「未分类」
+        when(repo.summarizeByCase()).thenReturn(java.util.List.of(
+                new Object[]{"EC-001", 3L, 3L},
+                new Object[]{"EC-002", 2L, 1L}));
+
+        com.travelscope.dto.EvaluationSummaryVO s = new EvaluationRecordService(repo).summary();
+
+        assertEquals(5L, s.total());
+        assertEquals(4L, s.passed());
+        assertEquals(80.0, s.passRate());
+        assertEquals(1L, s.badCases());
+        assertEquals(2, s.byCategory().size());
+        assertEquals("MULTI_CITY", s.byCategory().get(0).key());
+        assertEquals(100.0, s.byCategory().get(0).passRate());
+        assertEquals("未分类", s.byCategory().get(1).key());
+        assertEquals(50.0, s.byCategory().get(1).passRate());
+        assertEquals("EC-002", s.byCase().get(1).key());
+        assertEquals(50.0, s.byCase().get(1).passRate());
+    }
+
+    @Test
+    @DisplayName("summary：空库时通过率 0 不除零")
+    void summary_emptyTableNoDivideByZero() {
+        EvaluationRecordRepository repo = mock(EvaluationRecordRepository.class);
+        when(repo.count()).thenReturn(0L);
+        when(repo.countByIsBadCaseTrue()).thenReturn(0L);
+        when(repo.summarizeByCategory()).thenReturn(java.util.List.of());
+        when(repo.summarizeByCase()).thenReturn(java.util.List.of());
+
+        com.travelscope.dto.EvaluationSummaryVO s = new EvaluationRecordService(repo).summary();
+
+        assertEquals(0.0, s.passRate());
+        assertTrue(s.byCategory().isEmpty());
+    }
+
+    @Test
+    @DisplayName("records：过滤参数空白归 null 透传，limit≤0 不触库")
+    void records_filterNormalizationAndLimitGuard() {
+        EvaluationRecordRepository repo = mock(EvaluationRecordRepository.class);
+        EvaluationRecordService service = new EvaluationRecordService(repo);
+
+        assertTrue(service.records("  ", "", false, 0).isEmpty());
+        verifyNoInteractions(repo);
+
+        when(repo.findByFilters(any(), any(), org.mockito.ArgumentMatchers.eq(true),
+                any(Pageable.class))).thenReturn(java.util.List.of());
+        service.records("  ", "", true, 10);
+        verify(repo).findByFilters(org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.eq(true), any(Pageable.class));
+    }
+
     // ==================== 真库 save→query 往返（端口探测门控） ====================
 
     static boolean pgReachable() {
@@ -114,6 +176,7 @@ class EvaluationRecordServiceTest {
                 id              BIGSERIAL PRIMARY KEY,
                 trace_id        VARCHAR(64),
                 case_id         VARCHAR(64),
+                category        VARCHAR(32),
                 rule_results    JSONB,
                 rubric_scores   JSONB,
                 total_score     NUMERIC(5,2),
@@ -156,6 +219,7 @@ class EvaluationRecordServiceTest {
                 EvaluationRecord record = new EvaluationRecord();
                 record.setTraceId(traceId);
                 record.setCaseId(null);   // 线上真实对话评估场景
+                record.setCategory("REWORK_RECOVERY");   // 2026-10-14 P2-M 补列：类别往返
                 record.setRuleResults(ruleResults);
                 record.setRubricScores(rubricScores);
                 record.setTotalScore(new BigDecimal("82.50"));
@@ -175,6 +239,7 @@ class EvaluationRecordServiceTest {
                 EvaluationRecord back = found.get(0);
                 assertEquals(traceId, back.getTraceId());
                 assertNull(back.getCaseId(), "线上场景 caseId 应保持 NULL");
+                assertEquals("REWORK_RECOVERY", back.getCategory(), "category 应往返（P2-M 补列）");
                 // JSONB 读取会规范化（对象键重排），按语义比较而非字符串
                 assertEquals(JSON.parse(ruleResults), JSON.parse(back.getRuleResults()),
                         "rule_results JSONB 应语义往返");

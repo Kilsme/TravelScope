@@ -1,5 +1,5 @@
 ## TravelScope - 智能旅游助手 Docker Compose
-## 拉取 Redis、MinIO、Elasticsearch（PostgreSQL 本地已有，不需要额外安装）
+## 拉取 PostgreSQL（pgvector）、Redis、MinIO、Elasticsearch、Jaeger
 ##
 ## 统一管理（2026-09-16）：
 ##   显式项目名 name: travelscope —— Docker Desktop 中本项目全部容器
@@ -16,6 +16,11 @@
 ##   docker-compose down -v
 ## 查看本项目全部容器：
 ##   docker compose -p travelscope ps
+##
+## 2026-10-15 变更：PostgreSQL 收编进 compose（pgvector/pgvector:pg16，
+## 本机 Windows 原生 PG 因子进程 0xC0000142 系统性崩溃不可用）——
+## 业务库与向量库合一（document_chunks 的 vector(1024) 依赖 pgvector 扩展），
+## 首次启动自动执行 /docker-entrypoint-initdb.d/ 下的 schema.sql 建表
 
 name: travelscope
 
@@ -25,6 +30,34 @@ networks:
     driver: bridge
 
 services:
+  # ======================== PostgreSQL + pgvector ========================
+  # 业务库 + 向量库合一（2026-10-15 收编）：pgvector/pgvector 镜像自带 pgvector 扩展，
+  # 本机 Windows 原生 PG 因子进程 0xC0000142 系统性崩溃不可用（见 docs/ 与记忆）
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: travelscope-postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # 首次启动（空数据目录）自动执行建表脚本；存量卷不重复执行
+      - ./src/main/resources/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: travelscope
+      # 时区与后端一致
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    networks:
+      - travelscope-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d travelscope"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # ======================== Redis ========================
   # 用于缓存、会话管理、AgentScope 分布式状态存储
   redis:
@@ -133,6 +166,7 @@ services:
       - travelscope-net
 
 volumes:
+  postgres-data:
   redis-data:
   minio-data:
   es-data:

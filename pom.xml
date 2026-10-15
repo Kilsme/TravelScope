@@ -78,6 +78,13 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!-- AOP（P2-J 埋点注解化：@TraceNode 注解 + @Aspect 切面统一 span 埋点；
+             spring-aop 已由 spring-data-redis 传递引入，此处补 aspectjweaver 与自动代理装配） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
         <!-- 链路追踪（Micrometer Tracing + OpenTelemetry）：Bridge 桥接 OTel Tracer，
              Trace 经 OTLP HTTP 导出到 Jaeger（docker-compose 的 travelscope-jaeger）；
              版本由 Spring Boot BOM 管理，不手写版本号 -->
@@ -274,6 +281,9 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <configuration>
+                    <!-- -parameters：保留方法参数名（P2-J @TraceNode 的 SpEL 按参数名绑定 #query 等；
+                         顺带让 @PathVariable/@RequestParam 按名解析免显式声明） -->
+                    <parameters>true</parameters>
                     <source>${java.version}</source>
                     <target>${java.version}</target>
                     <annotationProcessorPaths>

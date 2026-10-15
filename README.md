@@ -1,3 +1,5 @@
+> ⚠️ **v4 重构中**：本项目正在进行大规模架构重构（六 Agent → 三 Agent、JSON 契约通信、路线计算代码化）。本文档描述的是 v3 现状，即将重写；权威方案见 [docs/TravelScope重构计划-v4.md](docs/TravelScope重构计划-v4.md)。
+
 <div align="center">
 
 # 🧭 TravelScope

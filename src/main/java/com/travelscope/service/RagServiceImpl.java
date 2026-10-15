@@ -1,5 +1,6 @@
 package com.travelscope.service;
 
+import com.travelscope.common.trace.TraceNode;
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
 import io.agentscope.core.embedding.dashscope.DashScopeTextEmbedding;
@@ -140,7 +141,16 @@ public class RagServiceImpl implements RagService {
 
     /**
      * 通用检索（ChatService RAG 分支用）：双路 RRF 融合后返回片段文本列表
+     * <p>span 由 {@link TraceNode} 注解切面开启（2026-10-14 P2-J，rag-retrieve）；
+     * 注意 self-invocation——内部调用 {@link #dualRetrieveWithSource} 不经代理、注解不触发，
+     * 恰好避免与外层嵌套双 span。</p>
      */
+    @TraceNode(name = "rag-retrieve", attrs = {
+            "query=#question",
+            "topK=#topK",
+            "fragments=#result != null ? #result.size() : 0",
+            "latencyMs=#latencyMs"
+    })
     @Override
     public List<String> retrieve(String question, int topK) {
         return dualRetrieveWithSource(question, topK).stream()
@@ -236,7 +246,21 @@ public class RagServiceImpl implements RagService {
 
     /**
      * 双路检索 + RRF 融合（带门控结果包装，poi-research 的 search_pois_with_rag 工具入口用）
+     * <p>
+     * span 由 {@link TraceNode} 注解切面开启（2026-10-14 P2-J）：rag-retrieve，属性在返回后
+     * 求值（片段数/丢弃数/全灭标记/耗时）。本类实现 RagService 接口经 JDK 代理装配，工具类
+     * 持接口引用调用时注解生效；调用线程上无 trace 上下文则如实成根（AgentScope 框架线程
+     * 丢上下文的既有事实，不影响正确性）。
+     * </p>
      */
+    @TraceNode(name = "rag-retrieve", attrs = {
+            "query=#query",
+            "topK=#contextTopK",
+            "fragments=#result != null ? #result.fragments.size() : 0",
+            "dropped=#result != null ? #result.dropped : 0",
+            "gateEmpty=#result != null ? #result.gateEmpty : false",
+            "latencyMs=#latencyMs"
+    })
     public GatedResult dualRetrieveGated(String query, int contextTopK) {
         return dualRetrieveInternal(query, contextTopK);
     }
@@ -247,7 +271,9 @@ public class RagServiceImpl implements RagService {
     }
 
     /**
-     * 双路检索 + RRF 融合（对外兼容签名，ChatService RAG 分支等用；内部经证据门控）
+     * 双路检索 + RRF 融合（对外兼容签名；内部经证据门控）。
+     * 不挂 {@link TraceNode}：当前仅 {@link #retrieve} 内部调用（self-invocation 注解不触发），
+     * 外部检索入口已由 retrieve/{@link #dualRetrieveGated} 两个注解锚点覆盖。
      *
      * @return 过门控后的融合排序片段（带来源标记 RAG / ES / RAG+ES）
      */

@@ -30,8 +30,25 @@ import java.util.function.Supplier;
  *       子 span（intent-cascade / model-call / task-* / review-attempt）才能挂到同一父链</li>
  * </ul>
  * span 一览（父子关系：chat-turn 为一轮对话的根）：
- * chat-turn（ChatService）→ intent-cascade（IntentCascadeRouter）/ task-backlog（TaskTools）/
- * task-cache（PoiRagTools）/ model-call（LlmGatewayModel）/ review-attempt（ReviewerRetryMiddleware）
+ * chat-turn（ChatService）→ intent-cascade（IntentCascadeRouter）/ rag-retrieve（RagServiceImpl）/
+ * task-backlog（TaskTools）/ task-cache（PoiRagTools）/ model-call（LlmGatewayModel）/
+ * review-attempt（ReviewerRetryMiddleware）
+ * </p>
+ * <p>
+ * <b>埋点方式选择（2026-10-14 P2-J 埋点注解化的分工边界）</b>：
+ * <ul>
+ *   <li><b>{@code @TraceNode} 注解</b>（common/trace 包）——Bean 可达且生命周期简单的锚点：
+ *       intent-cascade（IntentCascadeRouter.classify）、rag-retrieve（RagServiceImpl.retrieve /
+ *       dualRetrieveGated）。sync 方法调用前开 span、返回/异常收尾；Flux/Mono 订阅时开启、
+ *       doFinally 收尾；属性 SpEL 支持 #参数名/#result/#latencyMs。新增 Bean 级锚点优先用它</li>
+ *   <li><b>本类手工埋点</b>——三类生命周期复杂或代理够不到的锚点继续保留：
+ *       ① chat-turn（会话级 beginTurn 登记 + 中途 intent 补标 + doFinally 异步结束，
+ *       声明式注解表达不了）；② model-call（首包闸门/粘滞 fallback 的中途 outcome 三态
+ *       打标发生在 Flux.defer 内部）；③ task-backlog / task-cache / review-attempt
+ *       （AgentConfig 里 new 出来交 AgentScope 框架反射回调，不是 Spring Bean，
+ *       AOP 代理够不到——这正是 ragent @RagTraceNode 文档自曝的 self-call 坑的本项目对应物；
+ *       强行 Bean 化 + CGLIB 代理注册进 Toolkit 属框架手术，成本远超收益）</li>
+ * </ul>
  * </p>
  */
 @Component
