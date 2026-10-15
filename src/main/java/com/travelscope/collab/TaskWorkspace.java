@@ -203,25 +203,6 @@ public class TaskWorkspace {
         return readJson(userId, sessionId, FILE_REVIEW_PASSED, "review_passed.md", ReviewPassed.class);
     }
 
-    // ==================== 过渡方法（S0.6 删除） ====================
-
-    /**
-     * @deprecated 过渡：TaskRegistry 旧 MD 落盘通道（v3 格式不过契约校验），
-     * S0.6 TaskRegistry 切 DTO 后删除。
-     */
-    @Deprecated
-    public Path writeTaskBacklogLegacy(String userId, String sessionId, String mdContent) {
-        Path dir = getTaskDir(userId, sessionId);
-        try {
-            Files.createDirectories(dir);
-            Path file = dir.resolve("task_backlog.md");
-            Files.writeString(file, mdContent, StandardCharsets.UTF_8);
-            return file;
-        } catch (IOException e) {
-            throw new UncheckedIOException("写入旧版任务清单失败: " + dir, e);
-        }
-    }
-
     // ==================== 内部 ====================
 
     /**

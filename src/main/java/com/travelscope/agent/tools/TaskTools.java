@@ -45,11 +45,11 @@ public class TaskTools {
     }
 
     /**
-     * 登记任务清单：主 Agent 把拆分结果写入任务容器（MD 文件 + 内存队列）
+     * 登记任务清单：主 Agent 把拆分结果写入任务容器（task_backlog.json 契约文件 + 内存队列）
      *
      * @param ctx Toolkit 自动注入的运行时上下文（取 userId，勿加 @ToolParam 注解）
      */
-    @Tool(description = "登记行程规划任务清单到任务容器（写入 task_backlog.md 并注册内存队列）。"
+    @Tool(description = "登记行程规划任务清单到任务容器（写入 task_backlog.json 并注册内存队列）。"
             + "委派 planning-agent 之前必须先调用本工具；tasksJson 为 JSON 数组，"
             + "每项形如 {\"taskId\":\"T1\",\"description\":\"查询目的地天气预报\",\"suggestedTool\":\"weather-query\",\"priority\":\"P0\"}。"
             + "清单必须四维覆盖：交通(train/flight-ticket-query)、住宿(hotel-search)、"

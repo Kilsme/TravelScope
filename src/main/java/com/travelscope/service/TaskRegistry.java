@@ -3,15 +3,15 @@ package com.travelscope.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.travelscope.collab.TaskBacklog;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.dto.PlanningTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -27,8 +27,8 @@ import java.util.stream.Collectors;
  * 不同用户、同一用户的不同会话互相隔离。容器内含双份数据：
  * <ul>
  *   <li><b>内存任务队列</b>：{@code List<TaskRecord>}（带状态），供进度查询与状态更新</li>
- *   <li><b>MD 文件</b>：{@code {workspace}/{userId}/tasks/{sessionId}/task_backlog.md}，
- *       与 Agent 工作区的相对路径 {@code tasks/{sessionId}/task_backlog.md} 对齐，
+ *   <li><b>JSON 契约文件</b>（S0.6 起）：{@code {workspace}/{userId}/tasks/{sessionId}/task_backlog.json}，
+ *       与 Agent 工作区的相对路径 {@code tasks/{sessionId}/task_backlog.json} 对齐，
  *       子 Agent 通过 read_file 按路径读取主 Agent 下发的任务</li>
  * </ul>
  * 主 Agent 通过 {@code get_task_progress} 工具查询未完成任务数，子 Agent 通过
@@ -93,13 +93,15 @@ public class TaskRegistry {
                     + "请补齐缺失维度的任务后重新调用 create_task_backlog（本次登记未生效）。"
                     + dimensionHints(missingDimensions);
         }
-        String md = renderBacklogMd(sessionId, parsed);
-        // 过渡（S0.5）：旧 MD 落盘通道，S0.6 本类存储切 DTO 后删
-        Path file = taskWorkspaceService.writeTaskBacklogLegacy(userId, sessionId, md);
-        SessionTaskContainer container = new SessionTaskContainer(userId, sessionId, file, parsed);
+        // S0.6：落盘改 JSON 契约（TaskBacklog DTO 经 TaskWorkspace 类型化写入，Schema 校验 + 原子落盘）
+        List<TaskBacklog.TaskItem> items = parsed.stream()
+                .map(t -> new TaskBacklog.TaskItem(t.taskId, t.description, t.suggestedTool,
+                        t.priority == null ? "P1" : t.priority, STATUS_PENDING, now()))
+                .toList();
+        taskWorkspaceService.writeTaskBacklog(userId, sessionId, new TaskBacklog(sessionId, items));
+        SessionTaskContainer container = new SessionTaskContainer(userId, sessionId, parsed);
         containers.put(containerKey(userId, sessionId), container);
-        log.info("任务清单已登记: {} 项任务, 四维校验通过, 用户={}, 会话={}, 文件={}",
-                parsed.size(), userId, sessionId, file);
+        log.info("任务清单已登记: {} 项任务, 四维校验通过, 用户={}, 会话={}", parsed.size(), userId, sessionId);
         return "任务清单已登记：共 " + parsed.size() + " 项任务（"
                 + parsed.stream().map(t -> nz(t.taskId)).collect(Collectors.joining("、"))
                 + "），已写入 " + taskWorkspaceService.backlogRelativePath(sessionId)
@@ -155,14 +157,36 @@ public class TaskRegistry {
     }
 
     /**
-     * 更新任务状态（update_task_status 工具的实现，供子 Agent 逐项回报）
+     * 更新任务状态（update_task_status 工具的实现，供子 Agent 逐项回报）。
+     * 内存更新成功后同步重写 task_backlog.json（保持磁盘容器与内存一致，S0.6）。
      */
     public String updateStatus(String userId, String sessionId, String taskId, String status) {
         SessionTaskContainer c = containers.get(containerKey(userId, sessionId));
         if (c == null) {
             return "ERROR: 会话 " + sessionId + " 尚未登记任务清单";
         }
-        return c.updateStatus(taskId, status);
+        String result = c.updateStatus(taskId, status);
+        if (!result.startsWith("ERROR")) {
+            persistBacklog(userId, sessionId, c);
+        }
+        return result;
+    }
+
+    /** 内存容器快照 → TaskBacklog DTO 重写落盘（状态变更同步；失败只告警不阻断） */
+    private void persistBacklog(String userId, String sessionId, SessionTaskContainer c) {
+        try {
+            List<TaskBacklog.TaskItem> items = c.snapshot().stream()
+                    .map(r -> new TaskBacklog.TaskItem(r.task.taskId, r.task.description,
+                            r.task.suggestedTool, r.task.priority, r.status.get(), now()))
+                    .toList();
+            taskWorkspaceService.writeTaskBacklog(userId, sessionId, new TaskBacklog(sessionId, items));
+        } catch (Exception e) {
+            log.warn("任务状态写回 JSON 失败（不影响内存容器）: {}", e.getMessage());
+        }
+    }
+
+    private static String now() {
+        return LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
     /**
@@ -210,25 +234,6 @@ public class TaskRegistry {
         }
     }
 
-    private String renderBacklogMd(String sessionId, List<PlanningTask> tasks) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("# 任务清单\n\n")
-                .append("- 会话: ").append(sessionId).append('\n')
-                .append("- 状态: 待执行\n\n")
-                .append("| 任务ID | 描述 | 建议工具/技能 | 优先级 | 状态 |\n")
-                .append("|---|---|---|---|---|\n");
-        for (PlanningTask t : tasks) {
-            sb.append("| ").append(nz(t.taskId)).append(" | ")
-                    .append(nz(t.description)).append(" | ")
-                    .append(nz(t.suggestedTool)).append(" | ")
-                    .append(nz(t.priority)).append(" | ")
-                    .append(STATUS_PENDING).append(" |\n");
-        }
-        sb.append("\n> 本清单由主 Agent 通过 create_task_backlog 工具登记到任务容器，执行 Agent 按该文件内容执行，\n")
-                .append("> 并通过 update_task_status 工具逐项回报状态。\n");
-        return sb.toString();
-    }
-
     private static String nz(String s) {
         return s == null ? "" : s.replace('|', '/');
     }
@@ -250,13 +255,11 @@ public class TaskRegistry {
 
         private final String userId;
         private final String sessionId;
-        private final Path backlogFile;
         private final List<TaskRecord> tasks;
 
-        SessionTaskContainer(String userId, String sessionId, Path backlogFile, List<PlanningTask> parsed) {
+        SessionTaskContainer(String userId, String sessionId, List<PlanningTask> parsed) {
             this.userId = userId;
             this.sessionId = sessionId;
-            this.backlogFile = backlogFile;
             this.tasks = parsed.stream().map(TaskRecord::new).collect(Collectors.toUnmodifiableList());
         }
 
@@ -268,7 +271,6 @@ public class TaskRegistry {
             for (TaskRecord r : tasks) {
                 if (r.task.taskId != null && r.task.taskId.equalsIgnoreCase(taskId)) {
                     r.status.set(normalized);
-                    appendStatusToMd(r);
                     log.info("任务状态更新: 会话={}, 任务={}, 状态={}", sessionId, taskId, normalized);
                     return "已更新 " + taskId + " → " + normalized + "。" + progressSummary();
                 }
@@ -293,21 +295,6 @@ public class TaskRegistry {
 
         private long countByStatus(String status) {
             return tasks.stream().filter(r -> status.equals(r.status.get())).count();
-        }
-
-        /**
-         * 状态变更同步追加到 MD 文件（保持磁盘容器与内存一致）
-         */
-        private void appendStatusToMd(TaskRecord r) {
-            try {
-                String line = "\n- [" + java.time.LocalDateTime.now()
-                        .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-                        + "] " + nz(r.task.taskId) + " → " + r.status.get();
-                Files.writeString(backlogFile, line, StandardCharsets.UTF_8,
-                        java.nio.file.StandardOpenOption.APPEND);
-            } catch (Exception e) {
-                log.warn("任务状态写入 MD 失败（不影响内存容器）: {}", e.getMessage());
-            }
         }
 
         public List<TaskRecord> snapshot() {
