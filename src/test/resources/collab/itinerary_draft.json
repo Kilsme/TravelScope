@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 4,
+  "days": [
+    {"day": 1, "date": "2026-10-25", "theme": "西湖环线", "items": [
+      {"time": "08:00-09:00", "activity": "G7331 上海虹桥→杭州东", "location": "上海虹桥站", "cost": "73 元/人"},
+      {"time": "09:30-13:00", "activity": "环湖漫步（断桥-白堤-苏堤）", "location": "西湖风景名胜区", "cost": "免费"},
+      {"time": "14:00-16:00", "activity": "登雷峰塔观湖景", "location": "雷峰塔", "cost": "40 元/人"}
+    ]},
+    {"day": 2, "date": "2026-10-26", "theme": "灵隐禅意", "items": [
+      {"time": "08:30-11:00", "activity": "灵隐寺礼佛", "location": "灵隐寺", "cost": "飞来峰 45 元+香花券 30 元/人"},
+      {"time": "15:30-16:30", "activity": "G7332 杭州东→上海虹桥", "location": "杭州东站", "cost": "73 元/人"}
+    ]}
+  ],
+  "budget": {"currency": "CNY", "totalEstimate": "约 680 元/人", "breakdown": [
+    {"category": "交通", "amount": "146 元/人", "note": "往返高铁二等座"},
+    {"category": "门票", "amount": "115 元/人", "note": "雷峰塔+灵隐"},
+    {"category": "住宿", "amount": "260 元/人", "note": "西湖周边大床房 1 晚（2 人摊）"}
+  ]},
+  "notes": ["周末西湖人多，建议早出发", "灵隐寺需先购飞来峰门票"],
+  "pendingConfirm": ["返程车次待确认"],
+  "markdownBody": "# 杭州 2 日行程草案\n\n## 分日行程\n（正文略）"
+}

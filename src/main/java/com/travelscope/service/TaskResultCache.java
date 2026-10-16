@@ -35,13 +35,17 @@ public class TaskResultCache {
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /** 支持的任务产出类型与 TTL（FR-S14：天气时效短 10min，其余 30min） */
+    /** 支持的任务产出类型与 TTL（FR-S14：天气时效短 10min，其余 30min；
+     *  S1.2 增补 MATRIX 通勤矩阵 30min 与 GEO 坐标 24h——两者为全局共享缓存，
+     *  调用方以 userId="global" + 语义化 sessionId 拼 key） */
     public enum TaskType {
         POI(Duration.ofMinutes(30)),
         ROUTE(Duration.ofMinutes(30)),
         HOTEL(Duration.ofMinutes(30)),
         WEATHER(Duration.ofMinutes(10)),
-        ITINERARY(Duration.ofMinutes(30));
+        ITINERARY(Duration.ofMinutes(30)),
+        MATRIX(Duration.ofMinutes(30)),
+        GEO(Duration.ofHours(24));
 
         public final Duration ttl;
 
@@ -49,7 +53,7 @@ public class TaskResultCache {
             this.ttl = ttl;
         }
 
-        /** 宽容解析（工具入参小写 poi/route/hotel/weather/itinerary） */
+        /** 宽容解析（工具入参小写 poi/route/hotel/weather/itinerary；matrix/geo 为内部缓存类型） */
         public static TaskType of(String label) {
             if (label == null) {
                 return null;
@@ -60,6 +64,8 @@ public class TaskResultCache {
                 case "hotel", "hotel_search" -> HOTEL;
                 case "weather", "weather_query" -> WEATHER;
                 case "itinerary", "itinerary_draft" -> ITINERARY;
+                case "matrix", "routematrix" -> MATRIX;
+                case "geo", "geocode" -> GEO;
                 default -> null;
             };
         }

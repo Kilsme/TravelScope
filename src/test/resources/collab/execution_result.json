@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 4,
+  "sessionId": "conv-97",
+  "results": [
+    {"taskId": "T1", "status": "DONE", "summary": "G7331 08:00 上海虹桥→杭州东，二等座 73 元", "toolEvidence": ["mcp__c12306: 余票充足"], "finishedAt": "2026-10-15 21:35:00"},
+    {"taskId": "T2", "status": "DONE", "summary": "10-25 晴 18-25℃，10-26 多云", "finishedAt": "2026-10-15 21:35:10"}
+  ]
+}

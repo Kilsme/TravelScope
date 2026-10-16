@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 4,
+  "destination": "杭州",
+  "retrievalNote": "5 变体并行检索，去重后 8 个候选",
+  "pois": [
+    {"name": "西湖风景名胜区", "lng": 120.1449, "lat": 30.2436, "rating": 4.8, "openHours": "全天开放", "durationMin": 240, "source": "RAG+ES", "reason": "杭州地标，湖光山色"},
+    {"name": "灵隐寺", "lng": 120.0962, "lat": 30.2435, "rating": 4.7, "openHours": "07:00-18:00", "durationMin": 150, "source": "RAG(chunk=c-1024)", "reason": "千年古刹，人文古迹"},
+    {"name": "雷峰塔", "lng": 120.1486, "lat": 30.2312, "rating": 4.6, "openHours": "08:00-17:30", "durationMin": 120, "source": "ES(keyword=西湖)", "reason": "西湖十景之一"}
+  ]
+}

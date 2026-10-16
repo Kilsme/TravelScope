@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 4,
+  "total": 85,
+  "minDimension": 15,
+  "verified": ["调 getTransitRoute 重算西湖→灵隐寺通勤，实测 38 分钟与草案一致"],
+  "passedAt": "2026-10-15 21:42:00"
+}

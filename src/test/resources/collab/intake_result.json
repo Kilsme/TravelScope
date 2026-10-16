@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 4,
+  "sessionId": "conv-97",
+  "status": "DONE",
+  "clarifyCycles": 1,
+  "fields": {
+    "destination": {"value": "杭州", "confirmed": true},
+    "days": {"value": "2", "confirmed": true},
+    "startDate": {"value": "2026-10-25", "confirmed": true},
+    "fromCity": {"value": "上海", "confirmed": true},
+    "budget": {"value": "1500 元（2 人总计）", "confirmed": true},
+    "preference": {"value": "自然风景、人文古迹", "confirmed": true},
+    "people": {"value": "2", "confirmed": true},
+    "special": {"value": "无", "confirmed": false, "note": "默认值"}
+  },
+  "degraded": false,
+  "collectedAt": "2026-10-15 21:30:00"
+}

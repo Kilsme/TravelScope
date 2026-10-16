@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 4,
+  "sessionId": "conv-97",
+  "tasks": [
+    {"taskId": "T1", "description": "查询上海到杭州往返火车票（2026-10-25 去程）", "suggestedTool": "train-ticket-query", "priority": "P0", "status": "DONE", "updatedAt": "2026-10-15 21:35:00"},
+    {"taskId": "T2", "description": "查询杭州 10-25/26 天气预报", "suggestedTool": "weather-query", "priority": "P0", "status": "DONE", "updatedAt": "2026-10-15 21:35:10"},
+    {"taskId": "T3", "description": "检索杭州景点候选（自然风景、人文古迹）", "suggestedTool": "attraction-search", "priority": "P0", "status": "DONE", "updatedAt": "2026-10-15 21:36:00"},
+    {"taskId": "T4", "description": "搜索杭州西湖周边酒店（双人大床房）", "suggestedTool": "hotel-search", "priority": "P1", "status": "DONE", "updatedAt": "2026-10-15 21:36:30"},
+    {"taskId": "T5", "description": "分日路线规划（就近串联）", "suggestedTool": "route-planning", "priority": "P1", "status": "DONE", "updatedAt": "2026-10-15 21:37:00"}
+  ]
+}

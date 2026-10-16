@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 4,
+  "segments": [
+    {"segment": 1, "pass": true, "issues": []},
+    {"segment": 2, "pass": false, "issues": ["第 2 天酒店→灵隐寺通勤 95 分钟，超单日通勤上限 90 分钟"]},
+    {"segment": 3, "pass": true, "issues": []}
+  ],
+  "scores": {"completeness": 18, "feasibility": 16, "timeConflict": 12, "costBudget": 18, "poiReasonableness": 17},
+  "total": 81,
+  "suggestionsBySegment": {"2": ["将灵隐寺调整至第 1 天下午，第 2 天改为市区近郊景点"]},
+  "reviewedAt": "2026-10-15 21:40:00"
+}
