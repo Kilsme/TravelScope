@@ -72,6 +72,11 @@ server:
 # ======================== 应用统一配置 ========================
 ## 所有第三方 API Key 通过环境变量 / 高级设置注入，不在配置文件中硬编码
 travelscope:
+  # ---- 评估中心：日常调用采集与管理员手动评测批次 ----
+  assessment:
+    enabled: true
+    batches-enabled: true
+
   # ---- 模型网关（OpenAI 兼容）：全部对话模型经此网关（2026-10-05 迁移）----
   # 主链路与质检 = glm-5-3-260814；轻量档（L2 分类/摘要/fallback）= deepseek-v4-flash-0731
   # （见 intent-cascade.l2-model 与 chat-history.summary.model）

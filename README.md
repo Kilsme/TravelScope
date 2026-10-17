@@ -175,6 +175,8 @@ cd frontend && npm install && npm run dev
 
 访问 `http://localhost:3000` 开始对话。健康检查：`http://localhost:8080/api/actuator/health`。
 
+管理员登录后，可访问 `http://localhost:3000/admin/assessment` 使用评估中心。首次启用前需执行 `src/main/resources/assessment-upgrade.sql`，采集与批次开关位于 `travelscope.assessment`。详细的本地说明见 `docs/评估系统说明.md`（不入库）。
+
 > 账号体系：schema.sql 内置管理员种子 `admin / admin123`；**现阶段新用户仅凭邀请码注册**
 > （登录页「凭邀请码注册」入口，邀请码由管理员在管理端「🎫 邀请码」页发放），后续可能
 > 开放注册接口。
