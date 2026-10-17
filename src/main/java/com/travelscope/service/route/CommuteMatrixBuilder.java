@@ -22,6 +22,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
 
 /**
@@ -31,8 +32,10 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li><b>逐段交通方式</b>：haversine 直线距离 &lt; 2km 走驾车档（西湖→雷峰塔 1.5km 该打车），
  *       ≥ 2km 走公交（酒店→灵隐寺 12km 该公交）；preferTransit=false 时全程驾车档</li>
- *   <li><b>并发</b>：两两组合用虚拟线程并行（IO 密集约定），信号量上限 8 保护高德 QPS；
- *       单对失败降级另一方式，再失败置 -1 并记入 missingPairs（不中断）</li>
+ *   <li><b>并发与限流</b>：两两组合用虚拟线程并行（IO 密集约定），信号量上限 8；
+ *       高德个人 key QPS 约 3/s（S1.9 冒烟实测 8 并发 5/8 被 CUQPS 限流）——调用
+ *       起步全局节流 ~350ms/次，偶发限流整对重试一次（600ms）；双模式均失败置 -1
+ *       并记入 missingPairs（不中断）</li>
  *   <li><b>缓存</b>：矩阵整体存 TaskResultCache（MATRIX 类型，TTL 30min），
  *       key = taskresult:global:routematrix:{sha256前16位}:{mode}:matrix——全局共享、
  *       按 POI 集合分槽；geocode 结果缓存 GEO 类型（TTL 24h，坐标极少变化）</li>
@@ -45,8 +48,20 @@ public class CommuteMatrixBuilder {
 
     private static final Logger log = LoggerFactory.getLogger(CommuteMatrixBuilder.class);
 
-    /** 并发上限（高德 QPS 保护） */
+    /** 并发上限（虚拟线程任务数） */
     private static final int MAX_PARALLEL = 8;
+
+    /** 高德方向 API QPS 节流（2026-10-17 S1.9 冒烟实测：个人 key 约 3/s——8 并发
+     *  5/8 被 CUQPS_HAS_EXCEEDED_THE_LIMIT 限流，21 对矩阵静默缺 5 对）：调用起步
+     *  最小间隔 ~350ms（≈2.9/s），全局限流，与任务并发数无关 */
+    private static final long CALL_MIN_INTERVAL_NANOS = 350_000_000L;
+
+    /** 整对重试延迟（兜残余偶发限流；真不可达的负结果最终仍置 -1，行为不变） */
+    private static final long RETRY_DELAY_NANOS = 600_000_000L;
+
+    /** QPS 节流门闩与最近一次调用起步时刻（实例级——构建器为单例 bean） */
+    private final Object rateGate = new Object();
+    private long lastCallAtNanos = 0;
 
     /** 直线距离阈值（km）：低于此值走驾车档（近似打车/短驳） */
     private static final double DRIVING_THRESHOLD_KM = 2.0;
@@ -54,12 +69,22 @@ public class CommuteMatrixBuilder {
     /** 全局缓存作用域（矩阵与坐标跨会话共享） */
     private static final String GLOBAL_SCOPE = "global";
 
+    /** 调用起步最小间隔（纳秒；mock 传输层的测试可经三参构造传 0 免等待） */
+    private final long callMinIntervalNanos;
+
     private final TransportTool transportTool;
     private final TaskResultCache taskResultCache;
 
     public CommuteMatrixBuilder(TransportTool transportTool, TaskResultCache taskResultCache) {
+        this(transportTool, taskResultCache, CALL_MIN_INTERVAL_NANOS);
+    }
+
+    /** 测试/定制注入：节流间隔可覆盖（mock 传输层时传 0，免无谓等待） */
+    CommuteMatrixBuilder(TransportTool transportTool, TaskResultCache taskResultCache,
+                         long callMinIntervalNanos) {
         this.transportTool = transportTool;
         this.taskResultCache = taskResultCache;
+        this.callMinIntervalNanos = callMinIntervalNanos;
     }
 
     /**
@@ -90,6 +115,7 @@ public class CommuteMatrixBuilder {
         long[][] durations = new long[n][n];
         List<String> missing = Collections.synchronizedList(new ArrayList<>());
         AtomicInteger apiCalls = new AtomicInteger();
+        AtomicInteger retriedPairs = new AtomicInteger();
         Semaphore permits = new Semaphore(MAX_PARALLEL);
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -103,7 +129,7 @@ public class CommuteMatrixBuilder {
                             permits.acquire();
                             try {
                                 long sec = queryPairSeconds(nodes.get(a), nodes.get(b), city,
-                                        preferTransit, missing);
+                                        preferTransit, missing, retriedPairs);
                                 apiCalls.incrementAndGet();
                                 durations[a][b] = sec;
                                 durations[b][a] = sec;
@@ -126,8 +152,9 @@ public class CommuteMatrixBuilder {
         TimeMatrix matrix = new TimeMatrix(nodeNames, durations);
         taskResultCache.register(GLOBAL_SCOPE, scope, TaskResultCache.TaskType.MATRIX,
                 null, matrixToJson(matrix));
-        log.info("通勤矩阵构建完成: nodes={}, apiCalls={}, missingPairs={}, duration={}ms",
-                n, apiCalls.get(), missing.size(), (System.nanoTime() - start) / 1_000_000);
+        log.info("通勤矩阵构建完成: nodes={}, apiCalls={}, retriedPairs={}, missingPairs={}, duration={}ms",
+                n, apiCalls.get(), retriedPairs.get(), missing.size(),
+                (System.nanoTime() - start) / 1_000_000);
         return new MatrixBuildOutcome(matrix, nodes, List.copyOf(missing), apiCalls.get(), false);
     }
 
@@ -146,16 +173,18 @@ public class CommuteMatrixBuilder {
     // ==================== 两两查询（逐段方式 + 降级链） ====================
 
     private long queryPairSeconds(PoiCandidate a, PoiCandidate b, String city,
-                                  boolean preferTransit, List<String> missing) {
+                                  boolean preferTransit, List<String> missing,
+                                  AtomicInteger retriedPairs) {
         if (a.lng() == null || a.lat() == null || b.lng() == null || b.lat() == null) {
             missing.add(a.name() + "→" + b.name());
             return -1;
         }
-        double straightKm = haversineKm(a.lng(), a.lat(), b.lng(), b.lat());
-        boolean drivingFirst = !preferTransit || straightKm < DRIVING_THRESHOLD_KM;
-        Long sec = drivingFirst ? tryDriving(a, b) : tryTransit(a, b, city);
+        Long sec = attemptPair(a, b, city, preferTransit);
         if (sec == null) {
-            sec = drivingFirst ? tryTransit(a, b, city) : tryDriving(a, b);
+            // 偶发 QPS 限流：间隔后整对重试一次（真不可达的负结果行为不变，仅多一轮查询）
+            LockSupport.parkNanos(RETRY_DELAY_NANOS);
+            retriedPairs.incrementAndGet();
+            sec = attemptPair(a, b, city, preferTransit);
         }
         if (sec == null) {
             missing.add(a.name() + "→" + b.name());
@@ -164,8 +193,34 @@ public class CommuteMatrixBuilder {
         return sec;
     }
 
+    /** 单轮双模式尝试：首选方式失败即换另一方式（逐段交通方式分档不变） */
+    private Long attemptPair(PoiCandidate a, PoiCandidate b, String city, boolean preferTransit) {
+        double straightKm = haversineKm(a.lng(), a.lat(), b.lng(), b.lat());
+        boolean drivingFirst = !preferTransit || straightKm < DRIVING_THRESHOLD_KM;
+        Long sec = drivingFirst ? tryDriving(a, b) : tryTransit(a, b, city);
+        if (sec == null) {
+            sec = drivingFirst ? tryTransit(a, b, city) : tryDriving(a, b);
+        }
+        return sec;
+    }
+
+    /** 调用起步节流：全局限流（虚拟线程并发下保证 ≤ ~2.9/s 起步，匹配高德个人 key QPS） */
+    private void paceCall() {
+        if (callMinIntervalNanos <= 0) {
+            return;
+        }
+        synchronized (rateGate) {
+            long wait = callMinIntervalNanos - (System.nanoTime() - lastCallAtNanos);
+            if (wait > 0) {
+                LockSupport.parkNanos(wait);
+            }
+            lastCallAtNanos = System.nanoTime();
+        }
+    }
+
     private Long tryDriving(PoiCandidate a, PoiCandidate b) {
         try {
+            paceCall();
             String json = transportTool.getDrivingRoute(coord(a), coord(b));
             return parseDurationSeconds(json, false);
         } catch (Exception e) {
@@ -176,6 +231,7 @@ public class CommuteMatrixBuilder {
 
     private Long tryTransit(PoiCandidate a, PoiCandidate b, String city) {
         try {
+            paceCall();
             String json = transportTool.getTransitRoute(coord(a), coord(b), city);
             return parseDurationSeconds(json, true);
         } catch (Exception e) {

@@ -39,7 +39,7 @@ class CommuteMatrixBuilderTest {
         transportTool = mock(TransportTool.class);
         StringRedisTemplate redisTemplate = mock(StringRedisTemplate.class);
         when(redisTemplate.opsForValue()).thenThrow(new RuntimeException("no redis in test"));
-        builder = new CommuteMatrixBuilder(transportTool, new TaskResultCache(redisTemplate));
+        builder = new CommuteMatrixBuilder(transportTool, new TaskResultCache(redisTemplate), 0);
     }
 
     private static String drivingJson(long seconds) {

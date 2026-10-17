@@ -51,7 +51,7 @@ class RoutePlannerServiceTest {
         TaskWorkspace workspace = new TaskWorkspace(
                 new CollabFileWriter(tempDir.toString()), new CollabFileReader());
         planner = new RoutePlannerServiceImpl(
-                new CommuteMatrixBuilder(transportTool, new TaskResultCache(redisTemplate)),
+                new CommuteMatrixBuilder(transportTool, new TaskResultCache(redisTemplate), 0),
                 workspace);
         // 距离相关桩：按两点坐标 haversine 生成时长——每对不同、远近合理
         when(transportTool.getDrivingRoute(any(), any())).thenAnswer(inv ->
