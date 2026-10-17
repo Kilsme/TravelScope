@@ -41,7 +41,7 @@ export interface Span {
 export interface RuleResult { type: string; status: string; method: string; evidence: string }
 export interface ScoreResult {
   score?: { routeCoherence: number; timeDensity: number; preferenceMatch: number; reason: string; evidence: string[] }
-  total?: number; threshold?: number; passed?: boolean; errorType?: string; note?: string
+  total?: number; threshold?: number; passed?: boolean; errorType?: string; errorCode?: string; message?: string; note?: string
 }
 export interface Evaluation { id: string; status: string; result_json: string | ScoreResult | null; created_at: string; scorer_version?: string }
 export interface Payload { id: string; name: string; kind?: string; body: string; created_at: string }
