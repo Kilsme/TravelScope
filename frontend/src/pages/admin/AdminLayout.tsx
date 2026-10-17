@@ -18,6 +18,7 @@ export default function AdminLayout() {
       <aside className="admin-sidebar">
         <div className="admin-brand">TravelScope 管理端</div>
         <nav className="admin-nav">
+          <NavLink to="/admin/assessment" className={({ isActive }) => isActive ? 'active' : ''}>评估中心</NavLink>
           <NavLink to="/admin/token-usage" className={({ isActive }) => isActive ? 'active' : ''}>
             📊 Token 用量
           </NavLink>
