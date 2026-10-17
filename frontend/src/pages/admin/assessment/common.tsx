@@ -33,7 +33,8 @@ export function CopyId({ value, label = '编号' }: { value?: string; label?: st
 }
 export function Id({ value }: { value: string }) { return <code title={value}>{shortId(value)}</code> }
 
-export function Overlay({ title, children, onClose, wide = false, modal = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; modal?: boolean }) {
+export function Overlay({ title, children, onClose, wide = false, modal = false, expandable = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean; modal?: boolean; expandable?: boolean }) {
+  const [fullscreen, setFullscreen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const closeRef = useRef(onClose)
   useEffect(() => { closeRef.current = onClose }, [onClose])
@@ -55,5 +56,5 @@ export function Overlay({ title, children, onClose, wide = false, modal = false 
     document.addEventListener('keydown', keydown)
     return () => { cancelAnimationFrame(frame); document.body.style.overflow = priorOverflow; document.removeEventListener('keydown', keydown); if (previous?.isConnected) previous.focus() }
   }, [])
-  return createPortal(<div className={`assessment as-overlay ${modal ? 'as-overlay-modal' : ''}`} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className={`as-drawer ${wide ? 'as-drawer-wide' : ''}`}><header className="as-drawer-head"><h2>{title}</h2><button aria-label={`关闭${title}`} onClick={onClose}>关闭 <span aria-hidden="true">×</span></button></header><div className="as-drawer-body">{children}</div></div></div>, document.body)
+  return createPortal(<div className={`assessment as-overlay ${modal ? 'as-overlay-modal' : ''}`} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}><div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={title} className={`as-drawer ${wide ? 'as-drawer-wide' : ''} ${fullscreen ? 'as-drawer-fullscreen' : ''}`}><header className="as-drawer-head"><h2>{title}</h2><div className="as-button-row">{expandable && <button aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}>{fullscreen ? '退出全屏' : '展开为全屏'}</button>}<button aria-label={`关闭${title}`} onClick={onClose}>关闭 <span aria-hidden="true">×</span></button></div></header><div className="as-drawer-body">{children}</div></div></div>, document.body)
 }
