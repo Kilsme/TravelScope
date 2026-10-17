@@ -68,7 +68,7 @@ class TwoOptImproverTest {
             input.addAll(pois);
 
             // 日窗 720min：11 点 × (30+20+10)=660 恒可行；cap 240 ≥ 11×20=220 恒不越界
-            RouteConstraints c = new RouteConstraints(1, "09:00", "21:00", 240, 10,
+            RouteConstraints c = new RouteConstraints(1, "09:00", "21:00", null, null, 240, 10,
                     "H", 120.0, 30.0, true);
             TwoOptImprover.Improvement r = improver.improve(input, m, c);
 
@@ -141,7 +141,7 @@ class TwoOptImproverTest {
                 {300, 1500, 0, 2100},
                 {2400, 2100, 2100, 0}};
         TimeMatrix m = new TimeMatrix(List.of("H", "P1", "P2", "P3"), d);
-        RouteConstraints c = new RouteConstraints(1, "09:00", "21:00", 90, 10,
+        RouteConstraints c = new RouteConstraints(1, "09:00", "21:00", null, null, 90, 10,
                 "H", 120.0, 30.0, true);
 
         TwoOptImprover.Improvement r = new TwoOptImprover().improve(input, m, c);

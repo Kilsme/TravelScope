@@ -24,7 +24,7 @@ class RouteContractTest {
 
     @Test
     void maxDailyCommuteMustBePositive() {
-        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", 0, 10,
+        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", null, null, 0, 10,
                 null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("maxDailyCommuteMin");
@@ -43,7 +43,7 @@ class RouteContractTest {
 
     @Test
     void dailyWindowMustBeOrdered() {
-        assertThatThrownBy(() -> new RouteConstraints(2, "21:00", "09:00", 90, 10,
+        assertThatThrownBy(() -> new RouteConstraints(2, "21:00", "09:00", null, null, 90, 10,
                 null, null, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("dailyStart");
@@ -51,10 +51,29 @@ class RouteContractTest {
 
     @Test
     void hotelTripleMustBePaired() {
-        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", 90, 10,
+        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", null, null, 90, 10,
                 "西湖某酒店", 120.14, null, true))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("酒店三件套");
+    }
+
+    @Test
+    void lunchWindowMustBePaired() {
+        // 有 lunchStart 无 lunchEnd → 拒
+        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", "12:00", null,
+                90, 10, null, null, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("午餐窗");
+        // 皆空 = 不预留，合法
+        new RouteConstraints(2, "09:00", "21:00", null, null, 90, 10, null, null, null, true);
+    }
+
+    @Test
+    void lunchWindowMustBeOrdered() {
+        assertThatThrownBy(() -> new RouteConstraints(2, "09:00", "21:00", "13:00", "12:00",
+                90, 10, null, null, null, true))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lunchStart");
     }
 
     @Test
@@ -63,6 +82,8 @@ class RouteContractTest {
         assertThat(c.days()).isEqualTo(3);
         assertThat(c.dailyStart()).isEqualTo("09:00");
         assertThat(c.dailyEnd()).isEqualTo("21:00");
+        assertThat(c.lunchStart()).isEqualTo("12:00");
+        assertThat(c.lunchEnd()).isEqualTo("13:00");
         assertThat(c.maxDailyCommuteMin()).isEqualTo(90);
         assertThat(c.transferBufferMin()).isEqualTo(10);
         assertThat(c.preferTransit()).isTrue();
@@ -71,6 +92,11 @@ class RouteContractTest {
         RouteConstraints withHotel = c.withHotel("西湖某酒店", 120.14, 30.24);
         assertThat(withHotel.hotelName()).isEqualTo("西湖某酒店");
         assertThat(withHotel.days()).isEqualTo(3);
+        assertThat(withHotel.lunchStart()).as("withHotel 携带午餐窗").isEqualTo("12:00");
+
+        RouteConstraints noLunch = c.withLunchWindow(null, null);
+        assertThat(noLunch.lunchStart()).isNull();
+        assertThat(noLunch.lunchEnd()).isNull();
     }
 
     @Test

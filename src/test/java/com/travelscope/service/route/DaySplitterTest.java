@@ -148,7 +148,7 @@ class DaySplitterTest {
         // 通勤 10min：dailyStart 09:00 出发 → 09:10 到早市（09:10+30=09:40 > 09:00 关窗，不兼容）
         TimeMatrix m = uniformMatrix(List.of("早市", "常规景点"), 10 * 60);
         var outcome = new DaySplitter().split(List.of(morning, normal), m,
-                new RouteConstraints(1, "09:00", "21:00", 90, 10, null, null, null, true));
+                new RouteConstraints(1, "09:00", "21:00", null, null, 90, 10, null, null, null, true));
 
         // 早市 09:10 到达已错过关窗 → TIME_WINDOW_MISS（本轮无兼容天）
         assertThat(outcome.unplaced()).extracting(RouteSolveResult.UnplacedPoi::name)

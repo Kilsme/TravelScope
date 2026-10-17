@@ -33,10 +33,12 @@ public interface RoutePlannerService {
     /**
      * 求解分日路线。
      *
-     * @param pois       POI 候选（坐标须已补齐；缺失坐标的由构建矩阵前 geocode 处理）
-     * @param constraints 求解约束（天数/日间窗/通勤上限/缓冲/酒店/通勤方式偏好）
+     * @param pois        POI 候选（坐标须已补齐；缺失坐标的由构建矩阵前 geocode 处理）
+     * @param constraints 求解约束（天数/日间窗/午餐窗/通勤上限/缓冲/酒店/通勤方式偏好）
+     * @param city        公交查询所在城市（constraints.preferTransit()=true 时必填，
+     *                    缺失快速失败；驾车档可传 null）
      * @return 分日有序结果 + 未排入项（带原因）+ 求解元信息；不抛业务异常
      *         （装不下的 POI 进 unplaced 而非失败）
      */
-    RouteSolveResult solve(List<PoiCandidate> pois, RouteConstraints constraints);
+    RouteSolveResult solve(List<PoiCandidate> pois, RouteConstraints constraints, String city);
 }

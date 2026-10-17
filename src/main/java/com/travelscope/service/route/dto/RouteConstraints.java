@@ -11,6 +11,8 @@ public record RouteConstraints(
         int days,
         String dailyStart,
         String dailyEnd,
+        String lunchStart,
+        String lunchEnd,
         int maxDailyCommuteMin,
         int transferBufferMin,
         String hotelName,
@@ -26,11 +28,22 @@ public record RouteConstraints(
             throw new IllegalArgumentException("maxDailyCommuteMin 必须 >0，实际: " + maxDailyCommuteMin);
         }
         if (transferBufferMin < 0) {
-            throw new IllegalArgumentException("transferBufferMin 不能为负: " + transferBufferMin);
+            throw new IllegalArgumentException("transferBufferMin 不能为负，实际: " + transferBufferMin);
         }
         if (dailyStart == null || dailyEnd == null || dailyStart.compareTo(dailyEnd) >= 0) {
             throw new IllegalArgumentException(
                     "dailyStart 必须早于 dailyEnd: " + dailyStart + " ~ " + dailyEnd);
+        }
+        boolean lunchComplete = lunchStart != null && lunchEnd != null;
+        boolean lunchEmpty = lunchStart == null && lunchEnd == null;
+        if (!lunchComplete && !lunchEmpty) {
+            throw new IllegalArgumentException(
+                    "午餐窗（lunchStart/lunchEnd）必须同时提供或同时缺省（皆空=不预留）: "
+                            + lunchStart + " ~ " + lunchEnd);
+        }
+        if (lunchComplete && lunchStart.compareTo(lunchEnd) >= 0) {
+            throw new IllegalArgumentException(
+                    "lunchStart 必须早于 lunchEnd: " + lunchStart + " ~ " + lunchEnd);
         }
         boolean hotelComplete = hotelName != null && hotelLng != null && hotelLat != null;
         boolean hotelEmpty = hotelName == null && hotelLng == null && hotelLat == null;
@@ -39,20 +52,27 @@ public record RouteConstraints(
         }
     }
 
-    /** 默认约束：09:00-21:00 日间窗、单日通勤 ≤90min、转场缓冲 10min、公交优先、无固定酒店 */
+    /** 默认约束：09:00-21:00 日间窗、午餐窗 12:00-13:00、单日通勤 ≤90min、转场缓冲 10min、公交优先、无固定酒店 */
     public static RouteConstraints ofDays(int days) {
-        return new RouteConstraints(days, "09:00", "21:00", 90, 10, null, null, null, true);
+        return new RouteConstraints(days, "09:00", "21:00", "12:00", "13:00",
+                90, 10, null, null, null, true);
     }
 
     /** 复制并设置酒店（VRPTW 车辆起点/终点） */
     public RouteConstraints withHotel(String name, double lng, double lat) {
-        return new RouteConstraints(days, dailyStart, dailyEnd, maxDailyCommuteMin,
-                transferBufferMin, name, lng, lat, preferTransit);
+        return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
+                maxDailyCommuteMin, transferBufferMin, name, lng, lat, preferTransit);
     }
 
     /** 复制并切换通勤方式偏好 */
     public RouteConstraints withPreferTransit(boolean prefer) {
-        return new RouteConstraints(days, dailyStart, dailyEnd, maxDailyCommuteMin,
-                transferBufferMin, hotelName, hotelLng, hotelLat, prefer);
+        return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
+                maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat, prefer);
+    }
+
+    /** 复制并设置午餐窗（传 null,null 关闭——不预留午餐时段） */
+    public RouteConstraints withLunchWindow(String start, String end) {
+        return new RouteConstraints(days, dailyStart, dailyEnd, start, end,
+                maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat, preferTransit);
     }
 }

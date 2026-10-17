@@ -76,13 +76,13 @@ public class CommuteMatrixBuilder {
         String mode = preferTransit ? "transit" : "driving";
         String scope = "routematrix:" + matrixHash(nodes) + ":" + mode;
 
-        // 矩阵级缓存：命中直接返回（零 API 调用）
+        // 矩阵级缓存：命中直接返回（零 API 调用）；nodes 用本次已补齐坐标的节点表
         String cached = taskResultCache.get(GLOBAL_SCOPE, scope, TaskResultCache.TaskType.MATRIX);
         if (cached != null) {
             TimeMatrix hit = matrixFromJson(cached);
             if (hit != null) {
                 log.info("通勤矩阵缓存命中: nodes={}, hash={}, apiCalls=0", nodes.size(), scope);
-                return new MatrixBuildOutcome(hit, List.of(), 0, true);
+                return new MatrixBuildOutcome(hit, nodes, List.of(), 0, true);
             }
         }
 
@@ -128,7 +128,19 @@ public class CommuteMatrixBuilder {
                 null, matrixToJson(matrix));
         log.info("通勤矩阵构建完成: nodes={}, apiCalls={}, missingPairs={}, duration={}ms",
                 n, apiCalls.get(), missing.size(), (System.nanoTime() - start) / 1_000_000);
-        return new MatrixBuildOutcome(matrix, List.copyOf(missing), apiCalls.get(), false);
+        return new MatrixBuildOutcome(matrix, nodes, List.copyOf(missing), apiCalls.get(), false);
+    }
+
+    /**
+     * 逐段交通方式标签（S1.5）：与 {@link #build} 的分档规则同源——直线距离
+     * &lt; {@link #DRIVING_THRESHOLD_KM} 或全驾车档返回「驾车」，否则「公交」。
+     * 供 TimelineScheduler 填 transitFromPrev 展示标签。降级链换方式成功的罕见
+     * 场景按首选方式标注（矩阵只存秒数，不记录实际成功方式），仅作展示用途。
+     */
+    static String segmentModeLabel(PoiCandidate a, PoiCandidate b, boolean preferTransit) {
+        boolean drivingFirst = !preferTransit
+                || haversineKm(a.lng(), a.lat(), b.lng(), b.lat()) < DRIVING_THRESHOLD_KM;
+        return drivingFirst ? "驾车" : "公交";
     }
 
     // ==================== 两两查询（逐段方式 + 降级链） ====================
