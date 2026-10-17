@@ -76,7 +76,10 @@ function Summary({ run, revision, sample }: { run: Run; revision: number; sample
 
 function Score({ status, value }: { status: string; value: string | ScoreResult | null }) {
   const result = parse<ScoreResult>(value)
-  if (status === 'ERROR') return <div className="as-notice as-notice-error"><strong>评分失败</strong><p>评分服务未能完成判断，不代表行程质量差。{result?.errorType && <span>错误详情可在原始记录中查看。</span>}</p><RawData value={result} title="评分错误详情" /></div>
+  if (status === 'ERROR') {
+    const legacy = result?.errorType === 'MismatchedInputException' || result?.errorType === 'JsonParseException' ? '模型返回的评分格式不符合要求，未能解析。' : ''
+    return <div className="as-notice as-notice-error"><strong>评分失败</strong><p>{result?.message || legacy || '评分服务未能完成判断。'}这不代表行程质量差。</p><RawData value={result} title="评分错误详情" /></div>
+  }
   if (status !== 'SUCCEEDED') return <Badge status={status} label={status === 'RUNNING' ? '评分中' : undefined} />
   return <><div className="as-score-total"><strong>{finite(result?.total) ? result.total.toFixed(1) : '—'}<small> / 100</small></strong><Badge status={result?.passed === true ? 'PASS' : result?.passed === false ? 'FAIL' : 'UNKNOWN'} label={result?.passed === true ? '评分达标' : result?.passed === false ? '评分未达标' : '评分结果未记录'} /><span className="as-muted">达标线 {number(result?.threshold)} 分</span></div>
     {result?.score ? <><MetricRows items={[{ label: '路线连贯性', value: `${number(result.score.routeCoherence)} / 10` }, { label: '时间安排', value: `${number(result.score.timeDensity)} / 10` }, { label: '偏好匹配', value: `${number(result.score.preferenceMatch)} / 10` }]} /><p className="as-score-reason">{result.score.reason}</p>{result.score.evidence?.map((evidence, index) => <blockquote key={index}>{evidence}</blockquote>)}</> : <p className="as-muted">评分明细未记录或无法解析。</p>}</>
