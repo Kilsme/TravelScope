@@ -123,28 +123,12 @@ class RuleAssertersTest {
     }
 
     @Test
-    @DisplayName("TOOL_ORDER：产物时间正序 PASS、倒序 FAIL、缺失 SKIP（@TempDir 造时间戳）")
-    void toolOrderChecksTimes(@TempDir Path tempDir) throws IOException {
+    @DisplayName("TOOL_ORDER：文件时间戳不足以证明真实调用顺序")
+    void toolOrderRequiresActualEvents(@TempDir Path tempDir) throws IOException {
         writeWithMtime(tempDir.resolve("poi_shortlist.md"), "2026-10-02T10:00:00Z");
         writeWithMtime(tempDir.resolve("route_plan.md"), "2026-10-02T10:05:00Z");
-        writeWithMtime(tempDir.resolve("itinerary_draft.md"), "2026-10-02T10:10:00Z");
-        EvalRunArtifact ordered = new EvalRunArtifact(null, "方案", "poi", "route", tempDir);
-        assertTrue(RuleAsserters.toolOrder(ordered).passed(), "poi→route→itinerary 正序应 PASS");
-
-        writeWithMtime(tempDir.resolve("poi_shortlist.md"), "2026-10-02T10:10:00Z");
-        writeWithMtime(tempDir.resolve("route_plan.md"), "2026-10-02T10:00:00Z");
-        writeWithMtime(tempDir.resolve("itinerary_draft.md"), "2026-10-02T10:05:00Z");
-        RuleAssertion inverted = RuleAsserters.toolOrder(ordered);
-        assertFalse(inverted.passed(), "route 早于 poi 应 FAIL");
-        assertFalse(inverted.skipped());
-
-        Path emptyDir = tempDir.resolve("empty");
-        Files.createDirectories(emptyDir);
-        RuleAssertion missing = RuleAsserters.toolOrder(
-                new EvalRunArtifact(null, null, null, null, emptyDir));
-        assertFalse(missing.passed());
-        assertTrue(missing.skipped(), "产物缺失应降级为 SKIP（不算 FAIL），明细: " + missing.details());
-        assertTrue(missing.details().contains("poi_shortlist"));
+        var result=RuleAsserters.toolOrder(new EvalRunArtifact(null,"plan","poi","route",tempDir));
+        assertTrue(result.skipped());assertFalse(result.passed());assertTrue(result.details().contains("UNKNOWN"));
     }
 
     @Test
