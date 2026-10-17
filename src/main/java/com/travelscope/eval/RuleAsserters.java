@@ -2,7 +2,6 @@ package com.travelscope.eval;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -157,48 +156,9 @@ public final class RuleAsserters {
                 "回复含否定标记[%s]；无行程草案可核验编造（缺草案由 FIELD_COMPLETE 独立判罚）".formatted(markers));
     }
 
-    /**
-     * TOOL_ORDER：按协作目录三个产物的修改时间序判断「先 POI 后路线后组装」。
-     * 产物缺失或时间戳相同（文件系统精度不足）→ 降级跳过并注明；时间倒序 → FAIL。
-     */
+    /** 旧产物入口无法证明工具调用顺序；运行时评估依据真实事件及明确依赖判断。 */
     public static RuleAssertion toolOrder(EvalRunArtifact artifact) {
-        Path dir = artifact.taskDir();
-        if (dir == null) {
-            return RuleAssertion.skip("TOOL_ORDER", "无协作目录，无法判断产物时间序（降级跳过）");
-        }
-        Path poi = dir.resolve(TaskWorkspace.FILE_POI_SHORTLIST);
-        Path route = dir.resolve(TaskWorkspace.FILE_ROUTE_PLAN);
-        Path itinerary = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT);
-        List<String> missing = new ArrayList<>();
-        if (!Files.isRegularFile(poi)) {
-            missing.add(TaskWorkspace.FILE_POI_SHORTLIST);
-        }
-        if (!Files.isRegularFile(route)) {
-            missing.add(TaskWorkspace.FILE_ROUTE_PLAN);
-        }
-        if (!Files.isRegularFile(itinerary)) {
-            missing.add(TaskWorkspace.FILE_ITINERARY_DRAFT);
-        }
-        if (!missing.isEmpty()) {
-            return RuleAssertion.skip("TOOL_ORDER",
-                    "产物缺失[%s]，无法判断工具链顺序（降级跳过）".formatted(String.join(", ", missing)));
-        }
-        try {
-            long poiM = Files.getLastModifiedTime(poi).toMillis();
-            long routeM = Files.getLastModifiedTime(route).toMillis();
-            long itineraryM = Files.getLastModifiedTime(itinerary).toMillis();
-            if (poiM == routeM || routeM == itineraryM) {
-                return RuleAssertion.skip("TOOL_ORDER", "产物修改时间相同（文件系统精度不足），顺序无法判定（降级跳过）");
-            }
-            if (poiM < routeM && routeM < itineraryM) {
-                return RuleAssertion.pass("TOOL_ORDER", "产物时间序正确: poi_shortlist → route_plan → itinerary_draft");
-            }
-            return RuleAssertion.fail("TOOL_ORDER",
-                    "产物时间序异常: poi=%s route=%s itinerary=%s（应先 POI 后路线后组装）".formatted(
-                            Instant.ofEpochMilli(poiM), Instant.ofEpochMilli(routeM), Instant.ofEpochMilli(itineraryM)));
-        } catch (Exception e) {
-            return RuleAssertion.skip("TOOL_ORDER", "读取产物时间戳失败（降级跳过）: " + e.getMessage());
-        }
+        return RuleAssertion.skip("TOOL_ORDER", "UNKNOWN：需要真实调用事件及用例声明的依赖；不再依据文件修改时间");
     }
 
     /**

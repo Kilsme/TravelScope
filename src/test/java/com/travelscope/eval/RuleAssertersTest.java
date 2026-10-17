@@ -123,20 +123,24 @@ class RuleAssertersTest {
     }
 
     @Test
-    @DisplayName("TOOL_ORDER：产物时间正序 PASS、倒序 FAIL、缺失 SKIP（@TempDir 造时间戳）")
-    void toolOrderChecksTimes(@TempDir Path tempDir) throws IOException {
+    @DisplayName("TOOL_ORDER：产物时间正序、倒序或缺失均不足以证明真实调用顺序")
+    void toolOrderRequiresActualEvents(@TempDir Path tempDir) throws IOException {
         writeWithMtime(tempDir.resolve("poi_shortlist.json"), "2026-10-02T10:00:00Z");
         writeWithMtime(tempDir.resolve("route_plan.json"), "2026-10-02T10:05:00Z");
         writeWithMtime(tempDir.resolve("itinerary_draft.json"), "2026-10-02T10:10:00Z");
         EvalRunArtifact ordered = new EvalRunArtifact(null, "方案", "poi", "route", tempDir);
-        assertTrue(RuleAsserters.toolOrder(ordered).passed(), "poi→route→itinerary 正序应 PASS");
+        RuleAssertion orderedResult = RuleAsserters.toolOrder(ordered);
+        assertTrue(orderedResult.skipped(), "文件时间正序也缺少真实调用证据，应 SKIP");
+        assertFalse(orderedResult.passed(), "文件时间正序不得推断工具顺序通过");
+        assertTrue(orderedResult.details().contains("UNKNOWN"));
 
         writeWithMtime(tempDir.resolve("poi_shortlist.json"), "2026-10-02T10:10:00Z");
         writeWithMtime(tempDir.resolve("route_plan.json"), "2026-10-02T10:00:00Z");
         writeWithMtime(tempDir.resolve("itinerary_draft.json"), "2026-10-02T10:05:00Z");
         RuleAssertion inverted = RuleAsserters.toolOrder(ordered);
-        assertFalse(inverted.passed(), "route 早于 poi 应 FAIL");
-        assertFalse(inverted.skipped());
+        assertFalse(inverted.passed(), "文件时间倒序也不得推断工具顺序通过");
+        assertTrue(inverted.skipped(), "文件时间倒序仍缺少真实调用证据，应 SKIP");
+        assertTrue(inverted.details().contains("UNKNOWN"));
 
         Path emptyDir = tempDir.resolve("empty");
         Files.createDirectories(emptyDir);
@@ -144,7 +148,7 @@ class RuleAssertersTest {
                 new EvalRunArtifact(null, null, null, null, emptyDir));
         assertFalse(missing.passed());
         assertTrue(missing.skipped(), "产物缺失应降级为 SKIP（不算 FAIL），明细: " + missing.details());
-        assertTrue(missing.details().contains("poi_shortlist"));
+        assertTrue(missing.details().contains("UNKNOWN"));
     }
 
     @Test
