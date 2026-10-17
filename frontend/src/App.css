@@ -413,7 +413,7 @@
 }
 .admin-logout:hover { background: #2a3a50; }
 
-.admin-main { flex: 1; overflow-y: auto; padding: 28px; background: #f5f6fa; }
+.admin-main { flex: 1; min-width: 0; overflow-y: auto; padding: 28px; background: #f5f6fa; }
 .admin-page h2 { margin: 0 0 20px; color: #2c3e50; font-size: 22px; }
 .admin-filters { display: flex; gap: 16px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
 .admin-filters label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: #555; }
