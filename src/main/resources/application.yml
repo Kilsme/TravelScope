@@ -104,6 +104,14 @@ travelscope:
     web-api-key: ${AMAP_WEB_API_KEY:}
     base-url: https://restapi.amap.com/v3
 
+  # ---- 飞猪 flyai 配置（2026-10-17 飞猪比赛接入：CLI 子进程调用） ----
+  flyai:
+    api-key: ${FLYAI_API_KEY:}
+    enabled: true
+    timeout-seconds: 30
+    # 全局安装后填命令名「flyai」（快，~1.4s）；填「@fly-ai/flyai-cli」则走 npx 每次冷启动（慢，30s+）
+    cli-package: "flyai"
+
   # ---- 和风天气 API 配置 ----
   weather:
     # 和风天气 API Host，不含 https:// 前缀，如 devapi.qweather.com 或 xxx.re.qweatherapi.com

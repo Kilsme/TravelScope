@@ -29,6 +29,9 @@ public class AppProperties {
     /** 高德地图配置 */
     private AmapConfig amap = new AmapConfig();
 
+    /** 飞猪 flyai 配置（2026-10-17 飞猪比赛接入：CLI 子进程调用） */
+    private FlyaiConfig flyai = new FlyaiConfig();
+
     /** 和风天气配置 */
     private WeatherConfig weather = new WeatherConfig();
 
@@ -168,6 +171,18 @@ public class AppProperties {
         private String webApiKey;
         /** 高德地图 API 基础URL */
         private String baseUrl = "https://restapi.amap.com/v3";
+    }
+
+    @Data
+    public static class FlyaiConfig {
+        /** 飞猪 flyai API Key（环境变量 FLYAI_API_KEY；为空走免 key 体验模式） */
+        private String apiKey;
+        /** 是否启用飞猪数据源（false 时双源退化为单高德/原源） */
+        private boolean enabled = true;
+        /** CLI 单次调用超时（秒） */
+        private int timeoutSeconds = 30;
+        /** npx 调用的 CLI 包名（锁版本时改为 @fly-ai/flyai-cli@x.y.z） */
+        private String cliPackage = "@fly-ai/flyai-cli";
     }
 
     @Data

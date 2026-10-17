@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.config.AppProperties;
+import com.travelscope.tool.flyai.FlyaiCliTool;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import okhttp3.HttpUrl;
@@ -17,13 +18,19 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * 酒店搜索工具（高德地图 POI 搜索）
+ * 酒店搜索工具（双源：飞猪 flyai + 高德 POI，2026-10-17 飞猪比赛接入）
  * <p>
- * 通过高德地图 Web API 的关键字搜索 POI 接口查询酒店信息。
- * 接口文档: https://lbs.amap.com/api/webservice/guide/api/search
+ * 统一入口内双源合并：虚拟线程并行调 flyai search-hotel 与高德 /place/text，
+ * 结果按名归一去重（飞猪优先——带价格/星级/预订链接），每条数据标 source
+ * （飞猪/高德）供前端展示数据来源；单源失败自动降级为另一源，双源皆空才报错。
  * </p>
  */
 @Component
@@ -34,7 +41,10 @@ public class HotelTool {
     /** POI 类型码：住宿服务 */
     private static final String POI_TYPE_ACCOMMODATION = "100000";
 
-    /** 中文 POI 类型名称 → 高德类型码映射 */
+    /** 数据来源标签 */
+    public static final String SOURCE_FLIGGY = "飞猪";
+    public static final String SOURCE_AMAP = "高德";
+
     private static String resolveTypeCode(String type) {
         if (type == null || type.isBlank()) {
             return "";
@@ -52,10 +62,12 @@ public class HotelTool {
     }
 
     private final AppProperties appProperties;
+    private final FlyaiCliTool flyaiCliTool;
     private final OkHttpClient httpClient;
 
-    public HotelTool(AppProperties appProperties) {
+    public HotelTool(AppProperties appProperties, FlyaiCliTool flyaiCliTool) {
         this.appProperties = appProperties;
+        this.flyaiCliTool = flyaiCliTool;
         this.httpClient = new OkHttpClient.Builder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .readTimeout(Duration.ofSeconds(30))
@@ -63,17 +75,15 @@ public class HotelTool {
     }
 
     /**
-     * 搜索指定城市的酒店
-     * <p>
-     * 调用高德地图 POI 关键字搜索接口，按城市过滤，返回酒店列表。
-     * </p>
+     * 搜索指定城市的酒店（双源：飞猪 + 高德，结果合并去重并标注来源）
      *
      * @param city     城市名称（如 "北京"、"杭州"）
      * @param keyword  搜索关键词（酒店名、品牌等，可为空）
      * @param pageSize 返回结果数量
-     * @return 酒店列表 JSON 字符串
+     * @return 酒店列表 JSON 字符串（hotels[] 每条含 source 字段）
      */
-    @Tool(description = "搜索指定城市的酒店信息，包括酒店名称、地址、经纬度、联系电话等。用于旅游住宿规划。")
+    @Tool(description = "搜索指定城市的酒店信息，包括酒店名称、地址、经纬度、联系电话等。用于旅游住宿规划。"
+            + "结果来自飞猪与高德双数据源，每条数据标注来源（飞猪/高德）。")
     public String searchHotels(
             @ToolParam(name = "city", description = "城市名称，如 '北京'、'杭州'")
             String city,
@@ -82,16 +92,75 @@ public class HotelTool {
             @ToolParam(name = "pageSize", description = "返回结果数量，建议5-20")
             int pageSize
     ) {
-        String apiKey = appProperties.getAmap().getWebApiKey();
-        String baseUrl = appProperties.getAmap().getBaseUrl();
+        log.info("搜索酒店（双源）: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
+        boolean flyaiEnabled = appProperties.getFlyai().isEnabled();
+        boolean amapKeyPresent = appProperties.getAmap().getWebApiKey() != null
+                && !appProperties.getAmap().getWebApiKey().isBlank();
 
-        if (apiKey == null || apiKey.isBlank()) {
-            return errorResult("高德地图 API Key 未配置，请检查环境变量 AMAP_WEB_API_KEY");
+        if (!flyaiEnabled && !amapKeyPresent) {
+            return errorResult("酒店数据源均不可用（飞猪已禁用且高德 Key 未配置）");
         }
 
-        log.info("搜索酒店: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            CompletableFuture<List<JSONObject>> flyaiFuture = flyaiEnabled
+                    ? CompletableFuture.supplyAsync(() -> fetchFlyaiHotels(city, keyword), executor)
+                    : CompletableFuture.completedFuture(List.of());
+            CompletableFuture<List<JSONObject>> amapFuture = amapKeyPresent
+                    ? CompletableFuture.supplyAsync(() -> fetchAmapHotels(city, keyword, pageSize), executor)
+                    : CompletableFuture.completedFuture(List.of());
 
-        // 构建请求 URL
+            List<JSONObject> flyaiHotels = flyaiFuture.join();
+            List<JSONObject> amapHotels = amapFuture.join();
+            List<JSONObject> merged = mergeHotels(flyaiHotels, amapHotels, pageSize);
+
+            if (merged.isEmpty()) {
+                return errorResult("飞猪与高德均未查到酒店（city=" + city + " keyword=" + keyword + "）");
+            }
+            JSONObject result = new JSONObject();
+            result.put("count", merged.size());
+            result.put("hotels", merged);
+            result.put("sources", Map.of("飞猪", flyaiHotels.size(), "高德", amapHotels.size()));
+            return JSON.toJSONString(result);
+        }
+    }
+
+    // ==================== 飞猪源 ====================
+
+    /** 飞猪酒店条目 → 统一结构（含 source 标注；失败/空返回空列表降级） */
+    private List<JSONObject> fetchFlyaiHotels(String city, String keyword) {
+        try {
+            JSONObject response = flyaiCliTool.searchHotel(city, keyword, null);
+            if (!FlyaiCliTool.hasItems(response)) {
+                log.info("飞猪酒店查询无结果或失败（降级高德）: {}", response.getString("error"));
+                return List.of();
+            }
+            List<JSONObject> hotels = new ArrayList<>();
+            for (Object item : FlyaiCliTool.itemListOf(response)) {
+                JSONObject raw = (JSONObject) item;
+                JSONObject hotel = new JSONObject();
+                hotel.put("name", raw.getString("name"));
+                hotel.put("address", raw.getString("address"));
+                hotel.put("location", raw.getString("longitude") + "," + raw.getString("latitude"));
+                hotel.put("tel", null);
+                hotel.put("type", raw.getString("star"));
+                hotel.put("price", raw.getString("price"));
+                hotel.put("score", raw.getString("score"));
+                hotel.put("detailUrl", raw.getString("detailUrl"));
+                hotel.put("source", SOURCE_FLIGGY);
+                hotels.add(hotel);
+            }
+            return hotels;
+        } catch (Exception e) {
+            log.warn("飞猪酒店查询异常（降级高德）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    // ==================== 高德云（原实现迁入） ====================
+
+    private List<JSONObject> fetchAmapHotels(String city, String keyword, int pageSize) {
+        String apiKey = appProperties.getAmap().getWebApiKey();
+        String baseUrl = appProperties.getAmap().getBaseUrl();
         HttpUrl url = HttpUrl.parse(baseUrl + "/place/text").newBuilder()
                 .addQueryParameter("key", apiKey)
                 .addQueryParameter("keywords", keyword == null ? "酒店" : keyword)
@@ -103,19 +172,65 @@ public class HotelTool {
                 .addQueryParameter("extensions", "all")
                 .addQueryParameter("output", "JSON")
                 .build();
-
         Request request = new Request.Builder().url(url).get().build();
-
         try (Response response = httpClient.newCall(request).execute()) {
             if (!response.isSuccessful()) {
-                return errorResult("高德 API 请求失败，HTTP " + response.code());
+                log.warn("高德酒店查询 HTTP {}（降级飞猪）", response.code());
+                return List.of();
             }
             String body = response.body() != null ? response.body().string() : "{}";
-            return parseHotelResults(body);
+            JSONObject json = JSON.parseObject(body);
+            if (json.getIntValue("status") != 1) {
+                log.warn("高德酒店查询返回错误（降级飞猪）: {}", json.getString("info"));
+                return List.of();
+            }
+            JSONArray pois = json.getJSONArray("pois");
+            if (pois == null || pois.isEmpty()) {
+                return List.of();
+            }
+            List<JSONObject> hotels = new ArrayList<>();
+            for (int i = 0; i < pois.size(); i++) {
+                JSONObject poi = pois.getJSONObject(i);
+                JSONObject hotel = new JSONObject();
+                hotel.put("name", poi.getString("name"));
+                hotel.put("address", poi.getString("address"));
+                hotel.put("location", poi.getString("location"));
+                hotel.put("tel", poi.getString("tel"));
+                hotel.put("type", poi.getString("type"));
+                hotel.put("source", SOURCE_AMAP);
+                hotels.add(hotel);
+            }
+            return hotels;
         } catch (IOException e) {
-            log.error("搜索酒店异常: city={}", city, e);
-            return errorResult("搜索酒店失败: " + e.getMessage());
+            log.warn("高德酒店查询异常（降级飞猪）: {}", e.getMessage());
+            return List.of();
         }
+    }
+
+    // ==================== 双源合并（纯函数，可单测） ====================
+
+    /**
+     * 合并两源酒店：按名归一去重（括号后缀归一），飞猪优先（带价格/星级/预订链接），
+     * 截断 pageSize。每条已带 source 标注。
+     */
+    static List<JSONObject> mergeHotels(List<JSONObject> flyaiHotels,
+                                        List<JSONObject> amapHotels, int pageSize) {
+        Map<String, JSONObject> byName = new LinkedHashMap<>();
+        for (JSONObject h : flyaiHotels) {
+            byName.putIfAbsent(normalizeName(h.getString("name")), h);
+        }
+        for (JSONObject h : amapHotels) {
+            byName.putIfAbsent(normalizeName(h.getString("name")), h);
+        }
+        return byName.values().stream().limit(Math.max(pageSize, 1)).toList();
+    }
+
+    /** 酒店名归一：去括号及内容（「杭州某酒店(西湖店)」→「杭州某酒店」），供跨源去重 */
+    static String normalizeName(String name) {
+        if (name == null) {
+            return "";
+        }
+        return name.replaceAll("[（(][^）)]*[）)]", "").trim();
     }
 
     /**
@@ -175,39 +290,6 @@ public class HotelTool {
             log.error("周边搜索异常: location={}", location, e);
             return errorResult("周边搜索失败: " + e.getMessage());
         }
-    }
-
-    /** 解析酒店搜索结果 */
-    private String parseHotelResults(String body) {
-        JSONObject json = JSON.parseObject(body);
-        int status = json.getIntValue("status");
-        if (status != 1) {
-            return errorResult("高德 API 返回错误: " + json.getString("info"));
-        }
-        JSONArray pois = json.getJSONArray("pois");
-        if (pois == null || pois.isEmpty()) {
-            JSONObject empty = new JSONObject();
-            empty.put("count", 0);
-            empty.put("hotels", new ArrayList<>());
-            return JSON.toJSONString(empty);
-        }
-
-        List<JSONObject> hotels = new ArrayList<>();
-        for (int i = 0; i < pois.size(); i++) {
-            JSONObject poi = pois.getJSONObject(i);
-            JSONObject hotel = new JSONObject();
-            hotel.put("name", poi.getString("name"));
-            hotel.put("address", poi.getString("address"));
-            hotel.put("location", poi.getString("location"));
-            hotel.put("tel", poi.getString("tel"));
-            hotel.put("type", poi.getString("type"));
-            hotels.add(hotel);
-        }
-
-        JSONObject result = new JSONObject();
-        result.put("count", hotels.size());
-        result.put("hotels", hotels);
-        return JSON.toJSONString(result);
     }
 
     /** 解析周边搜索结果 */

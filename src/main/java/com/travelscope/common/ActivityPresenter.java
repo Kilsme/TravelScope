@@ -40,6 +40,8 @@ public final class ActivityPresenter {
             Map.entry("getWeatherForecast", "查询天气"),
             Map.entry("getFutureWeatherByAirport", "查询天气"),
             Map.entry("searchHotels", "查找酒店"),
+            Map.entry("queryTrainTickets", "查询火车票（飞猪）"),
+            Map.entry("queryFlightTickets", "查询机票（飞猪）"),
             Map.entry("getDrivingRoute", "计算路线"),
             Map.entry("getTransitRoute", "计算路线"),
             Map.entry("geocode", "定位校验"),

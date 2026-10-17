@@ -105,6 +105,9 @@ public class AgentConfig {
     private final HotelTool hotelTool;
     private final AttractionTool attractionTool;
     private final TransportTool transportTool;
+    /** 飞猪火车/机票工具（2026-10-17 飞猪比赛接入） */
+    private final com.travelscope.agent.tools.TrainTicketTool trainTicketTool;
+    private final com.travelscope.agent.tools.FlightTicketTool flightTicketTool;
     /** 业务链路打点（多智能体 span 的统一装配，2026-10-02） */
     private final TracingHelper tracingHelper;
 
@@ -113,12 +116,16 @@ public class AgentConfig {
                        HotelTool hotelTool,
                        AttractionTool attractionTool,
                        TransportTool transportTool,
+                       com.travelscope.agent.tools.TrainTicketTool trainTicketTool,
+                       com.travelscope.agent.tools.FlightTicketTool flightTicketTool,
                        TracingHelper tracingHelper) {
         this.appProperties = appProperties;
         this.weatherTool = weatherTool;
         this.hotelTool = hotelTool;
         this.attractionTool = attractionTool;
         this.transportTool = transportTool;
+        this.trainTicketTool = trainTicketTool;
+        this.flightTicketTool = flightTicketTool;
         this.tracingHelper = tracingHelper;
     }
 
@@ -140,6 +147,9 @@ public class AgentConfig {
         toolkit.registerTool(hotelTool);
         toolkit.registerTool(attractionTool);
         toolkit.registerTool(transportTool);
+        // 飞猪火车/机票工具（与 12306/飞常准 MCP 双源并存，返回标注【飞猪】来源）
+        toolkit.registerTool(trainTicketTool);
+        toolkit.registerTool(flightTicketTool);
         // 任务容器工具：create_task_backlog / get_task_progress / update_task_status
         // 主 Agent 与规划子 Agent（SHARED 工作区、共享 Toolkit）均可调用
         toolkit.registerTool(new TaskTools(taskRegistry, tracingHelper));

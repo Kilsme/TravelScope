@@ -77,10 +77,14 @@ public class ItineraryAgent {
               完成后调 register_task_result(taskType=weather) 登记
             - 酒店：searchHotels(city, keyword, pageSize)，结果中按用户预算做代码层过滤；
               完成后调 register_task_result(taskType=hotel) 登记
-            - 城际大交通：火车票 mcp__c12306__get-tickets / 机票 mcp__variflight__getFlightPriceByCities
+            - 城际大交通：火车票 queryTrainTickets(origin, destination, depDate)（飞猪源，主用）/
+              机票 queryFlightTickets（飞猪源，主用）；mcp__c12306 / mcp__variflight 作对照降级
               （用户说「明天」等相对日期时，先调 mcp__c12306__get-current-date 或
                mcp__variflight__getTodayDate 解析）
-            - 景点初查：searchPois(city, keyword, pageSize)（为 poi-research 提供起点线索）
+            - 景点初查：searchPois(city, keyword, pageSize)（飞猪+高德双源，为 poi-research 提供起点线索）
+            - 【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自
+              飞猪或 12306/飞常准——组装 itinerary_draft 时保留每条数据的来源标注
+              （【飞猪】【高德】【12306】），供前端展示；两源不一致时以飞猪为准
 
             第 2 步 景点候选（缓存优先，FR-S14）：
             - 先调 get_cached_task_result(taskType=poi)——命中则把缓存内容写入

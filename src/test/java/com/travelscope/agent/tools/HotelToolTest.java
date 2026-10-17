@@ -3,6 +3,7 @@ package com.travelscope.agent.tools;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.config.AppProperties;
+import com.travelscope.tool.flyai.FlyaiCliTool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 /**
  * HotelTool 测试用例
@@ -31,20 +33,21 @@ class HotelToolTest {
     @BeforeEach
     void setUp() {
         appProperties = new AppProperties();
-        // 默认不设置 API Key，用于确定性测试
-        hotelTool = new HotelTool(appProperties);
+        // 双源改造（F2）：禁用飞猪，测高德单源的旧语义；FlyaiCliTool mock 仅作构造参数
+        appProperties.getFlyai().setEnabled(false);
+        hotelTool = new HotelTool(appProperties, mock(FlyaiCliTool.class));
     }
 
     // ==================== 确定性测试（无需网络） ====================
 
     @Test
-    @DisplayName("API Key 未配置时 searchHotels 返回错误信息")
+    @DisplayName("飞猪禁用且高德 Key 未配置时 searchHotels 返回错误信息")
     void testSearchHotels_noApiKey() {
         String result = hotelTool.searchHotels("北京", "如家", 5);
 
         JSONObject json = JSON.parseObject(result);
         assertTrue(json.containsKey("error"));
-        assertTrue(json.getString("error").contains("API Key"));
+        assertTrue(json.getString("error").contains("数据源均不可用"));
     }
 
     @Test
