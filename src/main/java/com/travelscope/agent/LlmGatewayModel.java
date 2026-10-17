@@ -61,6 +61,8 @@ public class LlmGatewayModel implements Model {
 
     private static final Logger log = LoggerFactory.getLogger(LlmGatewayModel.class);
 
+    private com.travelscope.assessment.ObservationStore assessment;
+    public LlmGatewayModel assessment(com.travelscope.assessment.ObservationStore value){this.assessment=value;return this;}
     private final Model primary;
     private final Model fallback;
     private final CircuitBreaker circuitBreaker;
@@ -192,7 +194,14 @@ public class LlmGatewayModel implements Model {
                     activeModel.set(fallback);
                     // 打点内标：本次调用走了 fallback（外层 doOnComplete 的 success 经 tagIfAbsent 不覆盖）
                     span.tag("outcome", "fallback");
-                    return fallback.stream(messages, tools, options);
+                    return Flux.deferContextual(context -> {
+                        com.travelscope.assessment.ObservationContext association=context.getOrDefault(com.travelscope.assessment.ObservationContext.KEY,null);
+                        if(assessment!=null&&association!=null&&assessment.enabled()) {
+                            var transition=assessment.span(association,"FALLBACK",current.getModelName()+" -> "+fallback.getModelName(),null,null);
+                            transition.end("RECOVERING",null,e);
+                        }
+                        return fallback.stream(messages,tools,options);
+                    });
                 });
     }
 
