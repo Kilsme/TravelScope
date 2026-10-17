@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -38,6 +39,8 @@ import java.util.Locale;
  */
 @Service
 public class RequirementExtractor {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.travelscope.assessment.ObservationMiddleware observationMiddleware;
 
     private static final Logger log = LoggerFactory.getLogger(RequirementExtractor.class);
 
@@ -80,11 +83,17 @@ public class RequirementExtractor {
      *         返回 {@link RequirementExtraction#EMPTY}（不抛）
      */
     public RequirementExtraction extract(String userMessage) {
+        return extract(userMessage, null);
+    }
+
+    public RequirementExtraction extract(String userMessage,
+            com.travelscope.assessment.ObservationContext observation) {
         if (userMessage == null || userMessage.isBlank()) {
             return RequirementExtraction.EMPTY;
         }
         try {
-            String rawJson = invokeModel(buildInput(userMessage));
+            String input = buildInput(userMessage);
+            String rawJson = observation == null ? invokeModel(input) : invokeModel(input, observation);
             RequirementExtraction extraction = RequirementExtraction.parse(
                     rawJson, appProperties.getRequirement().getExtractionMinConfidence());
             log.info("需求抽取完成: 字段数={}, 消息长度={}", extraction.fields().size(), userMessage.length());
@@ -109,18 +118,31 @@ public class RequirementExtractor {
      * API 门控的既有结论）。返回模型原始 JSON 文本（结构化对象序列化回 JSON，或纯文本兜底）。
      */
     String invokeModel(String input) {
+        return invokeModel(input, null);
+    }
+
+    String invokeModel(String input, com.travelscope.assessment.ObservationContext observation) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId("requirement-extractor")
                 .sessionId("requirement-extraction")
                 .build();
-        ReActAgent extractor = ReActAgent.builder()
+        if (observation != null) {
+            ctx.put(com.travelscope.assessment.ObservationContext.KEY, observation);
+        }
+        var builder = ReActAgent.builder()
                 .name("requirement-extractor")
                 .sysPrompt(SYS_PROMPT)
                 .model(lightModel)
-                .maxIters(2)
-                .build();
-        Msg reply = extractor.call(input, ExtractedFields.class, ctx)
-                .block(EXTRACT_TIMEOUT);
+                .maxIters(2);
+        if (observationMiddleware != null) {
+            builder.middlewares(List.of(observationMiddleware));
+        }
+        var invocation = builder.build().call(input, ExtractedFields.class, ctx);
+        if (observation != null) {
+            invocation = invocation.contextWrite(c -> c.put(
+                    com.travelscope.assessment.ObservationContext.KEY, observation));
+        }
+        Msg reply = invocation.block(EXTRACT_TIMEOUT);
         if (reply == null) {
             log.warn("需求抽取模型返回为空");
             return "";

@@ -1,6 +1,8 @@
 package com.travelscope.service;
 
 import com.travelscope.agent.IntentCascadeRouter;
+import com.travelscope.assessment.ObservationContext;
+import com.travelscope.assessment.ObservationStore;
 import com.travelscope.collab.CollabFileReader;
 import com.travelscope.collab.CollabFileWriter;
 import com.travelscope.collab.IntakeResult;
@@ -23,6 +25,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.InOrder;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
@@ -33,6 +38,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -42,6 +48,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -65,6 +73,9 @@ class ChatServicePlanningOrchestrationTest {
     private RequirementWorkflowService requirementWorkflowService;
     private TaskBacklogPlanner taskBacklogPlanner;
     private HarnessAgent itineraryPlanningAgent;
+    private ConversationSummaryService conversationSummaryService;
+    private PointsService pointsService;
+    private ObservationStore observationStore;
     private ChatService chatService;
 
     @BeforeEach
@@ -76,12 +87,12 @@ class ChatServicePlanningOrchestrationTest {
         tripRequirementStore = mock(TripRequirementStore.class);
         llmGateway = mock(LlmGateway.class);
         LoadShedService loadShedService = mock(LoadShedService.class);
-        ConversationSummaryService conversationSummaryService = mock(ConversationSummaryService.class);
+        conversationSummaryService = mock(ConversationSummaryService.class);
         Model gatewayChatModel = mock(Model.class);
-        PointsService pointsService = mock(PointsService.class);
+        pointsService = mock(PointsService.class);
         requirementWorkflowService = mock(RequirementWorkflowService.class);
         taskBacklogPlanner = mock(TaskBacklogPlanner.class);
-        itineraryPlanningAgent = mock(HarnessAgent.class);
+        itineraryPlanningAgent = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         RagService ragService = mock(RagService.class);
 
         // 准入/积分/减负全放行；泳道超时 600s（与 application.yml 一致）
@@ -237,6 +248,105 @@ class ChatServicePlanningOrchestrationTest {
     }
 
     // ==================== 测试数据与 SSE 捕获 ====================
+
+    @Test
+    void observedPlanningKeepsWorkflowAndPassesContextToPlanner() throws Exception {
+        seedIntakeAndArtifacts(true);
+        ObservationContext observation = observeTurns();
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), eq(observation)))
+                .thenReturn(new IntentResult("PLANNING", "行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), eq(observation)))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+
+        assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案");
+        ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
+        verify(itineraryPlanningAgent).streamEvents(any(UserMessage.class), runtime.capture());
+        assertThat((Object) runtime.getValue().get(ObservationContext.KEY)).isSameAs(observation);
+        assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("LIVE");
+        verify(requirementWorkflowService).handle("帮我规划杭州两日游", "1", "conv-13", observation);
+        verifyNoInteractions(travelMasterAgent);
+    }
+
+    @Test
+    void observedFormSubmissionStillBypassesIntentClassifier() throws Exception {
+        ObservationContext observation = observeTurns();
+        String message = "{\"__form__\":{\"__action__\":\"cancel\"}}";
+        when(requirementWorkflowService.handle(message, "1", "conv-13", observation))
+                .thenReturn(CollectOutcome.cancelled());
+
+        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, message), "done");
+
+        assertThat(payloadOf(items, "done")).isEqualTo("已取消规划。");
+        verifyNoInteractions(intentCascadeRouter, taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+    }
+
+    @Test
+    void observedTimeoutKeepsOuterBestEffortRendering() throws Exception {
+        seedIntakeAndArtifacts(false);
+        ObservationContext observation = observeTurns();
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), eq(observation)))
+                .thenReturn(new IntentResult("PLANNING", "行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), eq(observation)))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.error(new java.util.concurrent.TimeoutException("synthetic timeout")));
+
+        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, "规划杭州两日游"), "done");
+
+        assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案").contains("已尽力");
+        assertThat(eventNames(items)).doesNotContain("error");
+        verify(observationStore).timeout(observation);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void assessmentUsesNewWorkflowAndIsolatedPlannerWithoutPersonalSideEffects() throws Exception {
+        ObservationContext observation = observeTurns();
+        HarnessAgent isolatedMaster = mock(HarnessAgent.class);
+        HarnessAgent isolatedPlanner = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
+        ObjectProvider<HarnessAgent> provider = mock(ObjectProvider.class);
+        when(provider.getObject()).thenReturn(isolatedPlanner);
+        ReflectionTestUtils.setField(chatService, "assessmentPlanners", provider);
+        workspace.writeIntakeResult("13", "conv-13", intakeResult());
+        Files.writeString(workspace.getTaskDir("13", "conv-13").resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
+                "# 隔离评测的行程方案");
+        when(intentCascadeRouter.classify(anyString(), eq(""), eq("13"), eq("conv-13"), eq(observation)))
+                .thenReturn(new IntentResult("PLANNING", "行程规划"));
+        when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), eq(observation)))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("13"), any(IntakeResult.class))).thenReturn(backlog());
+        when(isolatedPlanner.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        String result = chatService.executeAssessment(13L, "规划杭州两日游", observation,
+                "FIXTURE", true, "EC-018", isolatedMaster).block(Duration.ofSeconds(5));
+
+        assertThat(result).contains("隔离评测的行程方案");
+        ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
+        verify(isolatedPlanner).streamEvents(any(UserMessage.class), runtime.capture());
+        assertThat((Object) runtime.getValue().get(ObservationContext.KEY)).isSameAs(observation);
+        assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("FIXTURE");
+        assertThat((Object) runtime.getValue().get("assessment.toolFailure")).isEqualTo(true);
+        assertThat((Object) runtime.getValue().get("assessment.fixtureCase")).isEqualTo("EC-018");
+        verifyNoInteractions(conversationService, conversationSummaryService, pointsService,
+                travelMasterAgent, itineraryPlanningAgent, isolatedMaster);
+    }
+
+    private ObservationContext observeTurns() {
+        observationStore = mock(ObservationStore.class);
+        ObservationContext observation = new ObservationContext(UUID.randomUUID(), UUID.randomUUID(),
+                "synthetic-trace", null, null);
+        when(observationStore.enabled()).thenReturn(true);
+        when(observationStore.begin(anyString(), any(), any())).thenReturn(observation);
+        ReflectionTestUtils.setField(chatService, "observationStore", observationStore);
+        return observation;
+    }
 
     private static Conversation conversation() {
         Conversation c = new Conversation();

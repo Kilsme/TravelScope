@@ -62,6 +62,20 @@ import com.travelscope.collab.TaskBacklog;
  */
 @Service
 public class ChatService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.travelscope.assessment.ObservationStore observationStore;
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("assessmentMasterAgent")
+    private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentAgents;
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("assessmentPlanningAgent")
+    private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentPlanners;
+    public HarnessAgent newAssessmentAgent(){return assessmentAgents.getObject();}
+    public boolean assessmentWaiting(long identity){
+        var state=tripRequirementStore.get(""+identity,SESSION_PREFIX+identity);
+        return state!=null&&state.status==TripRequirementState.Status.COLLECTING;
+    }
+
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
@@ -111,7 +125,7 @@ public class ChatService {
      *  中转——LLM 不确定性收敛到 planner 的执行本职；master 兜底链（v3）原样保留） */
     private final HarnessAgent itineraryPlanningAgent;
 
-    public ChatService(HarnessAgent travelMasterAgent,
+    public ChatService(@org.springframework.beans.factory.annotation.Qualifier("travelMasterAgent") HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
                        RagService ragService,
                        ConversationService conversationService,
@@ -201,6 +215,14 @@ public class ChatService {
                                                   String userMessage, StringBuilder replyBuf,
                                                   StringBuilder thinkingFull,
                                                   TurnUsageTracker usageTracker) {
+        return planningOrchestration(conversation, userId, userMessage, replyBuf,
+                thinkingFull, usageTracker, null, "LIVE", false, null, itineraryPlanningAgent);
+    }
+
+    private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
+            String userMessage, StringBuilder replyBuf, StringBuilder thinkingFull,
+            TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation,
+            String toolMode, boolean failTools, String fixtureCase, HarnessAgent activePlanner) {
         if (!appProperties.getRequirement().isFormEnabled()) {
             return null;
         }
@@ -209,7 +231,9 @@ public class ChatService {
         // ---------- step1：需求采集 workflow ----------
         com.travelscope.service.workflow.dto.CollectOutcome outcome;
         try {
-            outcome = requirementWorkflowService.handle(userMessage, userIdStr, sessionId);
+            outcome = observation == null
+                    ? requirementWorkflowService.handle(userMessage, userIdStr, sessionId)
+                    : requirementWorkflowService.handle(userMessage, userIdStr, sessionId, observation);
         } catch (Exception e) {
             log.warn("需求采集 workflow 异常（降级走 v3 规划链）: 会话={}, 原因={}",
                     sessionId, e.getMessage());
@@ -250,6 +274,8 @@ public class ChatService {
                 .userId(userIdStr)
                 .sessionId(sessionId)
                 .build();
+        associateExecution(ctx, activePlanner, observation, toolMode, failTools, fixtureCase);
+        if (observation != null) observationStore.task(observation, IntentType.PLANNING.name());
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 600);
         String collabDir = taskWorkspaceService.collabDirRelativePath(sessionId);
@@ -260,15 +286,15 @@ public class ChatService {
         String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
                 + "用 read_file 读取 " + collabDir + "/task_backlog.json 与 " + collabDir + "/intake_result.json 执行"
                 + "（任务按 T1→T5 顺序、P0→P1 优先级执行；每完成一项调用 update_task_status 回报状态）；"
-                + "产出 " + collabDir + "/itinerary_draft.md 后按流程送审。"
+                + "产出 " + collabDir + "/itinerary_draft.json 后按流程送审。"
                 + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext;
         UserMessage msg = new UserMessage(task);
         Duration laneTimeout = llmGateway.laneTimeout(true);
 
         // ---------- step4：等待完成（600s 泳道；超时按 wait_async_results 等价语义截断） ----------
-        Flux<ChatEvent> plannerFlow = mapAgentEventStream(itineraryPlanningAgent.streamEvents(msg, ctx),
+        Flux<ChatEvent> plannerFlow = mapAgentEventStream(activePlanner.streamEvents(msg, ctx),
                         ItineraryAgent.AGENT_NAME, conversation, IntentType.PLANNING, true, laneTimeout,
-                        replyBuf, thinkingFull, usageTracker)
+                        replyBuf, thinkingFull, usageTracker, observation)
                 .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
                     log.warn("PLANNING 编排泳道超时（{}s），转 step5 尽力渲染: 会话={}",
                             laneTimeout.toSeconds(), sessionId);
@@ -399,11 +425,24 @@ public class ChatService {
         StringBuilder thinkingFull = new StringBuilder();
         // 当轮 token 用量累计器（P1-K 真实采集）：每轮局部变量，同 thinkingFull——事件流中
         // 的 ModelCallEndEvent 累加真实 usage，轮末经 persistReply 落库；并发轮次互不干扰
+        String turnSessionKey = SESSION_PREFIX + conversation.getId();
+        TracingHelper.SpanHandle turnSpan = tracing.startSpan("chat-turn", Map.of(
+                "userId", String.valueOf(userId),
+                "sessionId", turnSessionKey));
+        tracing.beginTurn(String.valueOf(userId), turnSessionKey, turnSpan);
+
         TurnUsageTracker usageTracker = new TurnUsageTracker();
+        var observation = observationStore != null && observationStore.enabled()
+                ? observationStore.begin(SESSION_PREFIX + conversation.getId(), null, turnSpan.traceId()) : null;
+        long observationStarted = System.nanoTime();
+        java.util.concurrent.atomic.AtomicBoolean planningRequested=new java.util.concurrent.atomic.AtomicBoolean();
+        java.util.concurrent.atomic.AtomicReference<String> observationStatus = new java.util.concurrent.atomic.AtomicReference<>("REPLIED");
 
         // LLM Gateway 准入（FR-S09）：全局/单用户并发 + QPS；被拒 → SSE error 降级文案（不白屏）
         LlmGateway.AcquireResult admission = llmGateway.tryAcquire(String.valueOf(userId));
         if (!admission.allowed()) {
+            turnSpan.end();
+            if (observation != null) observationStore.finish(observation,"REJECTED",(System.nanoTime()-observationStarted)/1e6,false);
             try {
                 emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
                         .data(admission.message()));
@@ -420,16 +459,10 @@ public class ChatService {
         // （complete/error/cancel 全覆盖，客户端断开 dispose 也不漏 span）。
         // 另经 beginTurn 按会话登记——框架内部线程无 trace 上下文，工具/中间件打点经
         // TracingHelper.recordChildSpan 显式挂到本 span 下
-        String turnSessionKey = SESSION_PREFIX + conversation.getId();
-        TracingHelper.SpanHandle turnSpan = tracing.startSpan("chat-turn", Map.of(
-                "userId", String.valueOf(userId),
-                "sessionId", turnSessionKey));
-        tracing.beginTurn(String.valueOf(userId), turnSessionKey, turnSpan);
-
         Disposable disposable;
         try (var spanScope = turnSpan.inScope()) {
             disposable = Mono
-                    .fromCallable(() -> resolveIntent(conversation, userId, userMessage))
+                    .fromCallable(() -> resolveIntent(conversation, userId, userMessage, observation))
                     .subscribeOn(Schedulers.boundedElastic())
                     .flatMapMany(intent -> {
                         // 意图分类完成，补标 chat-turn 的 intent 属性（含 UNKNOWN 兜底）
@@ -439,11 +472,13 @@ public class ChatService {
                         // （慢泳道内存大头），快请求继续服务；RED 挡全部新对话。
                         // 注意：此时网关槽位已持有，拒绝路径须 release
                         boolean planningIntent = intent != null && intent.toIntentType() == IntentType.PLANNING;
+                        planningRequested.set(planningIntent);
                         // 积分制度（2026-10-11）：意图明确后按档预扣（普通对话/规划差异计费，
                         // 意图分类失败 null 按普通档）；余额不足 → 拒绝本轮。
                         // 注意：此时网关槽位已持有，拒绝路径须 release（与 loadShed 同款配对）
                         int turnCost = pointsService.costOf(planningIntent);
                         if (!pointsService.tryDeduct(userId, turnCost)) {
+                            observationStatus.set("REJECTED");
                             llmGateway.release(String.valueOf(userId));
                             try {
                                 emitter.send(SseEmitter.event()
@@ -459,6 +494,7 @@ public class ChatService {
                         }
                         String shed = loadShedService.tryAdmit(planningIntent);
                         if (shed != null) {
+                            observationStatus.set("REJECTED");
                             llmGateway.release(String.valueOf(userId));
                             try {
                                 emitter.send(SseEmitter.event()
@@ -475,14 +511,18 @@ public class ChatService {
                         // 返回 null（form 开关关闭 / workflow 异常）落回 v3 master 规划链兜底
                         Flux<ChatEvent> planningFlow = planningIntent
                                 ? planningOrchestration(conversation, userId, userMessage, replyBuf,
-                                        thinkingFull, usageTracker)
+                                        thinkingFull, usageTracker, observation, "LIVE", false, null,
+                                        itineraryPlanningAgent)
                                 : null;
                         return Flux.concat(
                             Flux.just(toIntentEvent(intent)),
                             planningFlow != null
                                     ? planningFlow
                                     : runAgent(conversation, userId, userMessage, intent, replyBuf,
-                                            thinkingFull, usageTracker))
+                                            thinkingFull, usageTracker, observation))
+                            .doOnNext(event -> {
+                                if (ChatEvent.TYPE_ERROR.equals(event.getType())) observationStatus.set("FAILED");
+                            })
                             // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
                             // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
                             // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
@@ -491,11 +531,29 @@ public class ChatService {
                     })
                     // 终态（含取消/超时 dispose）结束 chat-turn span；会话父注册跨轮存续
                     // （TracingHelper.beginTurn 注释：异步 spawn 的后台子链晚到的打点仍挂本轮 trace）
-                    .doFinally(signal -> turnSpan.end())
+                    .doOnError(error -> observationStatus.set("FAILED"))
+                    .doFinally(signal -> {
+                        turnSpan.end();
+                        if (observation != null) {
+                            boolean artifact = false;
+                            String status = observationStatus.get();
+                            if (signal == reactor.core.publisher.SignalType.CANCEL) status = "CANCELLED";
+                            try {
+                                artifact=observationStore.planningArtifact(observation)!=null;
+                                if ("REPLIED".equals(status)) {
+                                    var state = tripRequirementStore.get(String.valueOf(userId), SESSION_PREFIX + conversation.getId());
+                                    if (planningRequested.get() && state != null && state.status == TripRequirementState.Status.COLLECTING) status = "WAITING_INPUT";
+                                    else if (artifact) status = "PLANNING_COMPLETED";
+                                    else if(planningRequested.get())status="INCOMPLETE";
+                                }
+                            } catch (Exception ignored) { status = "INCOMPLETE"; }
+                            observationStore.finish(observation,status,(System.nanoTime()-observationStarted)/1e6,artifact);
+                        }
+                    })
                     .subscribe(
                             event -> sendEvent(emitter, event),
-                            error -> handleError(emitter, replyBuf, conversation, userId, error, usageTracker),
-                            () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull, usageTracker));
+                            error -> handleError(emitter, replyBuf, conversation, userId, error, usageTracker, observation),
+                            () -> handleComplete(emitter, replyBuf, conversation, userId, thinkingFull, usageTracker, observation));
         }
 
         emitter.onTimeout(disposable::dispose);
@@ -513,6 +571,16 @@ public class ChatService {
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
     private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage) {
+        return resolveIntent(conversation, userId, userMessage, null);
+    }
+
+    private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage,
+            com.travelscope.assessment.ObservationContext observation) {
+        return resolveIntent(conversation, userId, userMessage, observation, true);
+    }
+
+    private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage,
+            com.travelscope.assessment.ObservationContext observation, boolean includePersonalHistory) {
         // 清单卡片提交（S2.3）：{"__form__":{...}} 结构化消息恒走 PLANNING 编排——
         // 它是界面动作而非自然语言，交给意图分类器会被判成 CHAT（实测 cancel 落到
         // master 被当成普通闲聊回复），必须在此短路
@@ -527,15 +595,17 @@ public class ChatService {
         // 被判 CHAT 脱离规划流。messages 表是唯一可靠事实源（L0/状态机/缓存都是加速层，
         // 丢失可由此兜回）；效果依赖 POST /chat/stream 回传正确 conversationId。
         String contextBlock = "";
-        if (intentContextEnabled) {
+        if (intentContextEnabled && includePersonalHistory) {
             List<Message> messages = conversationService.listMessages(conversation.getId());
             String summary = appProperties.getChatHistory().getSummary().isEnabled()
                     ? conversation.getSummary() : null;
             contextBlock = intentContextBuilder.build(messages, summary);
         }
-        IntentResult result = intentCascadeRouter.classify(
-                userMessage, contextBlock, String.valueOf(userId),
-                SESSION_PREFIX + conversation.getId());
+        IntentResult result = observation == null
+                ? intentCascadeRouter.classify(userMessage, contextBlock, String.valueOf(userId),
+                        SESSION_PREFIX + conversation.getId())
+                : intentCascadeRouter.classify(userMessage, contextBlock, String.valueOf(userId),
+                        SESSION_PREFIX + conversation.getId(), observation);
         if (result != null && result.toIntentType() == IntentType.RAG) {
             log.info("意图=RAG，知识库可用: {}（不可用时由路由指令回退为直接回答）", ragService.isAvailable());
         }
@@ -570,12 +640,19 @@ public class ChatService {
      */
     private Flux<ChatEvent> runAgent(Conversation conversation, Long userId, String userMessage,
                                      IntentResult intent, StringBuilder replyBuf, StringBuilder thinkingFull,
-                                     TurnUsageTracker usageTracker) {
+                                     TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation) {
+        return runAgent(conversation,userId,userMessage,intent,replyBuf,thinkingFull,usageTracker,observation,"LIVE",false,null,travelMasterAgent);
+    }
+    private Flux<ChatEvent> runAgent(Conversation conversation,Long userId,String userMessage,IntentResult intent,
+            StringBuilder replyBuf,StringBuilder thinkingFull,TurnUsageTracker usageTracker,
+            com.travelscope.assessment.ObservationContext observation,String toolMode,boolean failTools,String fixtureCase,HarnessAgent activeAgent) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(String.valueOf(userId))
                 .sessionId(SESSION_PREFIX + conversation.getId())
                 .build();
+        associateExecution(ctx, activeAgent, observation, toolMode, failTools, fixtureCase);
         IntentType type = intent != null ? intent.toIntentType() : null;
+        if (observation != null) observationStore.task(observation, type == null ? "UNKNOWN" : type.name());
         if (type != null) {
             ctx.put(IntentRouterMiddleware.CTX_INTENT_KEY, type.name());
         }
@@ -598,7 +675,7 @@ public class ChatService {
         }
 
         String outgoing = userMessage;
-        if (type == IntentType.RAG && ragService.isAvailable()) {
+        if (type == IntentType.RAG && !"FIXTURE".equals(toolMode) && ragService.isAvailable()) {
             // topK 走 RagConfig 配置（原硬编码 5）
             outgoing = augmentWithRag(userMessage,
                     ragService.retrieve(userMessage, ragTopK));
@@ -621,7 +698,7 @@ public class ChatService {
         // 用户短回答（如「长春」）时 master 仍能看到之前聊过什么；同时兜底框架
         // InMemory 记忆在进程重启后丢失的场景。末条为本轮消息，render 内部已排除。
         // 2026-09-29：窗口 3 → 10 轮，窗口外更早轮次由滚动记忆摘要长期携带。
-        if (historyEnabled) {
+        if (historyEnabled && activeAgent == travelMasterAgent) {
             List<Message> messages = conversationService.listMessages(conversation.getId());
             // summary.enabled=false 时按配置退回纯窗口模式（不注入库里已有的摘要）
             String summary = appProperties.getChatHistory().getSummary().isEnabled()
@@ -633,7 +710,7 @@ public class ChatService {
             }
             // 缺口自愈：折叠失败/存量旧会话（covered 落后于窗口起点）时补折——
             // maybeSummarizeAsync 内部有到期判定与防重，异步不阻塞本轮
-            conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
+            conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId, observation);
         }
 
         UserMessage msg = new UserMessage(outgoing);
@@ -641,9 +718,9 @@ public class ChatService {
         // 查询类不被进行中的长规划拖慢（独立链路 + 各自超时保护），超时 → SSE error 兜底文案
         Duration laneTimeout = llmGateway.laneTimeout(type == IntentType.PLANNING);
         boolean planning = type == IntentType.PLANNING;
-        return mapAgentEventStream(travelMasterAgent.streamEvents(msg, ctx),
+        return mapAgentEventStream(activeAgent.streamEvents(msg, ctx),
                         TravelMasterAgent.AGENT_NAME, conversation, type, planning, laneTimeout,
-                        replyBuf, thinkingFull, usageTracker)
+                        replyBuf, thinkingFull, usageTracker, observation)
                 .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
                     log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
                             type, laneTimeout.toSeconds(), conversation.getId());
@@ -665,6 +742,14 @@ public class ChatService {
                                                 boolean planning, Duration laneTimeout,
                                                 StringBuilder replyBuf, StringBuilder thinkingFull,
                                                 TurnUsageTracker usageTracker) {
+        return mapAgentEventStream(events, rootAgent, conversation, type, planning, laneTimeout,
+                replyBuf, thinkingFull, usageTracker, null);
+    }
+
+    private Flux<ChatEvent> mapAgentEventStream(Flux<AgentEvent> events, String rootAgent,
+            Conversation conversation, IntentType type, boolean planning, Duration laneTimeout,
+            StringBuilder replyBuf, StringBuilder thinkingFull, TurnUsageTracker usageTracker,
+            com.travelscope.assessment.ObservationContext observation) {
         // THINKING 聚合句发射通道（accumulateThinking → Sinks.Many → mergeWith 回 SSE 流）：
         // 主流 doFinally 时 emitComplete——mergeWith 等两条流都完成才结束，Flux.create+轮询线程
         // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送。
@@ -674,7 +759,9 @@ public class ChatService {
         StringBuilder thinkingBuf = new StringBuilder();
         java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
                 ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
+        long laneQueued = System.nanoTime();
         return events
+                .doOnSubscribe(subscription -> { if (observation != null) observationStore.queue(observation,(System.nanoTime()-laneQueued)/1e6); })
                 // Token 真实采集（P1-K，2026-10-11）：模型调用结束事件携带真实 ChatUsage，
                 // 在过滤前挂点累计（ModelCallEnd 不是根 Agent 可见事件，过滤后会被滤掉）；
                 // 每个 ModelCallEndEvent 对应一次模型调用（ReAct 多轮迭代各一次）
@@ -723,6 +810,7 @@ public class ChatService {
                 })
                 .onErrorResume(e -> {
                     if (e instanceof java.util.concurrent.TimeoutException) {
+                        if (observation != null) observationStore.timeout(observation);
                         // 超时交调用方处置：runAgent → 错误事件；PLANNING 编排 → 尽力渲染（S2.5）
                         return Flux.error(e);
                     }
@@ -732,6 +820,49 @@ public class ChatService {
                 })
                 // THINKING 聚合句与主事件流合并（主流 complete 时 sink 同步关闭）
                 .mergeWith(thinkingSink.asFlux());
+    }
+
+    private void associateExecution(RuntimeContext runtime, HarnessAgent agent,
+            com.travelscope.assessment.ObservationContext observation, String mode,
+            boolean failTools, String fixtureCase) {
+        runtime.put("assessment.toolMode", mode);
+        runtime.put("assessment.fixtureCase", fixtureCase);
+        runtime.put("assessment.toolFailure", failTools);
+        if (observation != null) {
+            runtime.put(com.travelscope.assessment.ObservationContext.KEY, observation);
+            runtime.put(com.travelscope.assessment.ArtifactSnapshotReader.FILESYSTEM_KEY,
+                    agent.getWorkspaceManager().getFilesystem());
+        }
+    }
+
+    /** 评测复用在线规划编排，但只使用独立身份和 Agent，不读写个人聊天或扣积分。 */
+    public reactor.core.publisher.Mono<String> executeAssessment(long isolatedId, String message,
+            com.travelscope.assessment.ObservationContext observation, String mode, boolean failTools,String fixtureCase,HarnessAgent isolatedAgent) {
+        return Mono.defer(() -> {
+            Conversation conversation = new Conversation();
+            conversation.setId(isolatedId);
+            conversation.setUserId(isolatedId);
+            StringBuilder reply = new StringBuilder();
+            StringBuilder thinking = new StringBuilder();
+            TurnUsageTracker usage = new TurnUsageTracker();
+            var intent = resolveIntent(conversation, isolatedId, message, observation, false);
+            Flux<ChatEvent> execution = null;
+            if (intent != null && intent.toIntentType() == IntentType.PLANNING
+                    && appProperties.getRequirement().isFormEnabled()) {
+                execution = planningOrchestration(conversation, isolatedId, message, reply, thinking,
+                        usage, observation, mode, failTools, fixtureCase, assessmentPlanners.getObject());
+            }
+            if (execution == null) {
+                execution = runAgent(conversation, isolatedId, message, intent, reply, thinking,
+                        usage, observation, mode, failTools, fixtureCase, isolatedAgent);
+            }
+            return execution.doOnNext(event -> {
+                        if (ChatEvent.TYPE_ERROR.equals(event.getType())) {
+                            throw new IllegalStateException("Assessment execution failed");
+                        }
+                    })
+                    .then(Mono.fromSupplier(reply::toString));
+        });
     }
 
     /**
@@ -957,12 +1088,12 @@ public class ChatService {
     }
 
     private void handleError(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
-                             Long userId, Throwable error, TurnUsageTracker usageTracker) {
+                             Long userId, Throwable error, TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation) {
         log.error("对话处理异常: conversationId={}", conversation.getId(), error);
         llmGateway.release(String.valueOf(userId));
         persistReply(conversation, userId, replyBuf, usageTracker);
         // 部分回复也已落库计入消息总数，同样检查摘要是否到期
-        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
+        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId, observation);
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_ERROR)
                     .data(sseFallbackMessage(error)));
@@ -973,7 +1104,7 @@ public class ChatService {
     }
 
     private void handleComplete(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,
-                                Long userId, StringBuilder thinkingFull, TurnUsageTracker usageTracker) {
+                                Long userId, StringBuilder thinkingFull, TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation) {
         llmGateway.release(String.valueOf(userId));
         // 过程/结果分离（2026-09-22）：PLANNING 轮 replyBuf 为空（过程文本未进缓冲），
         // 最终方案从协作目录整合生成——itinerary_draft.md 优先，缺则 execution_result.md；
@@ -1000,7 +1131,7 @@ public class ChatService {
         }
         persistReply(conversation, userId, replyBuf, usageTracker);
         // 记忆摘要到期检查（每满 10 轮后台折叠一次，fire-and-forget 不阻塞 done 事件）
-        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId);
+        conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId, observation);
         // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
         // （review_passed.md 优先，回炉超限场景退化为最近一次 review_report.md）
         try {

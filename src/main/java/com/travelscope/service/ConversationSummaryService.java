@@ -57,6 +57,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Service
 public class ConversationSummaryService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.travelscope.assessment.ObservationMiddleware observationMiddleware;
 
     private static final Logger log = LoggerFactory.getLogger(ConversationSummaryService.class);
 
@@ -116,11 +118,12 @@ public class ConversationSummaryService {
      * 调用点：每轮回复落库后（handleComplete/handleError）+ 历史注入时（缺口自愈补折）。
      * 预检在调用方线程同步执行（2 次索引查询，与 runAgent 内已有的 listMessages 同量级）。
      */
-    public void maybeSummarizeAsync(Long conversationId, Long userId) {
+    public void maybeSummarizeAsync(Long conversationId, Long userId) { maybeSummarizeAsync(conversationId,userId,null); }
+    public void maybeSummarizeAsync(Long conversationId,Long userId,com.travelscope.assessment.ObservationContext observation) {
         if (!tryBeginFold(conversationId)) {
             return;
         }
-        Mono.fromCallable(() -> doFold(conversationId, userId))
+        Mono.fromCallable(() -> doFold(conversationId, userId, observation))
                 .subscribeOn(summaryScheduler)
                 .subscribe(outcome -> log.debug("记忆摘要结算: conversationId={}, outcome={}",
                                 conversationId, outcome),
@@ -166,7 +169,8 @@ public class ConversationSummaryService {
      * 仅写回进短事务；校验拒绝说明他方已推进水位线，按 ABORTED_CONCURRENT 结算不重试）。
      * 所有异常吞掉——折叠失败不影响主链路，保留原状等下个到期点重试。
      */
-    FoldOutcome doFold(Long conversationId, Long userId) {
+    FoldOutcome doFold(Long conversationId, Long userId) { return doFold(conversationId,userId,null); }
+    FoldOutcome doFold(Long conversationId,Long userId,com.travelscope.assessment.ObservationContext observation) {
         try {
             AppProperties.SummaryConfig cfg = config.getSummary();
             // 折叠前重读：预检与实际执行之间可能有新消息落库，以最新为准
@@ -195,7 +199,7 @@ public class ConversationSummaryService {
                 return FoldOutcome.DROPPED_BLANK;
             }
             String prompt = buildFoldPrompt(conv.getSummary(), newRounds);
-            String summary = callSummarizer(prompt, String.valueOf(userId), conversationId, cfg);
+            String summary = callSummarizer(prompt, String.valueOf(userId), conversationId, cfg, observation);
             if (summary == null || summary.isBlank()) {
                 log.warn("记忆摘要生成为空，保留原状（下个到期点重试）: conversationId={}", conversationId);
                 return FoldOutcome.SKIPPED;
@@ -269,13 +273,15 @@ public class ConversationSummaryService {
      * （轻量模型对结构化输出遵循度不稳定，与 L2 意图分类同款双路，见 LightweightIntentClassifier）
      */
     private String callSummarizer(String prompt, String userId, Long conversationId,
-                                  AppProperties.SummaryConfig cfg) {
+                                  AppProperties.SummaryConfig cfg, com.travelscope.assessment.ObservationContext observation) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 // 独立会话后缀，不污染主 Agent 的 Redis 状态（conv-{id}）
                 .sessionId("conv-" + conversationId + "-summary")
                 .build();
+        if (observation != null) ctx.put(com.travelscope.assessment.ObservationContext.KEY, observation.withPurpose("SUMMARY"));
         ReActAgent summarizer = ReActAgent.builder()
+                .middlewares(observationMiddleware == null ? java.util.List.of() : java.util.List.of(observationMiddleware))
                 .name("conversation-summarizer")
                 .sysPrompt(SYS_PROMPT_TEMPLATE.formatted(cfg.getMaxChars()))
                 .model(summaryModel)

@@ -83,6 +83,11 @@ public class RequirementWorkflowService {
      * @return 本轮终态（COLLECTED / NEED_USER_INPUT / CANCELLED）
      */
     public CollectOutcome handle(String userMessage, String userId, String sessionId) {
+        return handle(userMessage, userId, sessionId, null);
+    }
+
+    public CollectOutcome handle(String userMessage, String userId, String sessionId,
+            com.travelscope.assessment.ObservationContext observation) {
         TripRequirementState state = store.get(userId, sessionId);
         // 分流 c：DONE/DEGRADED 幂等直通（重复触发不重新采集）
         if (state.status != TripRequirementState.Status.COLLECTING) {
@@ -95,7 +100,7 @@ public class RequirementWorkflowService {
             return handleForm(form, state, userId, sessionId);
         }
         // 分流 b：普通文本（增量修改）
-        return handleText(userMessage, state, userId, sessionId);
+        return handleText(userMessage, state, userId, sessionId, observation);
     }
 
     // ==================== 分支 a：表单提交 ====================
@@ -135,8 +140,10 @@ public class RequirementWorkflowService {
     // ==================== 分支 b：普通文本（增量修改） ====================
 
     private CollectOutcome handleText(String userMessage, TripRequirementState state,
-                                      String userId, String sessionId) {
-        RequirementExtraction extraction = extractor.extract(userMessage);
+                                      String userId, String sessionId,
+                                      com.travelscope.assessment.ObservationContext observation) {
+        RequirementExtraction extraction = observation == null
+                ? extractor.extract(userMessage) : extractor.extract(userMessage, observation);
         if (extraction.fields().isEmpty()) {
             log.info("增量修改抽取为空（回提示）: 用户={}, 会话={}", userId, sessionId);
             return CollectOutcome.needUserInput(RequirementFormSpec.generate(state),

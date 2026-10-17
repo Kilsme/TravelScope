@@ -108,6 +108,11 @@ public class IntentCascadeRouter {
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
         return classify(userMessage,contextBlock,userId,sessionId,null);
     }
+    @TraceNode(name = "intent-cascade", attrs = {
+            "intent=#result != null ? #result.intent : 'MISS'",
+            "reason=#result != null ? #result.reason : ''",
+            "latencyMs=#latencyMs"
+    })
     public IntentResult classify(String userMessage,String contextBlock,String userId,String sessionId,com.travelscope.assessment.ObservationContext observation) {
         if (!config.isEnabled()) {
             return viaL3(userMessage, contextBlock, userId, sessionId, System.nanoTime(), observation);
