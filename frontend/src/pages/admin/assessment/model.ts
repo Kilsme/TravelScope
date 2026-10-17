@@ -9,7 +9,7 @@ export interface Ingestion {
   enabled: boolean; degraded: boolean; queueDepth: number; droppedWrites: number
   persistenceFailures: number; pendingIncompleteRuns: number
 }
-export interface Overview {
+export interface Overview extends TokenMetrics {
   sample_count: number; completed_plans: number; execution_success_rate: NullableNumber
   p50_ms: NullableNumber; p95_ms: NullableNumber; mean_ms: NullableNumber; stddev_ms: NullableNumber
   failure_rate: NullableNumber; timeout_rate: NullableNumber; failed_mean_ms: NullableNumber
@@ -19,12 +19,15 @@ export interface Overview {
   planning_known_cost: NullableNumber; tool_calls: number; cost_complete: boolean | null
   score_pass_rate: NullableNumber; rule_pass_rate: NullableNumber; overall_pass_rate: NullableNumber
   hard_constraint_coverage: NullableNumber; ingestion?: Ingestion
+  assessment_sample_count?: number; scored_sample_count?: number; score_errors?: number
 }
 export interface Run {
   id: string; source: Source; task_type: string; status: string; started_at: string
   ended_at?: string; duration_ms: NullableNumber; tokens: NullableNumber; data_complete: boolean | null
   usage_complete?: boolean | null; session_id?: string; trace_id?: string; turn_id?: string
   sample_id?: string; artifact_available?: boolean; planning_artifact_id?: string
+  span_count?: number; failed_span_count?: number; latest_score_status?: string | null; latest_score_total?: NullableNumber; latest_score_passed?: boolean | null
+  tool_mode?: ToolMode | null
 }
 export interface Span {
   id: string; parent_id?: string; kind: string; name: string; phase: string; status: string
@@ -32,6 +35,8 @@ export interface Span {
   input_tokens?: NullableNumber; output_tokens?: NullableNumber; aggregate_input_tokens?: NullableNumber
   aggregate_output_tokens?: NullableNumber; aggregate_usage_complete?: boolean | null
   usage_kind?: string; cost?: NullableNumber; cost_complete?: boolean; error_type?: string
+  model?: string; request_id?: string; attempt_group?: string
+  aggregate_cost?: NullableNumber; aggregate_cost_complete?: boolean | null; aggregate_model_count?: number
 }
 export interface RuleResult { type: string; status: string; method: string; evidence: string }
 export interface ScoreResult {
@@ -49,19 +54,37 @@ export interface Sample {
   rule_json: string | RuleResult[] | null; score_status: string; score_json: string | ScoreResult | null
 }
 export interface Batch { id: string; status: string; tool_mode: ToolMode; repetitions: number; created_at: string; ended_at?: string; config_json?: string | object }
-export interface BatchDetail { batch: Batch; samples: Sample[] }
-export interface ComparisonRow {
+export interface BatchDetail { batch: Batch; samples: Sample[]; metrics?: BatchMetrics }
+export interface TokenMetrics {
+  known_input_tokens?: NullableNumber; known_output_tokens?: NullableNumber
+  planning_input_tokens?: NullableNumber; planning_output_tokens?: NullableNumber
+  scoring_input_tokens?: NullableNumber; scoring_output_tokens?: NullableNumber
+  usage_complete?: boolean | null; data_complete?: boolean | null; score_count?: number; mean_score?: NullableNumber
+}
+export interface BatchMetrics extends TokenMetrics {
+  samples: number; completed_plans: number; p50_ms: NullableNumber; p95_ms: NullableNumber
+  mean_ms: NullableNumber; stddev_ms: NullableNumber; known_cost: NullableNumber; cost_complete: boolean | null
+  rule_pass_rate: NullableNumber; score_pass_rate: NullableNumber; overall_pass_rate: NullableNumber; score_errors: number
+  execution_success_rate: NullableNumber
+}
+export interface ComponentMetric {
+  kind: string; component_name: string; phase: string; call_count: number; succeeded: number; failed: number; cancelled?: number
+  duration_samples: number; mean_ms: NullableNumber; p50_ms: NullableNumber; p95_ms: NullableNumber; failed_mean_ms: NullableNumber
+  input_tokens: NullableNumber; output_tokens: NullableNumber; usage_complete: boolean | null
+  known_cost: NullableNumber; cost_complete: boolean | null; data_complete: boolean | null; batch_id?: string; case_id?: string
+}
+export interface ComparisonRow extends TokenMetrics {
   batch_id: string; case_id: string; samples: number; overall_pass_rate: NullableNumber
   execution_success_rate: NullableNumber; p50_ms: NullableNumber; p95_ms: NullableNumber
   known_cost: NullableNumber; cost_complete: boolean | null; completed_plans: number
   score_errors: number; timeout_rate: NullableNumber; score_pass_rate: NullableNumber; rule_pass_rate: NullableNumber
   mean_ms: NullableNumber; stddev_ms: NullableNumber; failed_mean_ms: NullableNumber; system_time_ms: NullableNumber
 }
-export interface Comparison { baseline: Batch; candidate: Batch; configurationDiff: boolean; scenarios: ComparisonRow[] }
+export interface Comparison { baseline: Batch; candidate: Batch; configurationDiff: boolean; scenarios: ComparisonRow[]; components?: ComponentMetric[] }
 
 export const tabs: { id: Tab; label: string }[] = [
   { id: 'overview', label: '表现概览' }, { id: 'runs', label: '运行记录' },
-  { id: 'batches', label: '测试任务' }, { id: 'compare', label: '结果对比' },
+  { id: 'batches', label: '测试任务' }, { id: 'compare', label: '批次对比' },
 ]
 export const categories: Record<string, string> = {
   NORMAL_PLANNING: '常规行程', MISSING_INFORMATION: '信息补充', CLOSED_VENUE: '景点关闭', WEATHER_CONFLICT: '天气冲突',
@@ -69,6 +92,10 @@ export const categories: Record<string, string> = {
   STRICT_BUDGET: '预算限制', POI_NOT_EXIST: '地点纠错', ROUTE_TOO_DENSE: '路线过密',
 }
 export const taskNames: Record<string, string> = { PLANNING: '行程规划', CHAT: '日常对话', TOOL_CALL: '工具调用', RAG: '资料检索', UNKNOWN: '未分类' }
+export const agentNames: Record<string, string> = { 'planning-agent': '行程规划', 'itinerary-agent': '行程编排', 'poi-research': '景点检索', 'route-optimizer': '路线优化', 'reviewer-agent': '行程审阅', 'posthoc-scorer': '行程评分', 'travel-master': '需求处理', 'intake-agent': '需求收集' }
+export const kindNames: Record<string, string> = { AGENT: 'Agent', MODEL: '模型', TOOL: '工具', MODEL_CALL: '模型请求组' }
+export const failedSpan = (span: Pick<Span, 'status' | 'error_type'>) => ['FAILED', 'ERROR', 'TIMED_OUT', 'INTERRUPTED'].includes(span.status) || Boolean(span.error_type)
+export const phaseName = (phase: string) => phase === 'PLANNING' ? '规划' : phase === 'SCORING' ? '评分' : '其他'
 export const statusNames: Record<string, string> = {
   PLANNING_COMPLETED: '行程已生成', WAITING_INPUT: '等待补充信息', REPLIED: '已回复', FAILED: '运行失败',
   TIMED_OUT: '已超时', CANCELLED: '已取消', INTERRUPTED: '已中断', INCOMPLETE: '未完整完成',

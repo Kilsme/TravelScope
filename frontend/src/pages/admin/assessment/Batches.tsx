@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import BatchMetricsView from './BatchMetrics'
 import { Badge, Empty, Id, Overlay, Panel, RawData, ResourceState } from './common'
 import { activeStatus, categories, date, endedStatus, modeName, parse, request, rulesState, useResource } from './model'
 import type { Batch, BatchDetail, Scenario, ScoreResult, ToolMode } from './model'
@@ -41,9 +42,10 @@ function BatchResults({ id, revision, onChanged, onClose, onSample }: { id: stri
       </div></div>
       <div className="as-progress-head"><strong>已处理 {completed} / {total}</strong><span>运行失败 {data.samples.filter(sample => sample.status === 'FAILED').length} · 评分失败 {data.samples.filter(sample => sample.score_status === 'ERROR').length}</span></div>
       <progress className="as-progress" value={completed} max={Math.max(1, total)} aria-label="测试处理进度" /><p className="as-footnote">已处理包含失败、取消和中断，不等同于通过。重跑仅处理中断、取消或仍在排队的样本，不会重跑已失败的样本。</p>
-      {total ? <div className="as-table-wrap"><table className="as-table"><thead><tr><th>场景</th><th>次数</th><th>运行结果</th><th>规则检查</th><th>行程评分</th><th>操作</th></tr></thead><tbody>{data.samples.map(sample => {
+      <BatchMetricsView metrics={data.metrics} />
+      {total ? <div className="as-table-wrap"><table className="as-table"><thead><tr><th>场景</th><th>次数</th><th>运行结果</th><th>规则检查</th><th>行程评分 / 分数</th><th>操作</th></tr></thead><tbody>{data.samples.map(sample => {
         const score = parse<ScoreResult>(sample.score_json)
-        return <tr key={sample.id}><td>{sample.case_id}</td><td>第 {sample.repetition} 次</td><td><Badge status={sample.status} /></td><td><Badge status={rulesState(sample.rule_json)} /></td><td><Badge status={sample.score_status === 'SUCCEEDED' ? score?.passed === true ? 'PASS' : score?.passed === false ? 'FAIL' : 'UNKNOWN' : sample.score_status} label={sample.score_status === 'SUCCEEDED' ? score?.passed === true ? '评分达标' : score?.passed === false ? '评分未达标' : '评分结果未记录' : sample.score_status === 'RUNNING' ? '评分中' : undefined} /></td><td><button className="as-link" aria-label={`查看场景 ${sample.case_id} 第 ${sample.repetition} 次`} onClick={() => onSample(sample.id)}>查看结果 →</button></td></tr>
+        return <tr key={sample.id}><td>{sample.case_id}</td><td>第 {sample.repetition} 次</td><td><Badge status={sample.status} /></td><td><Badge status={rulesState(sample.rule_json)} /></td><td><Badge status={sample.score_status === 'SUCCEEDED' ? score?.passed === true ? 'PASS' : score?.passed === false ? 'FAIL' : 'UNKNOWN' : sample.score_status} label={sample.score_status === 'SUCCEEDED' ? score?.passed === true ? '评分达标' : score?.passed === false ? '评分未达标' : '评分结果未记录' : sample.score_status === 'RUNNING' ? '评分中' : undefined} />{sample.score_status === 'SUCCEEDED' && score?.total != null && <small>{score.total.toFixed(1)} / 100</small>}</td><td><button className="as-link" aria-label={`查看场景 ${sample.case_id} 第 ${sample.repetition} 次`} onClick={() => onSample(sample.id)}>查看结果 →</button></td></tr>
       })}</tbody></table></div> : <Empty title="暂无测试样本" />}
       <RawData value={data.batch} title="任务配置与原始数据" />
     </>}

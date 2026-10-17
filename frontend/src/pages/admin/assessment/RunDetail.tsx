@@ -1,39 +1,38 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Trace from './Trace'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Badge, CopyId, Empty, MetricRows, Overlay, Panel, RawData, ResourceState } from './common'
-import { cost, date, duration, finite, number, parse, request, sourceName, taskNames, useResource } from './model'
+import { date, duration, finite, number, parse, request, sourceName, taskNames, useResource } from './model'
 import type { BatchDetail, Evaluation, Payload, RuleResult, Run, Sample, ScoreResult, Span } from './model'
 
 const ruleNames: Record<string, string> = { FIELD_COMPLETE: '行程信息完整性', CONSTRAINT_COVERED: '需求条件检查', TOOL_ORDER: '调用依赖检查', EXPECTED_WAITING_INPUT: '补充信息行为', BUDGET: '预算检查', DAYS: '行程天数', TIME_OVERLAP: '时间冲突', BUDGET_SUM_AND_LIMIT: '费用合计与预算' }
 const methodNames: Record<string, string> = { HEURISTIC: '关键词初筛', HARD_CONSTRAINT: '明确条件核验', EVENT_EVIDENCE: '调用事件核验', EVENT_DEPENDENCY: '调用依赖核验' }
-const stepNames: Record<string, string> = { 'planning-agent': '行程规划', 'itinerary-agent': '行程编排', 'poi-research': '景点检索', 'route-optimizer': '路线优化', 'reviewer-agent': '行程审阅', 'posthoc-scorer': '行程评分', ask_user: '补充信息', 'travel-master': '需求处理' }
-const kindNames: Record<string, string> = { AGENT: '任务步骤', MODEL: '模型调用', TOOL: '工具调用' }
 
-export default function RunDetail({ id, sampleId, batchId, revision, onClose, onRunChange }: { id: string | null; sampleId: string | null; batchId: string | null; revision: number; onClose: () => void; onRunChange: (id: string) => void }) {
+export default function RunDetail({ id, sampleId, batchId, revision, onClose, onRunChange, detailTab, spanId, traceFocus, onViewChange, onSpanChange }: { id: string | null; sampleId: string | null; batchId: string | null; revision: number; onClose: () => void; onRunChange: (id: string) => void; detailTab: string; spanId: string | null; traceFocus: string | null; onViewChange: (tab: string) => void; onSpanChange: (id: string) => void }) {
   const rounds = useResource<Run[]>(sampleId ? `/samples/${encodeURIComponent(sampleId)}/runs` : null, revision)
   const context = useResource<BatchDetail>(sampleId && batchId ? `/batches/${encodeURIComponent(batchId)}` : null, revision)
   const latestId = id ?? rounds.data?.[0]?.id ?? null
   useEffect(() => { if (!id && rounds.data?.[0]) onRunChange(rounds.data[0].id) }, [id, rounds.data, onRunChange])
   const sample = context.data?.samples.find(item => item.id === sampleId)
-  return <Overlay title={sampleId ? '场景结果与运行详情' : '运行详情'} onClose={onClose} wide>
+  return <Overlay title={sampleId ? '场景结果与运行详情' : '运行详情'} onClose={onClose} wide expandable>
     {sampleId && <><ResourceState {...rounds} hasData={Boolean(rounds.data)} /><ResourceState {...context} hasData={Boolean(context.data)} />
       {rounds.data && <section className="as-rounds"><div className="as-section-head"><h3>{sample?.case_id ?? '测试场景'} · 全部运行轮次</h3><span className="as-muted">共 {rounds.data.length} 轮</span></div><div className="as-round-list">{[...rounds.data].reverse().map((run, index) => <button key={run.id} aria-pressed={latestId === run.id} onClick={() => onRunChange(run.id)}>第 {index + 1} 轮 <Badge status={run.status} /></button>)}</div></section>}
     </>}
-    {latestId ? <RunContent key={latestId} id={latestId} revision={revision} sample={sample} /> : rounds.data && <><Empty title="此场景尚无运行记录">可能仍在排队，或尚未采集到执行。可关闭后刷新任务。</Empty>{sample && <SampleResults sample={sample} />}</>}
+    {latestId ? <RunContent key={latestId} id={latestId} revision={revision} sample={sample} tab={detailTab} spanId={spanId} traceFocus={traceFocus} onViewChange={onViewChange} onSpanChange={onSpanChange} /> : rounds.data && <><Empty title="此场景尚无运行记录">可能仍在排队，或尚未采集到执行。可关闭后刷新任务。</Empty>{sample && <SampleResults sample={sample} />}</>}
   </Overlay>
 }
 
-function RunContent({ id, revision, sample }: { id: string; revision: number; sample?: Sample }) {
-  const [tab, setTab] = useState('summary')
+function RunContent({ id, revision, sample, tab, spanId, traceFocus, onViewChange, onSpanChange }: { id: string; revision: number; sample?: Sample; tab: string; spanId: string | null; traceFocus: string | null; onViewChange: (tab: string) => void; onSpanChange: (id: string) => void }) {
+
   const run = useResource<Run>(`/runs/${encodeURIComponent(id)}`, revision)
   return <>
     <ResourceState {...run} hasData={Boolean(run.data)} />
     {run.data && <>
       <div className="as-run-heading"><Badge status={run.data.status} /><span>{sourceName(run.data.source)} · {taskNames[run.data.task_type] ?? '未分类'}</span><span>{date(run.data.started_at)}</span></div>
-      <nav className="as-detail-tabs" aria-label="运行详情导航">{[['summary', '结果摘要'], ['timeline', '调用过程'], ['technical', '技术信息']].map(([key, title]) => <button key={key} aria-current={tab === key ? 'page' : undefined} onClick={() => setTab(key)}>{title}</button>)}</nav>
+      <nav className="as-detail-tabs" aria-label="运行详情导航">{[['summary', '结果与评分'], ['trace', '调用链'], ['technical', '技术信息']].map(([key, title]) => <button key={key} aria-current={tab === key ? 'page' : undefined} onClick={() => onViewChange(key)}>{title}</button>)}</nav>
       <div hidden={tab !== 'summary'}><Summary run={run.data} revision={revision} sample={sample} /></div>
-      {tab === 'timeline' && <Timeline id={id} revision={revision} />}
+      {tab === 'trace' && <Trace id={id} revision={revision} spanId={spanId} focus={traceFocus} onSelect={onSpanChange} />}
       {tab === 'technical' && <><CopyId value={run.data.id} label="运行编号" /><CopyId value={run.data.session_id} label="会话编号" /><CopyId value={run.data.trace_id} label="追踪编号" /><CopyId value={run.data.turn_id} label="轮次编号" /><RawData value={run.data} title="运行原始字段" />{sample && <RawData value={sample} title="测试样本原始字段" />}<TechnicalArtifacts id={id} revision={revision} /></>}
     </>}
   </>
@@ -61,7 +60,7 @@ function Summary({ run, revision, sample }: { run: Run; revision: number; sample
     finally { lock.current = false; setSubmitting(false) }
   }
   return <>
-    <div className="as-run-metrics"><div><span>执行用时</span><strong>{duration(run.duration_ms)}</strong></div><div><span>模型用量{tokens != null && !usageComplete ? '（仅已记录部分）' : ''}</span><strong>{number(tokens)}</strong></div><div><span>记录完整情况</span><strong>{run.data_complete === true ? '完整' : run.data_complete === false ? '不完整' : '未记录'}</strong></div></div>
+    <div className="as-run-metrics"><div><span>执行用时</span><strong>{duration(run.duration_ms)}</strong></div><div><span>模型 Token{tokens != null && !usageComplete ? '（仅已记录部分）' : ''}</span><strong>{number(tokens)}</strong></div><div><span>记录完整情况</span><strong>{run.data_complete === true ? '完整' : run.data_complete === false ? '不完整' : '未记录'}</strong></div></div>
     <ResourceState {...usage} hasData={Boolean(usage.data)} />
     {run.data_complete === false && <p className="as-notice as-notice-warning">此执行记录不完整，请结合实际行程和调用证据判断。</p>}
     {sample && <SampleResults sample={sample} showScore={false} />}
@@ -91,34 +90,4 @@ function SampleResults({ sample, showScore = true }: { sample: Sample; showScore
 function TechnicalArtifacts({ id, revision }: { id: string; revision: number }) {
   const resource = useResource<Payload[]>(`/runs/${encodeURIComponent(id)}/artifacts`, revision)
   return <><ResourceState {...resource} hasData={Boolean(resource.data)} />{resource.data && <RawData value={resource.data} title="全部保存的行程与版本" />}</>
-}
-
-function Timeline({ id, revision }: { id: string; revision: number }) {
-  const resource = useResource<Span[]>(`/runs/${encodeURIComponent(id)}/spans`, revision)
-  const [expanded, setExpanded] = useState<string | null>(null)
-  const spans = resource.data ?? []
-  const phases = [...new Set(spans.map(span => span.phase || 'OTHER'))].sort((a, b) => (a === 'PLANNING' ? -1 : a === 'SCORING' ? 1 : 0) - (b === 'PLANNING' ? -1 : b === 'SCORING' ? 1 : 0))
-  function depth(span: Span) { let count = 0, parent = span.parent_id; const seen = new Set([span.id]); while (parent && !seen.has(parent)) { seen.add(parent); const node = spans.find(item => item.id === parent); if (!node) break; count++; parent = node.parent_id }; return Math.min(count, 4) }
-  return <><p className="as-footnote">按实际开始时间展示；规划和评分阶段使用各自的时间刻度。展开步骤可查看已脱敏的调用内容。</p><ResourceState {...resource} hasData={Boolean(resource.data)} />{resource.data && !spans.length && <Empty title="暂无调用过程记录" />}{phases.map(phase => {
-    const group = spans.filter(span => (span.phase || 'OTHER') === phase)
-    const starts = group.map(span => Date.parse(span.started_at)).filter(Number.isFinite), start = Math.min(...starts)
-    const end = Math.max(...group.map(span => { const time = Date.parse(span.started_at); return Number.isFinite(time) ? Math.max(time + (span.duration_ms ?? 0), Date.parse(span.ended_at ?? '') || time) : start }))
-    const total = Math.max(1, end - start)
-    return <section className="as-timeline-phase" key={phase}><h3>{phase === 'PLANNING' ? '规划阶段' : phase === 'SCORING' ? '评分阶段' : '其他调用'}</h3>{group.map(span => {
-      const offset = Date.parse(span.started_at) - start
-      const hasTime = Number.isFinite(offset) && finite(span.duration_ms)
-      return <div className="as-timeline-step" key={span.id} style={{ marginLeft: depth(span) * 16 }}><div className="as-timeline-step-head"><div><span className="as-step-kind">{kindNames[span.kind] ?? '执行步骤'}</span><strong>{stepNames[span.name] ?? (span.kind === 'MODEL' ? '模型处理' : span.kind === 'TOOL' ? '外部工具调用' : '任务处理')}</strong></div><Badge status={span.status} label={span.status === 'ERROR' ? '调用失败' : undefined} /></div>
-        <div className="as-timeline-meta"><span>{date(span.started_at)}</span><span>{duration(span.duration_ms)}</span>{span.attempt_index != null && <span>尝试 {span.attempt_index}</span>}</div>
-        {hasTime && <div className="as-timeline-track" aria-label={`耗时 ${duration(span.duration_ms)}`}><span style={{ left: `${Math.max(0, offset / total * 100)}%`, width: `${Math.min(100 - offset / total * 100, Math.max(0.5, span.duration_ms! / total * 100))}%` }} /></div>}
-        <div className="as-timeline-meta"><span>{span.kind === 'AGENT' ? '子调用汇总用量' : '输入 / 输出用量'} {number(span.aggregate_input_tokens ?? span.input_tokens)} / {number(span.aggregate_output_tokens ?? span.output_tokens)}</span><span>已记录费用 {cost(span.cost)}{span.cost_complete !== true ? '（不完整）' : ''}</span></div>
-        {span.error_type && <p className="as-error-text">调用发生错误，详见技术记录。</p>}<div className="as-button-row"><button className="as-link" onClick={() => setExpanded(expanded === span.id ? null : span.id)} aria-expanded={expanded === span.id}>{expanded === span.id ? '收起调用内容' : '查看调用内容（已脱敏）'}</button></div>
-        {expanded === span.id && <CallPayload id={span.id} />}<RawData value={span} title="步骤技术记录" />
-      </div>
-    })}</section>
-  })}</>
-}
-
-function CallPayload({ id }: { id: string }) {
-  const resource = useResource<Payload[]>(`/spans/${encodeURIComponent(id)}/payload`)
-  return <div className="as-call-content"><ResourceState {...resource} hasData={Boolean(resource.data)} />{resource.data && (resource.data.length ? resource.data.map((item, index) => <div key={item.id ?? index}><h4>{item.kind === 'INPUT' ? '输入内容' : item.kind === 'OUTPUT' ? '返回内容' : '调用内容'}</h4><pre>{item.body}</pre></div>) : <p className="as-muted">正文未记录或已超过 30 天保留期。</p>)}</div>
 }
