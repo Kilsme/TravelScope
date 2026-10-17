@@ -80,7 +80,7 @@ public class AssessmentBatches {
         return id;
     }
     public List<Map<String,Object>> list(){return jdbc.queryForList("SELECT id,status,tool_mode,repetitions,created_at,ended_at FROM assessment_batches ORDER BY created_at DESC LIMIT 100");}
-    public Object detail(UUID id){return Map.of("batch",queries.one("SELECT * FROM assessment_batches WHERE id=?",id),"samples",jdbc.queryForList("SELECT id,case_id,repetition,status,rule_json,score_status,score_json FROM assessment_samples WHERE batch_id=? ORDER BY case_id,repetition",id));}
+    public Object detail(UUID id){return Map.of("batch",queries.one("SELECT * FROM assessment_batches WHERE id=?",id),"samples",jdbc.queryForList("SELECT id,case_id,repetition,status,rule_json,score_status,score_json FROM assessment_samples WHERE batch_id=? ORDER BY case_id,repetition",id),"metrics",queries.batchMetrics(id));}
     @EventListener(ApplicationReadyEvent.class)
     public void recover(){
         if(!properties.isEnabled())return;
