@@ -1,0 +1,106 @@
+package com.travelscope.assessment;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.core.agent.RuntimeContext;
+import io.agentscope.core.message.*;
+import io.agentscope.core.model.*;
+import io.agentscope.core.permission.*;
+import io.agentscope.harness.agent.HarnessAgent;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.jdbc.core.JdbcTemplate;
+import reactor.core.publisher.Flux;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+class AssessmentArtifactOwnershipTest {
+    private static final String SESSION="conv-artifact";
+    private static final String PLAN="tasks/"+SESSION+"/itinerary_draft.md";
+    @TempDir Path workspace;
+    private String lastToolOutput="";
+    private HarnessAgent agent(ObservationStore store,String tool,Map<String,Object> input) throws Exception {
+        AtomicInteger calls=new AtomicInteger();
+        Model model=new Model(){
+            public String getModelName(){return "synthetic-artifact-model";}
+            public Flux<ChatResponse> stream(List<Msg> messages,List<ToolSchema> schemas,GenerateOptions options){
+                List<ContentBlock> content=tool!=null&&calls.getAndIncrement()==0
+                    ?List.of(ToolUseBlock.builder().id(UUID.randomUUID().toString()).name(tool).input(input).content(new ObjectMapper().valueToTree(input).toString()).build())
+                    :List.of(TextBlock.builder().text("synthetic complete").build());
+                return Flux.just(ChatResponse.builder().content(content).build());
+            }
+        };
+        return HarnessAgent.builder().name("planning-agent").model(model).workspace(workspace.toString())
+            .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
+            .disableDefaultWorkspaceSkills().disableShellTool().middlewares(List.of(new ObservationMiddleware(store))).maxIters(3).build();
+    }
+    private RuntimeContext runtime(ObservationContext observation){return RuntimeContext.builder().userId("synthetic-user").sessionId(SESSION).put(ObservationContext.KEY,observation).build();}
+    private ObservationStore store(JdbcTemplate jdbc){var config=new AssessmentProperties();config.setEnabled(true);return new ObservationStore(jdbc,config,new PayloadRedactor(new ObjectMapper()));}
+    private void run(HarnessAgent agent,ObservationContext observation){
+        try {
+            var ctx=runtime(observation);ctx.put(ArtifactSnapshotReader.FILESYSTEM_KEY,agent.getWorkspaceManager().getFilesystem());
+            var events=agent.streamEvents(new io.agentscope.core.message.UserMessage("synthetic test"),ctx).collectList().block(Duration.ofSeconds(10));
+            String diagnostic=events.stream().filter(e->e instanceof io.agentscope.core.event.ToolResultTextDeltaEvent).map(e->((io.agentscope.core.event.ToolResultTextDeltaEvent)e).getDelta()).collect(java.util.stream.Collectors.joining());
+            lastToolOutput=diagnostic;
+            assertFalse(events.stream().anyMatch(e->e instanceof io.agentscope.core.event.ToolResultEndEvent t&&t.getState()==ToolResultState.ERROR),diagnostic);
+        }finally{agent.close();}
+    }
+
+    @Test void plannerExitAndOldFileAreInsufficient() throws Exception {
+        var jdbc=mock(JdbcTemplate.class);var store=store(jdbc);
+        try {
+            var observation=store.begin(SESSION,null);var agent=agent(store,null,Map.of());
+            assertTrue(agent.getWorkspaceManager().getFilesystem().write(runtime(observation),PLAN,"previous plan").isSuccess());
+            run(agent,observation);assertNull(store.planningArtifact(observation));
+            store.finish(observation,"PLANNING_COMPLETED",10,true);store.flush();
+            var terminal=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().startsWith("UPDATE assessment_runs SET status=CASE")).findFirst().orElseThrow();
+            assertEquals("INCOMPLETE",terminal.getArgument(1));assertEquals(false,terminal.getArgument(7));
+        }finally{store.close();}
+    }
+
+    @Test void successfulWriteOfIdenticalContentBelongsToCurrentExecution() throws Exception {
+        var jdbc=mock(JdbcTemplate.class);var store=store(jdbc);
+        try {
+            var observation=store.begin(SESSION,null);var agent=agent(store,"edit_file",Map.of("path",PLAN,"old_string","same plan","new_string","same plan","replace_all",false));
+            assertTrue(agent.getWorkspaceManager().getFilesystem().write(runtime(observation),PLAN,"same plan").isSuccess());
+            run(agent,observation);assertEquals("same plan",store.planningArtifact(observation),lastToolOutput);store.flush();
+            var persisted=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().startsWith("INSERT INTO assessment_payloads")&&Arrays.asList(i.getArguments()).contains("ARTIFACT")).toList();
+            assertEquals(1,persisted.size());assertEquals(observation.runId(),persisted.getFirst().getArgument(2));assertNotNull(persisted.getFirst().getArgument(3));
+            store.finish(observation,"PLANNING_COMPLETED",10,true);
+        }finally{store.close();}
+    }
+
+    @Test void multiTurnNoWriteDoesNotReusePreviousArtifactAndEditProducesNewSnapshot() throws Exception {
+        var jdbc=mock(JdbcTemplate.class);var store=store(jdbc);UUID sample=UUID.randomUUID();
+        try {
+            var first=store.begin(SESSION,sample);run(agent(store,"write_file",Map.of("path",PLAN,"content","old requirement plan")),first);
+            assertEquals("old requirement plan",store.planningArtifact(first),lastToolOutput);store.finish(first,"PLANNING_COMPLETED",10,true);
+            var second=store.begin(SESSION,sample);run(agent(store,null,Map.of()),second);
+            assertTrue(store.currentArtifacts(second).isEmpty());store.finish(second,"INCOMPLETE",10,false);
+            var third=store.begin(SESSION,sample);run(agent(store,"edit_file",Map.of("path",PLAN,"old_string","old requirement","new_string","modified requirement","replace_all",false)),third);
+            assertEquals("modified requirement plan",store.planningArtifact(third),lastToolOutput);store.finish(third,"PLANNING_COMPLETED",10,true);
+        }finally{store.close();}
+    }
+
+    @Test void writeForAnotherConversationCannotCreateThisRunsArtifact() throws Exception {
+        var jdbc=mock(JdbcTemplate.class);var store=store(jdbc);
+        try {
+            var observation=store.begin(SESSION,null);
+            run(agent(store,"write_file",Map.of("path","tasks/another-conversation/itinerary_draft.md","content","other plan")),observation);
+            assertNull(store.planningArtifact(observation));store.finish(observation,"INCOMPLETE",10,false);
+        }finally{store.close();}
+    }
+    @Test void filesystemErrorTextWithFrameworkSuccessDoesNotProveAWrite() throws Exception {
+        var jdbc=mock(JdbcTemplate.class);var store=store(jdbc);
+        try {
+            var observation=store.begin(SESSION,null);var agent=agent(store,"write_file",Map.of("path",PLAN,"content","replacement"));
+            assertTrue(agent.getWorkspaceManager().getFilesystem().write(runtime(observation),PLAN,"previous plan").isSuccess());
+            run(agent,observation);assertTrue(lastToolOutput.contains("already exists"));
+            assertNull(store.planningArtifact(observation));store.finish(observation,"INCOMPLETE",10,false);
+        }finally{store.close();}
+    }
+
+}
