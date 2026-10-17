@@ -1,0 +1,14 @@
+{
+  "name": "scale-6",
+  "days": 2,
+  "seed": 20260106,
+  "hotel": {"name": "西湖文化酒店", "lng": 120.15, "lat": 30.25},
+  "pois": [
+    {"name": "西湖", "lng": 120.1449, "lat": 30.2436, "durationMin": 120},
+    {"name": "雷峰塔", "lng": 120.1486, "lat": 30.2312, "durationMin": 120, "openStart": "08:00", "openClose": "17:30"},
+    {"name": "灵隐寺", "lng": 120.0962, "lat": 30.2435, "durationMin": 120, "openStart": "07:00", "openClose": "18:00"},
+    {"name": "断桥残雪", "lng": 120.1503, "lat": 30.2594, "durationMin": 60},
+    {"name": "苏堤春晓", "lng": 120.135, "lat": 30.24, "durationMin": 90},
+    {"name": "河坊街", "lng": 120.17, "lat": 30.24, "durationMin": 120, "openStart": "09:00", "openClose": "21:00"}
+  ]
+}
