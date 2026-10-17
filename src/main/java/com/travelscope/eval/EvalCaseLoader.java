@@ -45,31 +45,18 @@ public final class EvalCaseLoader {
      * @throws IllegalArgumentException 任一用例非法，或 caseId 重复
      */
     public static List<EvalCase> loadAll() {
-        ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-        if (classLoader == null) {
-            classLoader = EvalCaseLoader.class.getClassLoader();
-        }
-        URL dir = classLoader.getResource(CASE_DIR);
-        if (dir == null) {
-            throw new IllegalStateException("用例库目录不存在: classpath:" + CASE_DIR);
-        }
-        if (!"file".equals(dir.getProtocol())) {
-            throw new IllegalStateException("用例库目录不可枚举（非文件系统）: " + dir);
-        }
-        Path dirPath;
-        try {
-            dirPath = Path.of(dir.toURI());
-        } catch (URISyntaxException e) {
-            throw new IllegalStateException("用例库目录路径非法: " + dir, e);
-        }
         List<EvalCase> cases = new ArrayList<>();
-        try (Stream<Path> files = Files.list(dirPath)) {
-            files.filter(file -> file.getFileName().toString().endsWith(".json"))
-                    .sorted()
-                    .forEach(file -> cases.add(load(file)));
-        } catch (IOException e) {
-            throw new UncheckedIOException("扫描用例库目录失败: " + dir, e);
-        }
+        try {
+            var resources = new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
+                    .getResources("classpath*:evalcases/*.json");
+            for (var resource : resources) {
+                try (var in = resource.getInputStream()) {
+                    EvalCase parsed=fromJson(new String(in.readAllBytes(),StandardCharsets.UTF_8),resource.getFilename());
+                    if (!(parsed.caseId()+".json").equals(resource.getFilename())) throw new IllegalArgumentException("filename mismatch");
+                    cases.add(parsed);
+                }
+            }
+        } catch (IOException e) { throw new UncheckedIOException(e); }
         Set<String> seen = new HashSet<>();
         for (EvalCase evalCase : cases) {
             if (!seen.add(evalCase.caseId())) {
