@@ -49,7 +49,7 @@ services:
   # ======================== MinIO ========================
   # 用于文档存储（PDF、Word、图片等旅游文档）
   minio:
-    image: minio/minio:latest
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
     container_name: travelscope-minio
     ports:
       - "9000:9000"
