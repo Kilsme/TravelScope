@@ -8,10 +8,32 @@
   ],
   "expectations": {
     "rules": [
-      {"type": "FIELD_COMPLETE", "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维，预算明细需逐项列出"},
-      {"type": "CONSTRAINT_COVERED", "desc": "严格预算硬约束：预算汇总需明确总预算3000，且明细合计不得超过3000", "params": {"keyword": "3000"}},
-      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维，预算明细需逐项列出",
+        "params": {
+          "expectedDays": "4",
+          "budgetLimit": "3000"
+        }
+      },
+      {
+        "type": "CONSTRAINT_COVERED",
+        "desc": "严格预算硬约束：预算汇总需明确总预算3000，且明细合计不得超过3000",
+        "params": {
+          "keyword": "3000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "先 POI 检索，后路线优化，再行程组装",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
     ],
-    "rubric": {"minTotal": 80}
+    "rubric": {
+      "minTotal": 80
+    }
   }
 }

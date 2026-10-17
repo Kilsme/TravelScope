@@ -8,10 +8,31 @@
   ],
   "expectations": {
     "rules": [
-      {"type": "FIELD_COMPLETE", "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维；每日2~3个儿童友好POI并预留午休，节奏松"},
-      {"type": "CONSTRAINT_COVERED", "desc": "亲子偏好需覆盖：行程需包含孩子想看的大熊猫相关景点", "params": {"keyword": "熊猫"}},
-      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "4天行程含每日POI、预算汇总及交通/住宿/天气四维；每日2~3个儿童友好POI并预留午休，节奏松",
+        "params": {
+          "expectedDays": "4"
+        }
+      },
+      {
+        "type": "CONSTRAINT_COVERED",
+        "desc": "亲子偏好需覆盖：行程需包含孩子想看的大熊猫相关景点",
+        "params": {
+          "keyword": "熊猫"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "先 POI 检索，后路线优化，再行程组装",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
     ],
-    "rubric": {"minTotal": 80}
+    "rubric": {
+      "minTotal": 80
+    }
   }
 }

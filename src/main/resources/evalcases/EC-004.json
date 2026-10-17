@@ -8,10 +8,31 @@
   ],
   "expectations": {
     "rules": [
-      {"type": "FIELD_COMPLETE", "desc": "3天行程含每日POI、预算汇总及交通/住宿/天气四维；迪士尼安排一整天，其余两天儿童友好、节奏松"},
-      {"type": "CONSTRAINT_COVERED", "desc": "亲子核心诉求需落地：行程需包含迪士尼一整天的安排", "params": {"keyword": "迪士尼"}},
-      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "3天行程含每日POI、预算汇总及交通/住宿/天气四维；迪士尼安排一整天，其余两天儿童友好、节奏松",
+        "params": {
+          "expectedDays": "3"
+        }
+      },
+      {
+        "type": "CONSTRAINT_COVERED",
+        "desc": "亲子核心诉求需落地：行程需包含迪士尼一整天的安排",
+        "params": {
+          "keyword": "迪士尼"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "先 POI 检索，后路线优化，再行程组装",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
     ],
-    "rubric": {"minTotal": 80}
+    "rubric": {
+      "minTotal": 80
+    }
   }
 }

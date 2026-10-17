@@ -4,6 +4,7 @@ package com.travelscope.eval;
  * EvalCase 场景类别（FR-S15 用例分类）。
  */
 public enum EvalCategory {
+    NORMAL_PLANNING, MISSING_INFORMATION, CLOSED_VENUE, WEATHER_CONFLICT, TOOL_FAILURE, MODIFIED_REQUIREMENTS,
     /** 多城市串联 */
     MULTI_CITY,
     /** 亲子出行 */

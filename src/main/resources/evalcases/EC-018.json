@@ -1,0 +1,30 @@
+{
+  "caseId": "EC-018",
+  "category": "TOOL_FAILURE",
+  "userMessages": [
+    "从北京去上海3天预算3000元，天气查询失败时明确缺失证据。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "工具故障（启发式）",
+        "params": {
+          "expectedDays": "3",
+          "budgetLimit": "3000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

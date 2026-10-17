@@ -1,0 +1,21 @@
+{
+  "caseId": "EC-012",
+  "category": "MISSING_INFORMATION",
+  "userMessages": [
+    "帮我安排旅行"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "信息缺失时等待补充，不要求完整规划",
+        "params": {
+          "expectedOutcome": "WAITING_INPUT"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

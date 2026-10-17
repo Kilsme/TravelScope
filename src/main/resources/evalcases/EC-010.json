@@ -7,10 +7,25 @@
   ],
   "expectations": {
     "rules": [
-      {"type": "FIELD_COMPLETE", "desc": "输出的行程方案需含每日POI、预算汇总及交通/天气信息（一日游场景住宿可从简说明）"},
-      {"type": "TIME_CONFLICT_HANDLED", "desc": "单日8个远距离景点（朱家角在青浦远郊、迪士尼小镇在川沙，通勤远超90分钟上限）时间冲突不可行：系统应明确指出并给出拆分多天或取舍后的可行方案，不得直接输出不可能完成的时刻表"},
-      {"type": "TOOL_ORDER", "desc": "先 POI 检索，后路线优化，再行程组装"}
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "输出的行程方案需含每日POI、预算汇总及交通/天气信息（一日游场景住宿可从简说明）"
+      },
+      {
+        "type": "TIME_CONFLICT_HANDLED",
+        "desc": "单日8个远距离景点（朱家角在青浦远郊、迪士尼小镇在川沙，通勤远超90分钟上限）时间冲突不可行：系统应明确指出并给出拆分多天或取舍后的可行方案，不得直接输出不可能完成的时刻表"
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "先 POI 检索，后路线优化，再行程组装",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
     ],
-    "rubric": {"minTotal": 80}
+    "rubric": {
+      "minTotal": 80
+    }
   }
 }
