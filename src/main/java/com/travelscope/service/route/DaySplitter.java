@@ -243,8 +243,9 @@ public class DaySplitter {
     public record SplitOutcome(List<DayAcc> days, List<RouteSolveResult.UnplacedPoi> unplaced) {
     }
 
-    /** 开放窗兼容：到达 ≥ openStart 且 到达+游玩 ≤ openClose（皆空=全天兼容） */
-    private static boolean windowCompatible(PoiCandidate p, int arriveMinute, int durationMin) {
+    /** 开放窗兼容：到达 ≥ openStart 且 到达+游玩 ≤ openClose（皆空=全天兼容）。
+     *  包私有共用：TwoOptImprover 的反转判定与插入判定必须逐字同语义 */
+    static boolean windowCompatible(PoiCandidate p, int arriveMinute, int durationMin) {
         if (p.openStart() == null || p.openClose() == null) {
             return true;
         }
@@ -252,7 +253,7 @@ public class DaySplitter {
                 && arriveMinute + durationMin <= minutesOf(p.openClose());
     }
 
-    private static int durationOf(PoiCandidate p) {
+    static int durationOf(PoiCandidate p) {
         return p.suggestedDurationMin() == null ? DEFAULT_DURATION_MIN : p.suggestedDurationMin();
     }
 
