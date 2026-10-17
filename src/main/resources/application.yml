@@ -3,6 +3,9 @@
 ## ============================================================================
 
 spring:
+  config:
+    import: "optional:file:./.env[.properties]"
+
   application:
     name: TravelScope
 

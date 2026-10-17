@@ -1,0 +1,7 @@
+{
+  "name": "travelscope-backend",
+  "private": true,
+  "scripts": {
+    "dev": ".\\dev.cmd"
+  }
+}

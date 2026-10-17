@@ -153,6 +153,16 @@ cp .env.example .env   # 填入下列 Key
 
 ### 4. 启动后端与前端
 
+Windows 下，在项目根目录用一条命令启动后端（默认 8080）：
+
+```powershell
+npm run dev
+```
+
+该命令通过根目录的 `package.json` 调用 `dev.cmd`，无需在根目录执行 `npm install`。脚本会先执行 Maven 打包（跳过测试），成功后启动后端；打包失败时停止。需要 Node.js/npm、Java 21 和 Maven 已加入 `PATH`，按 `Ctrl+C` 停止后端。每次执行都会重新打包，代码和配置修改后也使用同一条命令。在 `frontend` 目录执行 `npm run dev` 则启动前端。
+
+也可以手动执行以下命令：
+
 ```bash
 # 后端（默认 8080）——推荐 java -jar（Boot jar 依赖完整）
 mvn package -DskipTests
