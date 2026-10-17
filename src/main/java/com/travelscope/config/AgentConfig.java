@@ -96,6 +96,11 @@ import java.util.Map;
  */
 @Configuration
 public class AgentConfig {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.travelscope.assessment.ObservationStore observationStore;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.travelscope.assessment.ObservationMiddleware observationMiddleware;
+
 
     private static final Logger log = LoggerFactory.getLogger(AgentConfig.class);
 
@@ -264,9 +269,9 @@ public class AgentConfig {
      */
     @Bean
     @org.springframework.context.annotation.Primary
-    public Model gatewayChatModel(OpenAIChatModel gatewayLightModel) {
+    public Model gatewayChatModel(@org.springframework.beans.factory.annotation.Qualifier("gatewayLightModel") Model gatewayLightModel) {
         var mg = appProperties.getModelGateway();
-        Model primary = OpenAIChatModel.builder()
+        Model primary = new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
                 .baseUrl(mg.getBaseUrl())
                 .apiKey(mg.getApiKey())
                 .modelName(mg.getModel())
@@ -275,7 +280,7 @@ public class AgentConfig {
                 .generateOptions(glmDefaults(mg))
                 .nativeStructuredOutput(mg.isNativeStructuredOutput())
                 .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build();
+                .build(), observationStore);
         var gw = appProperties.getLlmGateway();
         if (!gw.isEnabled()) {
             return primary;   // 网关关闭：裸模型，保持旧行为
@@ -291,7 +296,7 @@ public class AgentConfig {
                 gw.isFallbackEnabled() ? gatewayLightModel : null, cb,
                 Duration.ofSeconds(gw.getModelTimeoutSeconds()),
                 Duration.ofSeconds(gw.getFirstPacketTimeoutSeconds()),
-                gw.isFallbackEnabled(), tracingHelper);
+                gw.isFallbackEnabled(), tracingHelper).assessment(observationStore);
     }
 
     /**
@@ -312,16 +317,16 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public OpenAIChatModel gatewayLightModel() {
+    public Model gatewayLightModel() {
         var mg = appProperties.getModelGateway();
-        return OpenAIChatModel.builder()
+        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
                 .baseUrl(mg.getBaseUrl())
                 .apiKey(mg.getApiKey())
                 .modelName(appProperties.getIntentCascade().getL2Model())
                 .stream(true)
                 .nativeStructuredOutput(mg.isNativeStructuredOutput())
                 .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build();
+                .build(), observationStore);
     }
 
     /**
@@ -334,16 +339,16 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public OpenAIChatModel conversationSummaryModel() {
+    public Model conversationSummaryModel() {
         var mg = appProperties.getModelGateway();
-        return OpenAIChatModel.builder()
+        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
                 .baseUrl(mg.getBaseUrl())
                 .apiKey(mg.getApiKey())
                 .modelName(appProperties.getChatHistory().getSummary().getModel())
                 .stream(true)
                 .nativeStructuredOutput(mg.isNativeStructuredOutput())
                 .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build();
+                .build(), observationStore);
     }
 
     /**
@@ -355,9 +360,9 @@ public class AgentConfig {
      * </p>
      */
     @Bean
-    public OpenAIChatModel gatewayReviewerModel() {
+    public Model gatewayReviewerModel() {
         var mg = appProperties.getModelGateway();
-        return OpenAIChatModel.builder()
+        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
                 .baseUrl(mg.getBaseUrl())
                 .apiKey(mg.getApiKey())
                 .modelName(mg.getReviewerModel())
@@ -366,7 +371,7 @@ public class AgentConfig {
                 .generateOptions(glmDefaults(mg))
                 .nativeStructuredOutput(mg.isNativeStructuredOutput())
                 .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build();
+                .build(), observationStore);
     }
 
     /**
@@ -395,10 +400,25 @@ public class AgentConfig {
      */
     @Bean
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
-                                          OpenAIChatModel gatewayReviewerModel,
+                                          @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model gatewayReviewerModel,
                                           TaskRegistry taskRegistry,
                                           TaskWorkspaceService taskWorkspaceService,
                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
+        return buildMasterAgent(toolkit,gatewayChatModel,gatewayReviewerModel,taskRegistry,taskWorkspaceService,travelAgentStateStore);
+    }
+
+    @Bean
+    @org.springframework.context.annotation.Scope("prototype")
+    public HarnessAgent assessmentMasterAgent(Toolkit toolkit,
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model reviewerModel,
+            TaskRegistry registry,TaskWorkspaceService workspace) throws IOException {
+        return buildMasterAgent(toolkit.copy(),mainModel,reviewerModel,registry,workspace,new InMemoryAgentStateStore());
+    }
+
+    private HarnessAgent buildMasterAgent(Toolkit toolkit,Model gatewayChatModel,Model gatewayReviewerModel,
+            TaskRegistry taskRegistry,TaskWorkspaceService taskWorkspaceService,
+            io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
         // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
         // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
         // ask_user 反问出口——ask_user 的工具结果经 SSE 层转为 clarify_question 事件推给前端）
@@ -434,7 +454,7 @@ public class AgentConfig {
                 //         + 意图路由（onSystemPrompt 注入本轮路由指令）
                 //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
                 //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
-                .middlewares(List.of(new PromptMaskingMiddleware(
+                .middlewares(List.of(observationMiddleware, new PromptMaskingMiddleware(
                                 appProperties.getPromptMasking().isEnabled()),
                         new IntentRouterMiddleware(),
                         new PlanningGateMiddleware(taskRegistry),
@@ -545,8 +565,9 @@ public class AgentConfig {
                 .build();
 
         try {
-            return HarnessAgent.builder()
+            HarnessAgent planner = HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
+                    .middlewares(List.of(observationMiddleware))
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
                     .model(gatewayChatModel)
                     // 模型分流（FR-S08）：reviewer-agent 解析到质检评分模型（独立配置），
@@ -566,6 +587,7 @@ public class AgentConfig {
                     .stateStore(new InMemoryAgentStateStore())
                     .subagents(List.of(poiResearch, routeOptimizer, reviewer))
                     .build();
+            return planner;
         } catch (IOException e) {
             // subagentFactory 的 Function 不允许抛受检异常，转非受检
             throw new IllegalStateException("构建 planning-agent 失败: " + e.getMessage(), e);
@@ -584,7 +606,9 @@ public class AgentConfig {
     public IntentClassifier intentClassifier(
             @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
             Model gatewayChatModel) {
-        return new IntentClassifier(gatewayChatModel);
+        IntentClassifier classifier = new IntentClassifier(gatewayChatModel);
+        classifier.setObservation(observationMiddleware);
+        return classifier;
     }
 
     /**
@@ -599,10 +623,17 @@ public class AgentConfig {
             IntentCache intentCache,
             IntentClassifier intentClassifier,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayLightModel")
-            OpenAIChatModel gatewayLightModel) {
+            Model gatewayLightModel) {
         LightweightIntentClassifier l2 = new LightweightIntentClassifier(gatewayLightModel);
+        l2.setObservation(observationMiddleware);
         return new IntentCascadeRouter(appProperties, intentCache,
-                l2::classify, intentClassifier::classify, tracingHelper);
+                new IntentCascadeRouter.LlmClassifier() {
+                    public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s) {return l2.classify(m,c,u,s);}
+                    public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s,com.travelscope.assessment.ObservationContext o) {return l2.classify(m,c,u,s,o);}
+                }, new IntentCascadeRouter.LlmClassifier() {
+                    public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s) {return intentClassifier.classify(m,c,u,s);}
+                    public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s,com.travelscope.assessment.ObservationContext o) {return intentClassifier.classify(m,c,u,s,o);}
+                }, tracingHelper);
     }
 
     /**
