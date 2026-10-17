@@ -4,6 +4,7 @@ import { getRole, isLoggedIn } from './api/auth'
 import ChatPage from './pages/ChatPage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
+import AssessmentPage from './pages/admin/AssessmentPage'
 import AdminLayout from './pages/admin/AdminLayout'
 import TokenUsagePage from './pages/admin/TokenUsagePage'
 import UsersPage from './pages/admin/UsersPage'
@@ -50,6 +51,7 @@ export default function App() {
           }
         >
           <Route index element={<Navigate to="token-usage" replace />} />
+          <Route path="assessment" element={<AssessmentPage />} />
           <Route path="token-usage" element={<TokenUsagePage />} />
           <Route path="users" element={<UsersPage />} />
           <Route path="documents" element={<DocUploadPage />} />
