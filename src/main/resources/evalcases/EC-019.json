@@ -1,0 +1,25 @@
+{
+  "caseId": "EC-019",
+  "category": "ROUTE_TOO_DENSE",
+  "userMessages": [
+    "一天游遍北京故宫、八达岭、颐和园、天坛，预算1000元。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "路线过密（启发式）",
+        "params": {
+          "expectedDays": "1",
+          "budgetLimit": "1000"
+        }
+      },
+      {
+        "type": "TIME_CONFLICT_HANDLED"
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

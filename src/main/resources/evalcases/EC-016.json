@@ -1,0 +1,30 @@
+{
+  "caseId": "EC-016",
+  "category": "CLOSED_VENUE",
+  "userMessages": [
+    "周一去北京故宫1天，预算1000元，请核实开放时间。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "闭馆（启发式）",
+        "params": {
+          "expectedDays": "1",
+          "budgetLimit": "1000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

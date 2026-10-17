@@ -1,0 +1,27 @@
+{
+  "caseId": "EC-015",
+  "category": "POI_NOT_EXIST",
+  "userMessages": [
+    "去火星海底故宫玩2天，请核实地点是否存在。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "不存在地点（启发式）",
+        "params": {
+          "expectedDays": "2"
+        }
+      },
+      {
+        "type": "NO_HALLUCINATION",
+        "params": {
+          "poi": "火星海底故宫"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

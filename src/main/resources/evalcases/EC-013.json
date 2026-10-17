@@ -1,0 +1,28 @@
+{
+  "caseId": "EC-013",
+  "category": "STRICT_BUDGET",
+  "userMessages": [
+    "上海出发去杭州2天，总预算100元。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "极低预算（启发式）",
+        "params": {
+          "expectedDays": "2",
+          "budgetLimit": "100"
+        }
+      },
+      {
+        "type": "CONSTRAINT_COVERED",
+        "params": {
+          "keyword": "100"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

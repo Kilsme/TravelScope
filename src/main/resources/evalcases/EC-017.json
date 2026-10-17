@@ -1,0 +1,30 @@
+{
+  "caseId": "EC-017",
+  "category": "WEATHER_CONFLICT",
+  "userMessages": [
+    "暴雨预警仍想全天登山，杭州2天预算2000元，请给安全替代。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "天气冲突（启发式）",
+        "params": {
+          "expectedDays": "2",
+          "budgetLimit": "2000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

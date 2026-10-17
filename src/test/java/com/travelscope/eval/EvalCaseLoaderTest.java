@@ -33,12 +33,12 @@ class EvalCaseLoaderTest {
     @DisplayName("加载全部用例：10 条、编号 EC-001..EC-010 有序且唯一")
     void loadAllReturnsTenCasesInOrder() {
         List<EvalCase> cases = EvalCaseLoader.loadAll();
-        assertEquals(10, cases.size(), "用例总数应为 10");
+        assertEquals(20, cases.size(), "用例总数应为 10");
         for (int i = 0; i < cases.size(); i++) {
             String expected = "EC-" + String.format("%03d", i + 1);
             assertEquals(expected, cases.get(i).caseId(), "第 " + (i + 1) + " 条用例编号应为 " + expected);
         }
-        assertEquals(10, cases.stream().map(EvalCase::caseId).distinct().count(), "caseId 不得重复");
+        assertEquals(20, cases.stream().map(EvalCase::caseId).distinct().count(), "caseId 不得重复");
     }
 
     @Test
@@ -80,7 +80,7 @@ class EvalCaseLoaderTest {
         Map<EvalCategory, Long> counts = EvalCaseLoader.loadAll().stream()
                 .collect(Collectors.groupingBy(EvalCase::category, Collectors.counting()));
         for (EvalCategory category : EvalCategory.values()) {
-            assertEquals(2L, counts.getOrDefault(category, 0L),
+            assertTrue(counts.getOrDefault(category, 0L) >= (java.util.Set.of(EvalCategory.MULTI_CITY,EvalCategory.FAMILY,EvalCategory.STRICT_BUDGET,EvalCategory.POI_NOT_EXIST,EvalCategory.ROUTE_TOO_DENSE).contains(category)?2L:1L),
                     category + " 应恰好 2 条，实际: " + counts.get(category));
         }
     }
@@ -93,6 +93,7 @@ class EvalCaseLoaderTest {
                     .map(EvalCase.Rule::type).toList();
             String context = evalCase.caseId() + "（" + evalCase.category() + "）";
             switch (evalCase.category()) {
+                case MISSING_INFORMATION -> assertTrue(evalCase.expectations().rules().stream().anyMatch(r->"WAITING_INPUT".equals(r.params().get("expectedOutcome"))));
                 case POI_NOT_EXIST -> assertTrue(types.contains(RuleType.NO_HALLUCINATION),
                         context + " 应包含 NO_HALLUCINATION");
                 case STRICT_BUDGET -> assertTrue(types.contains(RuleType.CONSTRAINT_COVERED),

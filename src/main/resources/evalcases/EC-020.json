@@ -1,0 +1,31 @@
+{
+  "caseId": "EC-020",
+  "category": "MODIFIED_REQUIREMENTS",
+  "userMessages": [
+    "杭州3天预算3000元，不吃辣，请规划行程。",
+    "现在改为带80岁老人出行，请减少步行并调整原方案。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "修改需求（启发式）",
+        "params": {
+          "expectedDays": "3",
+          "budgetLimit": "3000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

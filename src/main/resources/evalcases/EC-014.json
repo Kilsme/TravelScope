@@ -1,0 +1,31 @@
+{
+  "caseId": "EC-014",
+  "category": "MULTI_CITY",
+  "userMessages": [
+    "北京天津石家庄共5天，两人预算6000元，请规划行程。",
+    "改为不去石家庄，保留5天和6000元预算。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "多城市修改（启发式）",
+        "params": {
+          "expectedDays": "5",
+          "budgetLimit": "6000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "caseId": "EC-011",
+  "category": "NORMAL_PLANNING",
+  "userMessages": [
+    "北京出发去杭州3天，两人预算5000元，喜欢历史，住地铁附近。"
+  ],
+  "expectations": {
+    "rules": [
+      {
+        "type": "FIELD_COMPLETE",
+        "desc": "普通周末规划（启发式）",
+        "params": {
+          "expectedDays": "3",
+          "budgetLimit": "5000"
+        }
+      },
+      {
+        "type": "TOOL_ORDER",
+        "desc": "仅按显式事件依赖验证，未声明依赖返回UNKNOWN",
+        "params": {
+          "before": "poi-research",
+          "after": "route-optimizer"
+        }
+      }
+    ],
+    "rubric": {
+      "minTotal": 80
+    }
+  }
+}

@@ -9,7 +9,7 @@ import com.travelscope.entity.User;
 import com.travelscope.service.ChatService;
 import com.travelscope.service.ConversationService;
 import com.travelscope.service.EvaluationRecordService;
-import io.agentscope.extensions.model.openai.OpenAIChatModel;
+import io.agentscope.core.model.Model;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -73,7 +73,7 @@ class EvalCaseRunnerTest {
     /** 质检评分模型（复用 gatewayReviewerModel Bean，即 travelscope.model-gateway.reviewer-model 配置） */
     @Autowired
     @Qualifier("gatewayReviewerModel")
-    private OpenAIChatModel reviewerModel;
+    private Model reviewerModel;
 
     /** 轮询间隔 */
     private static final long POLL_INTERVAL_MS = 2000;
@@ -170,7 +170,7 @@ class EvalCaseRunnerTest {
                 span.end();
             }
         }
-        boolean rulesPassed = ruleResults.stream().noneMatch(RuleAssertion::countsAsFailure);
+        boolean rulesPassed = ruleResults.stream().allMatch(RuleAssertion::passed);
         int minTotal = evalCase.expectations().rubric().minTotal();
         boolean rubricPassed = rubric != null && rubric.normalizedTotal() >= minTotal;
         boolean passed = error == null && rulesPassed && rubricPassed;
