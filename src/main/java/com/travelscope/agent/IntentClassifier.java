@@ -69,6 +69,8 @@ public class IntentClassifier {
 
     /** 模型实例（与主 Agent 共用同一配置） */
     private final Model model;
+    private com.travelscope.assessment.ObservationMiddleware observation;
+    public void setObservation(com.travelscope.assessment.ObservationMiddleware value) { observation=value; }
 
     public IntentClassifier(Model model) {
         this.model = model;
@@ -85,12 +87,17 @@ public class IntentClassifier {
      * @return 分类结果；分类失败时返回 null（调用方回退为主 Agent 依据自身提示词自主路由）
      */
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
+        return classify(userMessage,contextBlock,userId,sessionId,null);
+    }
+    public IntentResult classify(String userMessage,String contextBlock,String userId,String sessionId,com.travelscope.assessment.ObservationContext observationContext) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 .sessionId(sessionId + "-intent")
                 .build();
+        if(observationContext!=null)ctx.put(com.travelscope.assessment.ObservationContext.KEY,observationContext);
         try {
             ReActAgent classifier = ReActAgent.builder()
+                    .middlewares(observation==null?java.util.List.of():java.util.List.of(observation))
                     .name("intent-classifier")
                     .sysPrompt(SYS_PROMPT)
                     .model(model)

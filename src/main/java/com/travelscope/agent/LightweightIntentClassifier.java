@@ -57,6 +57,8 @@ public class LightweightIntentClassifier {
             """;
 
     private final Model model;
+    private com.travelscope.assessment.ObservationMiddleware observation;
+    public void setObservation(com.travelscope.assessment.ObservationMiddleware value) { observation=value; }
 
     public LightweightIntentClassifier(Model model) {
         this.model = model;
@@ -79,7 +81,10 @@ public class LightweightIntentClassifier {
      * @return 分类结果；失败返回 null（级联层负责降级到 L3）
      */
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
-        IntentResult result = classifyOnce(userMessage, contextBlock, userId, sessionId);
+        return classify(userMessage,contextBlock,userId,sessionId,null);
+    }
+    public IntentResult classify(String userMessage,String contextBlock,String userId,String sessionId,com.travelscope.assessment.ObservationContext observationContext) {
+        IntentResult result = classifyOnce(userMessage, contextBlock, userId, sessionId, observationContext);
         if (result != null) {
             return result;
         }
@@ -87,7 +92,7 @@ public class LightweightIntentClassifier {
         // 乱格式文本（如 "[[12]]"、双括号 JSON）导致双路解析皆空——与 RubricScorer 的
         // 重试 1 次同款兜底，单次成功率 ~80% → 重试后 ~96%；级联场景本层空值本就有
         // L3 兜底，重试进一步降低打到 L3（更贵）的概率
-        result = classifyOnce(userMessage, contextBlock, userId, sessionId);
+        result = classifyOnce(userMessage, contextBlock, userId, sessionId, observationContext);
         if (result != null) {
             log.info("L2 轻量分类重试成功: userId={}, sessionId={}", userId, sessionId);
             return result;
@@ -96,13 +101,15 @@ public class LightweightIntentClassifier {
     }
 
     /** 单次分类调用（双路解析：框架结构化 → 纯文本标签），失败返回 null */
-    private IntentResult classifyOnce(String userMessage, String contextBlock, String userId, String sessionId) {
+    private IntentResult classifyOnce(String userMessage, String contextBlock, String userId, String sessionId, com.travelscope.assessment.ObservationContext observationContext) {
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userId)
                 .sessionId(sessionId + "-intent-l2")
                 .build();
+        if(observationContext!=null)ctx.put(com.travelscope.assessment.ObservationContext.KEY,observationContext);
         try {
             ReActAgent classifier = ReActAgent.builder()
+                    .middlewares(observation==null?java.util.List.of():java.util.List.of(observation))
                     .name("intent-classifier-l2")
                     .sysPrompt(SYS_PROMPT)
                     .model(model)

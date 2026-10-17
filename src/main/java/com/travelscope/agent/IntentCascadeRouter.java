@@ -43,6 +43,7 @@ public class IntentCascadeRouter {
     @FunctionalInterface
     public interface LlmClassifier {
         IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId);
+        default IntentResult classify(String m,String c,String u,String s,com.travelscope.assessment.ObservationContext observation) {return classify(m,c,u,s);}
     }
 
     /**
@@ -104,8 +105,11 @@ public class IntentCascadeRouter {
      * @return 分类结果；全层失败返回 null（ChatService 保持既有容错：主 Agent 自主路由）
      */
     public IntentResult classify(String userMessage, String contextBlock, String userId, String sessionId) {
+        return classify(userMessage,contextBlock,userId,sessionId,null);
+    }
+    public IntentResult classify(String userMessage,String contextBlock,String userId,String sessionId,com.travelscope.assessment.ObservationContext observation) {
         if (!config.isEnabled()) {
-            return viaL3(userMessage, contextBlock, userId, sessionId, System.nanoTime());
+            return viaL3(userMessage, contextBlock, userId, sessionId, System.nanoTime(), observation);
         }
         long start = System.nanoTime();
 
@@ -153,7 +157,7 @@ public class IntentCascadeRouter {
                     return result;
                 }
             }
-            IntentResult l2Result = l2.classify(userMessage, contextBlock, userId, sessionId);
+            IntentResult l2Result = l2.classify(userMessage, contextBlock, userId, sessionId, observation);
             IntentType l2Type = l2Result != null ? l2Result.toIntentType() : null;
             if (l2Type != null) {
                 if (useCache) {
@@ -167,14 +171,14 @@ public class IntentCascadeRouter {
         }
 
         // ---- L3 兜底：现有 IntentClassifier 原样包装 ----
-        return viaL3(userMessage, contextBlock, userId, sessionId, start);
+        return viaL3(userMessage, contextBlock, userId, sessionId, start, observation);
     }
 
     /**
      * L3 兜底并补埋点（enabled=false 直通时也走这里，保持旧链路）
      */
-    private IntentResult viaL3(String userMessage, String contextBlock, String userId, String sessionId, long start) {
-        IntentResult result = l3.classify(userMessage, contextBlock, userId, sessionId);
+    private IntentResult viaL3(String userMessage, String contextBlock, String userId, String sessionId, long start, com.travelscope.assessment.ObservationContext observation) {
+        IntentResult result = l3.classify(userMessage, contextBlock, userId, sessionId, observation);
         if (result != null && result.toIntentType() != null) {
             saveRecent(userId, sessionId, result.toIntentType());
             logHit("L3", start, userId, sessionId, result);
