@@ -23,8 +23,15 @@ public class AssessmentController {
     @PostMapping("/runs/{id}/evaluations") @ResponseStatus(HttpStatus.ACCEPTED) public Object evaluate(HttpServletRequest r,@PathVariable UUID id){admin(r);return actions.evaluate(id);}
     @GetMapping("/runs/{id}/evaluations") public Object evaluations(HttpServletRequest r,@PathVariable UUID id){admin(r);return actions.evaluations(id);}
     @GetMapping("/comparisons") public Object compare(HttpServletRequest r,@RequestParam UUID baselineId,@RequestParam UUID candidateId){admin(r);return actions.compare(baselineId,candidateId);}
+    @GetMapping("/components") public Object components(HttpServletRequest r,@RequestParam(defaultValue="ONLINE")String source,@RequestParam(required=false)String toolMode,@RequestParam(required=false)String phase,@RequestParam(required=false)String kind,@RequestParam(required=false)UUID batchId){admin(r);return queries.components(source,toolMode,phase,kind,batchId);}
     @GetMapping("/overview") public Object overview(HttpServletRequest r,@RequestParam(required=false)String source,@RequestParam(required=false)String toolMode){admin(r);var result=new LinkedHashMap<String,Object>(queries.overview(source,toolMode));if(observationStore!=null)result.put("ingestion",observationStore.health());return result;}
-    @GetMapping("/runs") public Object runs(HttpServletRequest r,@RequestParam(required=false)String source,@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="25")int size){admin(r);if(page<0||size<1||size>100)throw new ResponseStatusException(HttpStatus.BAD_REQUEST);return queries.runs(source,page,size,r.getParameter("taskType"),r.getParameter("status"),r.getParameter("sessionId"));}
+    @GetMapping("/runs") public Object runs(HttpServletRequest r,@RequestParam(required=false)String source,@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="25")int size){
+        admin(r);if(page<0||size<1||size>100)throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        if(List.of("toolMode","componentKind","componentName","phase","batchId").stream().noneMatch(key->r.getParameter(key)!=null))
+            return queries.runs(source,page,size,r.getParameter("taskType"),r.getParameter("status"),r.getParameter("sessionId"));
+        UUID batchId=null;try{if(r.getParameter("batchId")!=null)batchId=UUID.fromString(r.getParameter("batchId"));}catch(IllegalArgumentException e){throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"批次编号无效");}
+        return queries.runs(source,page,size,r.getParameter("taskType"),r.getParameter("status"),r.getParameter("sessionId"),r.getParameter("toolMode"),r.getParameter("componentKind"),r.getParameter("componentName"),r.getParameter("phase"),batchId);
+    }
     @GetMapping("/runs/{id}") public Object run(HttpServletRequest r,@PathVariable UUID id){admin(r);return queries.run(id);}
     @GetMapping("/runs/{id}/spans") public Object spans(HttpServletRequest r,@PathVariable UUID id){admin(r);return queries.spans(id);}
     @GetMapping("/runs/{id}/artifacts") public Object artifacts(HttpServletRequest r,@PathVariable UUID id){admin(r);return queries.artifacts(id);}
