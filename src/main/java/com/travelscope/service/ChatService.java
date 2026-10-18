@@ -5,6 +5,8 @@ import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
+import com.travelscope.agent.ItineraryAgent;
+import com.travelscope.agent.TravelMasterAgent;
 import com.travelscope.common.ActivityPresenter;
 import com.travelscope.common.TracingHelper;
 import com.travelscope.dto.ChatEvent;
@@ -39,6 +41,8 @@ import java.util.List;
 import java.util.Map;
 
 import com.travelscope.collab.TaskWorkspace;
+import com.travelscope.collab.IntakeResult;
+import com.travelscope.collab.TaskBacklog;
 
 /**
  * 对话编排服务
@@ -48,7 +52,9 @@ import com.travelscope.collab.TaskWorkspace;
  * 用户消息 → 意图分类 Agent（结构化输出）
  *   ├─ CHAT / TOOL_CALL / RAG → 主 Agent + 路由指令（IntentRouterMiddleware 禁止委派）
  *   ├─ RAG（知识库可用时）    → 先检索知识片段拼入上下文再回答
- *   └─ PLANNING              → 主 Agent 拆分任务并委派 planning-agent
+ *   └─ PLANNING              → 代码五步编排（S2.5）：采集 workflow → 登记任务清单 →
+ *                              直持 planning-agent 执行 → 渲染收尾（见 planningOrchestration）;
+ *                              form 开关关闭 / workflow 异常时落回 v3 master 规划链兜底
  * </pre>
  * 事件流通过 SseEmitter 推送给前端；意图分类（阻塞调用）与 Agent 执行均调度到
  * boundedElastic 线程池，不占用容器线程。
@@ -92,6 +98,11 @@ public class ChatService {
     private final Model gatewayChatModel;
     /** 需求采集 workflow（S2.3 清单卡片桥接；S2.5 起成为 PLANNING 编排主入口） */
     private final com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService;
+    /** 任务拆分器（S2.4：代码模板确定性生成 task_backlog.json，零 LLM） */
+    private final com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner;
+    /** S2.5 PLANNING 编排直持的行程规划 Agent（方案 B 决策：编排/渲染收归代码、不经 master
+     *  中转——LLM 不确定性收敛到 planner 的执行本职；master 兜底链（v3）原样保留） */
+    private final HarnessAgent itineraryPlanningAgent;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -106,7 +117,10 @@ public class ChatService {
                        com.travelscope.config.AppProperties appProperties,
                        Model gatewayChatModel,
                        PointsService pointsService,
-                       com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService) {
+                       com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService,
+                       com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner,
+                       @org.springframework.beans.factory.annotation.Qualifier("itineraryPlanningAgent")
+                       HarnessAgent itineraryPlanningAgent) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -132,6 +146,8 @@ public class ChatService {
         this.gatewayChatModel = gatewayChatModel;
         this.pointsService = pointsService;
         this.requirementWorkflowService = requirementWorkflowService;
+        this.taskBacklogPlanner = taskBacklogPlanner;
+        this.itineraryPlanningAgent = itineraryPlanningAgent;
     }
 
     /** 清单卡片结构化提交识别（JSON 对象且含 __form__ 键；与 workflow 的解析口径一致） */
@@ -153,20 +169,40 @@ public class ChatService {
     }
 
     /**
-     * 清单卡片桥接（S2.3 最小接线，S2.5 整体替换为五步编排）：
-     * PLANNING 轮先过需求采集 workflow——待用户输入 → 推 requirement_form 事件并结束本轮；
-     * 取消 → 结束并复位；收齐（含幂等直通）→ 返回 null，落入 v3 的 master 规划链路。
-     * workflow 异常按降级处理（返回 null 走 v3），不因采集层故障阻断规划。
+     * PLANNING 五步编排（S2.5：编排收归代码，替代 master 的 LLM 拆任务/委派/整合）：
+     * <ol>
+     *   <li><b>step1 需求采集</b>：workflow.handle——NEED_USER_INPUT → 推 requirement_form
+     *       事件本轮结束；CANCELLED → 复位结束；COLLECTED（含 COLLECTING 期间文本增量后
+     *       重推卡片，S2.2 分支 b 由 workflow 内部处理）→ step2</li>
+     *   <li><b>step2 任务登记</b>：读 intake_result.json → taskBacklogPlanner.plan 代码模板
+     *       生成并登记 task_backlog.json（S2.4，零 LLM）→ 显式 agent_status 里程碑
+     *       （卡片点 4：活动流由编排代码发射，不再依赖主 Agent 文本分流）</li>
+     *   <li><b>step3 委派规划</b>：直持 itineraryPlanningAgent 发起（方案 B 决策，见字段注释）——
+     *       CTX_FORCE_SYNC/600s 平移自原 runAgent；确定性指令消息给出 JSON 契约路径
+     *       （planner 提示词中的 .md 路径差异由 S2.6 提示词重写收口）</li>
+     *   <li><b>step4 等待完成</b>：共用管线 600s 泳道超时；超时按 wait_async_results 等价
+     *       语义截断（直持模式无异步提升），转 step5 尽力渲染</li>
+     *   <li><b>step5 渲染收尾</b>：读 itinerary_draft.md（缺则 execution_result.md）+ 代码生成
+     *       质检标注（review_passed.md 存在 → ✅ 已通过质量审阅；否则 → ⚠️ 当前最佳版本
+     *       （已尽力），文案规则同 v3）；review_report 事件由 handleComplete 的标记驱动
+     *       逻辑发出（标注文本自带「已通过质量审阅/已尽力」标记），handleComplete 零改动</li>
+     * </ol>
+     * 返回 {@code null} = form 开关关闭或 workflow 异常 → 落回 runAgent 的 v3 master
+     * 规划链（兜底路径，其硬注入/IntentRouterMiddleware 路由指令原样保留）。
      */
-    private Flux<ChatEvent> requirementBridge(Conversation conversation, Long userId,
-                                              String userMessage, StringBuilder replyBuf) {
+    private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
+                                                  String userMessage, StringBuilder replyBuf,
+                                                  StringBuilder thinkingFull,
+                                                  TurnUsageTracker usageTracker) {
         if (!appProperties.getRequirement().isFormEnabled()) {
             return null;
         }
+        String userIdStr = String.valueOf(userId);
         String sessionId = SESSION_PREFIX + conversation.getId();
+        // ---------- step1：需求采集 workflow ----------
         com.travelscope.service.workflow.dto.CollectOutcome outcome;
         try {
-            outcome = requirementWorkflowService.handle(userMessage, String.valueOf(userId), sessionId);
+            outcome = requirementWorkflowService.handle(userMessage, userIdStr, sessionId);
         } catch (Exception e) {
             log.warn("需求采集 workflow 异常（降级走 v3 规划链）: 会话={}, 原因={}",
                     sessionId, e.getMessage());
@@ -186,13 +222,118 @@ public class ChatService {
                 return Flux.empty();
             }
             case COLLECTED -> {
-                log.info("需求采集已收齐，进入 v3 规划链路: 会话={}", sessionId);
-                return null;
+                // 续走 step2~step5
             }
             default -> {
                 return null;
             }
         }
+
+        // ---------- step2：代码模板登记任务清单（intake_result.json 缺失 = workflow 契约破裂） ----------
+        IntakeResult intake = taskWorkspaceService.readIntakeResult(userIdStr, sessionId)
+                .orElseThrow(() -> new IllegalStateException(
+                        "COLLECTED 后 intake_result.json 缺失（workflow 契约破裂）: " + sessionId));
+        TaskBacklog backlog = taskBacklogPlanner.plan(userIdStr, intake);
+        log.info("PLANNING 编排: 会话={}, 任务清单已登记 {} 项，开始委派 planning-agent",
+                sessionId, backlog.tasks().size());
+
+        // ---------- step3：直持 planning-agent 发起委派 ----------
+        // CTX_FORCE_SYNC/600s 平移自原 runAgent（校准史见其注释）——子 Agent spawn 同步等待上限
+        RuntimeContext ctx = RuntimeContext.builder()
+                .userId(userIdStr)
+                .sessionId(sessionId)
+                .build();
+        ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
+        ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 600);
+        String collabDir = taskWorkspaceService.collabDirRelativePath(sessionId);
+        // 清单卡片结构化提交的原文是 JSON 控制报文，不带入任务说明（intake_result.json 已承载事实）
+        String userContext = isFormSubmission(userMessage) ? "" : "\n\n【本轮用户消息】" + userMessage;
+        String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
+                + "用 read_file 读取 " + collabDir + "/task_backlog.json 与 " + collabDir + "/intake_result.json 执行"
+                + "（任务按 T1→T5 顺序、P0→P1 优先级执行；每完成一项调用 update_task_status 回报状态）；"
+                + "产出 " + collabDir + "/itinerary_draft.md 后按流程送审。"
+                + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext;
+        UserMessage msg = new UserMessage(task);
+        Duration laneTimeout = llmGateway.laneTimeout(true);
+
+        // ---------- step4：等待完成（600s 泳道；超时按 wait_async_results 等价语义截断） ----------
+        Flux<ChatEvent> plannerFlow = mapAgentEventStream(itineraryPlanningAgent.streamEvents(msg, ctx),
+                        ItineraryAgent.AGENT_NAME, conversation, IntentType.PLANNING, true, laneTimeout,
+                        replyBuf, thinkingFull, usageTracker)
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    log.warn("PLANNING 编排泳道超时（{}s），转 step5 尽力渲染: 会话={}",
+                            laneTimeout.toSeconds(), sessionId);
+                    return Flux.empty();
+                });
+        return Flux.concat(
+                Flux.just(milestoneStatus("任务清单已登记（" + backlog.tasks().size() + " 项），开始行程规划")),
+                plannerFlow,
+                // ---------- step5：渲染收尾（replyBuf 注入最终方案 + 质检标注） ----------
+                Flux.defer(() -> {
+                    renderPlanningResult(userIdStr, sessionId, replyBuf);
+                    return Flux.empty();
+                }));
+    }
+
+    /**
+     * step5 渲染收尾（编排路径）：读协作目录方案文件 → 追加代码生成的质检标注写入 replyBuf。
+     * review_report 事件不在此发——handleComplete 的标记驱动逻辑（回复含「已通过质量审阅」/
+     * 「已尽力」→ 读对应 review 文件推送）对标注文本天然生效。无产物文件时保持 replyBuf
+     * 原样（handleComplete 的 thinkingFull 兜底与空回复语义不变）。
+     */
+    private void renderPlanningResult(String userId, String sessionId, StringBuilder replyBuf) {
+        String plan = assemblePlanningReply(userId, sessionId);
+        if (plan == null) {
+            log.warn("PLANNING 编排 step5: 无方案产物文件（规划中途失败/超时截断），保持原回复: 会话={}", sessionId);
+            return;
+        }
+        replyBuf.setLength(0);
+        replyBuf.append(plan).append(reviewAnnotation(userId, sessionId));
+    }
+
+    /**
+     * 质检标注（代码版 v3 文案规则）：review_passed.md 存在 →「✅ 已通过质量审阅（评分 x/100）」；
+     * 否则 review_report.md 存在 →「⚠️ 当前最佳版本（已尽力，评分 x/100）」（回炉超限场景）；
+     * 都无 → 空串（未走到质检）。过渡期仍按 .md 文件判定（reviewer 产物 JSON 化在 S2.7）。
+     */
+    private String reviewAnnotation(String userId, String sessionId) {
+        try {
+            java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
+            java.nio.file.Path passed = dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD);
+            if (java.nio.file.Files.exists(passed)) {
+                return "\n\n✅ 已通过质量审阅（评分 " + scoreOf(passed) + "/100）";
+            }
+            java.nio.file.Path report = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
+            if (java.nio.file.Files.exists(report)) {
+                return "\n\n⚠️ 当前最佳版本（已尽力，评分 " + scoreOf(report) + "/100）";
+            }
+        } catch (Exception e) {
+            log.warn("生成质检标注失败（方案不加标注）: {}", e.getMessage());
+        }
+        return "";
+    }
+
+    /** 评审产物总分提取（与 ReviewerRetryMiddleware 同款「总分: x/100」行；提取失败返回 "?"） */
+    private static String scoreOf(java.nio.file.Path reviewFile) {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("总分[:：]\\s*(\\d+)")
+                    .matcher(java.nio.file.Files.readString(reviewFile, java.nio.charset.StandardCharsets.UTF_8));
+            if (m.find()) {
+                return m.group(1);
+            }
+        } catch (Exception ignored) {
+            // 读取失败按 "?" 兜底
+        }
+        return "?";
+    }
+
+    /** 编排里程碑事件（S2.5 卡片点 4：活动流由编排代码显式发射，payload 形状与工具活动一致） */
+    private static ChatEvent milestoneStatus(String action) {
+        JSONObject payload = new JSONObject();
+        payload.put("agent", ActivityPresenter.agentLabel(ItineraryAgent.AGENT_NAME));
+        payload.put("action", action);
+        payload.put("state", "RUNNING");
+        return ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload.toJSONString());
     }
 
     /** 清单卡片事件载荷：{fields:[...], hint, errors:[...]}（包私有：载荷形状单测直接锚定） */
@@ -309,11 +450,12 @@ public class ChatService {
                             emitter.complete();
                             return Flux.<ChatEvent>empty();
                         }
-                        // S2.3 清单卡片桥接（最小接线：S2.5 会替换为完整五步编排）：
-                        // PLANNING 轮先过需求采集 workflow——待输入/取消则本轮在此结束，
-                        // 收齐（或幂等直通）才进入 v3 的 master 规划链路
+                        // S2.5 PLANNING 五步编排（编排收归代码）：待输入/取消本轮结束；
+                        // 收齐 → 登记→委派→等待→渲染全代码驱动；
+                        // 返回 null（form 开关关闭 / workflow 异常）落回 v3 master 规划链兜底
                         Flux<ChatEvent> planningFlow = planningIntent
-                                ? requirementBridge(conversation, userId, userMessage, replyBuf)
+                                ? planningOrchestration(conversation, userId, userMessage, replyBuf,
+                                        thinkingFull, usageTracker)
                                 : null;
                         return Flux.concat(
                             Flux.just(toIntentEvent(intent)),
@@ -474,10 +616,34 @@ public class ChatService {
         }
 
         UserMessage msg = new UserMessage(outgoing);
-        // 快慢泳道（FR-S09）：PLANNING → 慢泳道 300s；其余（CHAT/TOOL_CALL/RAG/null）→ 快泳道。
+        // 快慢泳道（FR-S09）：PLANNING → 慢泳道 600s（yml 校准值）；其余（CHAT/TOOL_CALL/RAG/null）→ 快泳道。
         // 查询类不被进行中的长规划拖慢（独立链路 + 各自超时保护），超时 → SSE error 兜底文案
         Duration laneTimeout = llmGateway.laneTimeout(type == IntentType.PLANNING);
         boolean planning = type == IntentType.PLANNING;
+        return mapAgentEventStream(travelMasterAgent.streamEvents(msg, ctx),
+                        TravelMasterAgent.AGENT_NAME, conversation, type, planning, laneTimeout,
+                        replyBuf, thinkingFull, usageTracker)
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
+                            type, laneTimeout.toSeconds(), conversation.getId());
+                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
+                            "处理超时了（" + laneTimeout.toSeconds() + " 秒上限），请稍后重试或换个问法～"));
+                });
+    }
+
+    /**
+     * Agent 事件流 → SSE 事件流的共用映射管线（S2.5 抽取：runAgent 与 PLANNING 编排共用）：
+     * token usage 累计 → 根/子事件过滤 → 文本/THINKING 分流 → 事件映射 → 泳道超时 →
+     * doFinally 冲刷 THINKING 缓冲 → 非超时异常转 SSE error → 并入 THINKING 通道。
+     * 超时异常向外传播由调用方处置（runAgent → 错误事件；PLANNING 编排 → 尽力渲染）。
+     *
+     * @param rootAgent 根 Agent 名（事件归属标签：runAgent=travel-master；编排=planning-agent）
+     */
+    private Flux<ChatEvent> mapAgentEventStream(Flux<AgentEvent> events, String rootAgent,
+                                                Conversation conversation, IntentType type,
+                                                boolean planning, Duration laneTimeout,
+                                                StringBuilder replyBuf, StringBuilder thinkingFull,
+                                                TurnUsageTracker usageTracker) {
         // THINKING 聚合句发射通道（accumulateThinking → Sinks.Many → mergeWith 回 SSE 流）：
         // 主流 doFinally 时 emitComplete——mergeWith 等两条流都完成才结束，Flux.create+轮询线程
         // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送。
@@ -487,28 +653,29 @@ public class ChatService {
         StringBuilder thinkingBuf = new StringBuilder();
         java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
                 ChatEvent.of(ChatEvent.TYPE_AGENT_STATUS, payload));
-        return travelMasterAgent.streamEvents(msg, ctx)
+        return events
                 // Token 真实采集（P1-K，2026-10-11）：模型调用结束事件携带真实 ChatUsage，
-                // 在过滤前挂点累计（ModelCallEnd 不是主 Agent 可见事件，过滤后会被滤掉）；
+                // 在过滤前挂点累计（ModelCallEnd 不是根 Agent 可见事件，过滤后会被滤掉）；
                 // 每个 ModelCallEndEvent 对应一次模型调用（ReAct 多轮迭代各一次）
                 .doOnNext(event -> {
                     if (event instanceof ModelCallEndEvent mce) {
                         usageTracker.onModelCallEnd(mce.getUsage());
                     }
                 })
-                // 主 Agent 自身事件 + intake 反问 + 子 Agent 工具活动（前端可见性改造：
-                // master 同步等待期间，子 Agent 的工具 Start/End 转为 agent_status 推送；
+                // 根 Agent 自身事件 + intake 反问 + 子 Agent 工具活动（前端可见性改造：
+                // 同步等待期间，子 Agent 的工具 Start/End 转为 agent_status 推送；
                 // 子 Agent 文本 delta 仍被 isMainAgentEvent 拦截——思维链不外泄）
                 .filter(event -> isMainAgentEvent(event) || isClarifyEvent(event)
                         || isSubAgentToolEvent(event))
                 .doOnNext(event -> {
-                    // 过程/结果分离（2026-09-22）：PLANNING 轮 master 的过程文本不进 replyBuf——
+                    // 过程/结果分离（2026-09-22）：PLANNING 轮根 Agent 的过程文本不进 replyBuf——
                     // replyBuf 只保留给最终方案（done/入库），过程叙述按句聚合后进活动流
                     if (event instanceof TextBlockDeltaEvent e) {
                         if (!planning) {
                             replyBuf.append(e.getDelta());
                         } else {
-                            accumulateThinking(e.getDelta(), thinkingBuf, thinkingFull, thinkingEmitter);
+                            accumulateThinking(rootAgent, e.getDelta(), thinkingBuf, thinkingFull,
+                                    thinkingEmitter);
                         }
                     }
                     // intake 反问文本进 replyBuf：反问轮无最终方案文件，done/入库需要内容
@@ -520,7 +687,7 @@ public class ChatService {
                         }
                     }
                 })
-                .mapNotNull(event -> toChatEvent(event, planning))
+                .mapNotNull(event -> toChatEvent(rootAgent, event, planning))
                 .timeout(laneTimeout)
                 .doFinally(signal -> {
                     // 残留缓冲 flush + 关闭 THINKING 通道（mergeWith 需两流都 complete）
@@ -528,17 +695,15 @@ public class ChatService {
                         String rest = thinkingBuf.toString().strip();
                         thinkingBuf.setLength(0);
                         if (!rest.isEmpty()) {
-                            emitThinking(rest, thinkingEmitter);
+                            emitThinking(rootAgent, rest, thinkingEmitter);
                         }
                     }
                     thinkingSink.tryEmitComplete();
                 })
                 .onErrorResume(e -> {
                     if (e instanceof java.util.concurrent.TimeoutException) {
-                        log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
-                                type, laneTimeout.toSeconds(), conversation.getId());
-                        return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
-                                "处理超时了（" + laneTimeout.toSeconds() + " 秒上限），请稍后重试或换个问法～"));
+                        // 超时交调用方处置：runAgent → 错误事件；PLANNING 编排 → 尽力渲染（S2.5）
+                        return Flux.error(e);
                     }
                     log.error("Agent 执行异常: conversationId={}", conversation.getId(), e);
                     return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
@@ -596,7 +761,7 @@ public class ChatService {
      * </ul>
      * </p>
      */
-    private ChatEvent toChatEvent(AgentEvent event, boolean planning) {
+    private ChatEvent toChatEvent(String rootAgent, AgentEvent event, boolean planning) {
         if (event instanceof ToolResultTextDeltaEvent e && isClarifyEvent(e)) {
             // 截取 ;; 前的反问本身（其后是给 LLM 的轮次提示，不推给用户）
             String delta = e.getDelta();
@@ -615,11 +780,11 @@ public class ChatService {
         if (event instanceof ToolCallStartEvent e) {
             // 注：agent_spawn 的 Start 事件在门禁 onActing（能拿到入参）之前发射，
             // toolUseId→agent_id 注册来不及——显示工具名本身，前端可见「委派」动作发生
-            return agentStatus(e.getSource(), e.getToolCallName(), "RUNNING");
+            return agentStatus(rootAgent, e.getSource(), e.getToolCallName(), "RUNNING");
         }
         if (event instanceof ToolResultEndEvent e) {
             String state = e.getState() != null ? e.getState().name() : "UNKNOWN";
-            return agentStatus(e.getSource(), e.getToolCallName(), state);
+            return agentStatus(rootAgent, e.getSource(), e.getToolCallName(), state);
         }
         if (event instanceof AgentEndEvent) {
             return null; // 结束事件在流完成回调中统一处理
@@ -635,10 +800,11 @@ public class ChatService {
      * 前端活动流只见中文动作，不见工程结构。
      * </p>
      *
-     * @param source 事件源（null = 主 Agent；"conv-x/intake-agent" 形态解析出子代理名）
+     * @param rootAgent 根 Agent 名（runAgent=travel-master；PLANNING 编排=planning-agent）
+     * @param source 事件源（null = 根 Agent；"conv-x/intake-agent" 形态解析出子代理名）
      */
-    private ChatEvent agentStatus(String source, String action, String state) {
-        String agent = "travel-master";
+    private ChatEvent agentStatus(String rootAgent, String source, String action, String state) {
+        String agent = rootAgent;
         if (source != null && source.contains("/")) {
             agent = source.substring(source.lastIndexOf('/') + 1);
         }
@@ -662,7 +828,7 @@ public class ChatService {
      * 全部状态经参数传递（2026-09-23 串话修复）——本方法无实例字段依赖，并发轮次天然隔离。
      * </p>
      */
-    private static void accumulateThinking(String delta, StringBuilder thinkingBuf,
+    private static void accumulateThinking(String rootAgent, String delta, StringBuilder thinkingBuf,
                                            StringBuilder thinkingFull,
                                            java.util.function.Consumer<String> thinkingEmitter) {
         if (delta == null || delta.isBlank()) {
@@ -676,14 +842,14 @@ public class ChatService {
             String sentence = thinkingBuf.substring(0, idx).strip();
             thinkingBuf.delete(0, idx);
             if (!sentence.isEmpty()) {
-                emitThinking(sentence, thinkingEmitter);
+                emitThinking(rootAgent, sentence, thinkingEmitter);
             }
         }
         // 超长无句读（模型连续输出无标点文本）：80 字硬切
         if (thinkingBuf.length() >= 80) {
             String chunk = thinkingBuf.toString().strip();
             thinkingBuf.setLength(0);
-            emitThinking(chunk, thinkingEmitter);
+            emitThinking(rootAgent, chunk, thinkingEmitter);
         }
     }
 
@@ -698,8 +864,9 @@ public class ChatService {
         return -1;
     }
 
-    /** THINKING 事件发射（runAgent 装配的 sink 通道，参数传递无共享状态） */
-    private static void emitThinking(String sentence, java.util.function.Consumer<String> thinkingEmitter) {
+    /** THINKING 事件发射（mapAgentEventStream 装配的 sink 通道，参数传递无共享状态） */
+    private static void emitThinking(String rootAgent, String sentence,
+                                     java.util.function.Consumer<String> thinkingEmitter) {
         // 消毒先行（2026-10-04）：含工程细节（工具名/任务ID/路径/系统指令词汇）的
         // 叙述句整句丢弃，再截断——先截断会把黑名单 token 切残导致漏检
         String clean = ActivityPresenter.sanitizeSentence(sentence);
@@ -710,7 +877,7 @@ public class ChatService {
             clean = clean.substring(0, 60) + "…";
         }
         JSONObject payload = new JSONObject();
-        payload.put("agent", ActivityPresenter.agentLabel("travel-master"));
+        payload.put("agent", ActivityPresenter.agentLabel(rootAgent));
         payload.put("action", clean);
         payload.put("state", "THINKING");
         thinkingEmitter.accept(payload.toJSONString());

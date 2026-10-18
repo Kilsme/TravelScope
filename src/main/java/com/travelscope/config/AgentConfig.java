@@ -404,7 +404,10 @@ public class AgentConfig {
      * - 读取执行结果，整合返回用户
      * </p>
      */
+    // S2.5：itineraryPlanningAgent 同为 HarnessAgent Bean，@Primary 保按类型注入的下游
+    // （ChatService.travelMasterAgent）解析到 master
     @Bean
+    @org.springframework.context.annotation.Primary
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
                                           OpenAIChatModel gatewayReviewerModel,
                                           TaskRegistry taskRegistry,
@@ -464,13 +467,15 @@ public class AgentConfig {
                 // 子 Agent 一：intake-agent（声明式叶子，需求收集）
                 .subagent(intakeSubAgent)
                 // 子 Agent 二：planning-agent（subagentFactory 工厂手工构建非叶子二级编排者，
-                // 工厂内挂 poi-research / route-optimizer / reviewer 三个声明，见 buildPlannerAgent；
-                // 框架每次 spawn 时调用工厂 build 新实例，与 IntentClassifier 每次新建同款模式）
+                // 工厂内挂 poi-research / route-optimizer 三个声明，见 buildPlannerAgent；
+                // 框架每次 spawn 时调用工厂 build 新实例，与 IntentClassifier 每次新建同款模式；
+                // master 兜底路径不带中间件——回炉保险丝经 master 自身中间件链生效，List.of()）
                 .subagentFactory(ItineraryAgent.AGENT_NAME,
                         "规划 Agent（行程规划师，二级编排者）：直调工具获取天气/酒店/车票实时数据，"
                                 + "并行调度 poi-research 与 route-optimizer 两个子 Agent，"
                                 + "组装行程草案并经 reviewer-agent 质检闭环",
-                        name -> buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel))
+                        name -> buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
+                                List.of()))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 声明式 + {} 工厂式[内含 {}/{}/{}])",
@@ -497,7 +502,8 @@ public class AgentConfig {
      * </p>
      */
     private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model gatewayChatModel,
-                                           Model gatewayReviewerModel) {
+                                           Model gatewayReviewerModel,
+                                           List<io.agentscope.core.middleware.MiddlewareBase> middlewares) {
         // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
         SubagentDeclaration poiResearch = SubagentDeclaration.builder()
                 .name(PoiResearchAgent.AGENT_NAME)
@@ -556,7 +562,7 @@ public class AgentConfig {
                 .build();
 
         try {
-            return HarnessAgent.builder()
+            HarnessAgent.Builder builder = HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
                     .model(gatewayChatModel)
@@ -575,12 +581,33 @@ public class AgentConfig {
                     .workspace(appProperties.getAgentscope().getWorkspacePath())
                     .skillRepository(new ClasspathSkillRepository("skills"))
                     .stateStore(new InMemoryAgentStateStore())
-                    .subagents(List.of(poiResearch, routeOptimizer, reviewer))
-                    .build();
+                    .subagents(List.of(poiResearch, routeOptimizer, reviewer));
+            if (!middlewares.isEmpty()) {
+                builder.middlewares(middlewares);
+            }
+            return builder.build();
         } catch (IOException e) {
             // subagentFactory 的 Function 不允许抛受检异常，转非受检
             throw new IllegalStateException("构建 planning-agent 失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * S2.5 PLANNING 编排直持的行程规划 Agent（planning-agent）
+     * <p>
+     * 与 master 的 subagentFactory 同源构建，但显式挂 {@link ReviewerRetryMiddleware}——
+     * 编排路径（S2.5 起）下本 Agent 由 ChatService 直接调起（自身即根 Agent），master
+     * 中间件链覆盖不到，回炉保险丝（首审 + ≤2 次回炉）必须自带；master 兜底路径的工厂
+     * 实例不传中间件（保险丝经 master 链生效），两条路径互不干扰。
+     * review_retry_hint 工具在共享 toolkit 中已注册（TaskTools），可直接解析。
+     * </p>
+     */
+    @Bean
+    public HarnessAgent itineraryPlanningAgent(Toolkit toolkit, Model gatewayChatModel,
+                                               OpenAIChatModel gatewayReviewerModel,
+                                               TaskWorkspace taskWorkspaceService) {
+        return buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
+                List.of(new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)));
     }
 
     /**
