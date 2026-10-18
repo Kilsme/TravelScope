@@ -2,6 +2,7 @@ package com.travelscope.service.workflow;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.travelscope.agent.tools.TransportTool;
 import com.travelscope.collab.IntakeResult;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.dto.TripRequirementState;
@@ -15,7 +16,9 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -59,13 +62,16 @@ public class RequirementWorkflowService {
     private final RequirementExtractor extractor;
     private final TripRequirementStore store;
     private final TaskWorkspace taskWorkspace;
+    private final TransportTool transportTool;
 
     public RequirementWorkflowService(RequirementExtractor extractor,
                                       TripRequirementStore store,
-                                      TaskWorkspace taskWorkspace) {
+                                      TaskWorkspace taskWorkspace,
+                                      TransportTool transportTool) {
         this.extractor = extractor;
         this.store = store;
         this.taskWorkspace = taskWorkspace;
+        this.transportTool = transportTool;
     }
 
     /**
@@ -104,6 +110,16 @@ public class RequirementWorkflowService {
         }
         // 用户已填字段先 merge（__action__ 不在白名单自然忽略；skip 同样先保留已填项）
         int applied = merge(state, form);
+        // S2.3 提交校验：destination/fromCity 走高德 geocode（控件天然免疫错值的字段不查）。
+        // 校验只针对本次提交携带的字段（避免每轮重复请求）；失败时不落状态机、不填默认值，
+        // 用内存中已合并的 state 回推清单（用户已填内容不丢）+ 打回字段标红
+        List<CollectOutcome.FieldError> errors = validatePlaces(form);
+        if (!errors.isEmpty()) {
+            log.info("需求采集表单校验失败: 用户={}, 会话={}, 错误字段={}",
+                    userId, sessionId, errors.stream().map(CollectOutcome.FieldError::field).toList());
+            return CollectOutcome.needUserInput(RequirementFormSpec.generate(state),
+                    "以下地点没认出来，请修改", errors);
+        }
         Set<String> defaulted = new LinkedHashSet<>();
         if (!state.missingFields().isEmpty()) {
             // 留空提交 / 按推荐安排：缺失必填填默认值，DEGRADED 放行（用户主动选默认）
@@ -135,6 +151,46 @@ public class RequirementWorkflowService {
         log.info("增量修改完成: 用户={}, 会话={}, 写入字段={}, 仍缺={}",
                 userId, sessionId, applied, state.missingFields());
         return CollectOutcome.needUserInput(RequirementFormSpec.generate(state), null);
+    }
+
+    // ==================== 内部：提交校验 ====================
+
+    /**
+     * 提交时地点校验（S2.3）：destination/fromCity 非空则调高德 geocode——
+     * 返回 error 或无 location 视为「查无此地」，该字段进 errors 打回。
+     * <p>
+     * 只校验本次提交携带的字段（避免每轮重复请求）；高德 Key 未配置时整体跳过
+     * （log.debug 不阻断——开发/测试环境无 key 不应使表单不可用）。
+     * </p>
+     */
+    private List<CollectOutcome.FieldError> validatePlaces(JSONObject form) {
+        List<CollectOutcome.FieldError> errors = new ArrayList<>();
+        for (String field : List.of("destination", "fromCity")) {
+            String place = form.getString(field);
+            if (place == null || place.isBlank()) {
+                continue;
+            }
+            try {
+                String json = transportTool.geocode(place.trim());
+                JSONObject result = JSON.parseObject(json);
+                if (result == null) {
+                    continue;   // 非法响应按放行（校验是增强，不是硬门禁）
+                }
+                String error = result.getString("error");
+                if (error != null && error.contains("未配置")) {
+                    log.debug("高德 Key 未配置，跳过地点校验: field={}", field);
+                    return List.of();
+                }
+                if (error != null || result.getString("location") == null) {
+                    errors.add(new CollectOutcome.FieldError(field,
+                            "没认出这个地点「" + place.trim() + "」，请换成明确的城市名"));
+                }
+            } catch (Exception e) {
+                log.warn("地点校验异常（按放行处理）: field={}, place={}, 原因={}",
+                        field, place, e.getMessage());
+            }
+        }
+        return errors;
     }
 
     // ==================== 内部：merge / 默认值 / 落盘 ====================

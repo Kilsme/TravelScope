@@ -52,6 +52,8 @@ public class PoiRetrievalService {
     private final AttractionTool attractionTool;
     private final QueryExpander queryExpander;
 
+    /** Spring 装配入口（两个公有构造函数时须显式标注，否则容器找不到默认构造器） */
+    @org.springframework.beans.factory.annotation.Autowired
     public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool) {
         this(ragService, attractionTool, new QueryExpander());
     }

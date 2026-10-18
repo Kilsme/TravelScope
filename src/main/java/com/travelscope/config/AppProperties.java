@@ -89,6 +89,8 @@ public class AppProperties {
     public static class RequirementConfig {
         /** 抽取字段保留的最小置信度（0~1） */
         private double extractionMinConfidence = 0.7;
+        /** 清单卡片开关（S2.3 最小桥接：PLANNING 轮先过需求采集 workflow；false=走 v3 intake 链路） */
+        private boolean formEnabled = true;
     }
 
     /**

@@ -90,6 +90,8 @@ public class ChatService {
     /** 装饰后主链路模型 Bean（P1-K：persistReply 读 getModelName() 记当轮实际生效模型——
      *  粘滞切换下 fallback 轮返回 fallback 名，修复 Token 报表固定写主链路模型的记错对象） */
     private final Model gatewayChatModel;
+    /** 需求采集 workflow（S2.3 清单卡片桥接；S2.5 起成为 PLANNING 编排主入口） */
+    private final com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService;
 
     public ChatService(HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -103,7 +105,8 @@ public class ChatService {
                        TracingHelper tracing,
                        com.travelscope.config.AppProperties appProperties,
                        Model gatewayChatModel,
-                       PointsService pointsService) {
+                       PointsService pointsService,
+                       com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -128,6 +131,79 @@ public class ChatService {
         this.tracing = tracing;
         this.gatewayChatModel = gatewayChatModel;
         this.pointsService = pointsService;
+        this.requirementWorkflowService = requirementWorkflowService;
+    }
+
+    /** 清单卡片结构化提交识别（JSON 对象且含 __form__ 键；与 workflow 的解析口径一致） */
+    private static boolean isFormSubmission(String userMessage) {
+        if (userMessage == null) {
+            return false;
+        }
+        String trimmed = userMessage.trim();
+        if (!trimmed.startsWith("{")) {
+            return false;
+        }
+        try {
+            com.alibaba.fastjson2.JSONObject object =
+                    com.alibaba.fastjson2.JSON.parseObject(trimmed);
+            return object != null && object.getJSONObject("__form__") != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 清单卡片桥接（S2.3 最小接线，S2.5 整体替换为五步编排）：
+     * PLANNING 轮先过需求采集 workflow——待用户输入 → 推 requirement_form 事件并结束本轮；
+     * 取消 → 结束并复位；收齐（含幂等直通）→ 返回 null，落入 v3 的 master 规划链路。
+     * workflow 异常按降级处理（返回 null 走 v3），不因采集层故障阻断规划。
+     */
+    private Flux<ChatEvent> requirementBridge(Conversation conversation, Long userId,
+                                              String userMessage, StringBuilder replyBuf) {
+        if (!appProperties.getRequirement().isFormEnabled()) {
+            return null;
+        }
+        String sessionId = SESSION_PREFIX + conversation.getId();
+        com.travelscope.service.workflow.dto.CollectOutcome outcome;
+        try {
+            outcome = requirementWorkflowService.handle(userMessage, String.valueOf(userId), sessionId);
+        } catch (Exception e) {
+            log.warn("需求采集 workflow 异常（降级走 v3 规划链）: 会话={}, 原因={}",
+                    sessionId, e.getMessage());
+            return null;
+        }
+        switch (outcome.status()) {
+            case NEED_USER_INPUT -> {
+                replyBuf.append("请确认以下行程需求，可直接修改后开始规划。");
+                log.info("需求采集待输入（清单卡片已推送）: 会话={}, 缺失={}", sessionId,
+                        outcome.formSpec().stream().filter(f -> !f.filled()).map(f -> f.name()).toList());
+                return Flux.just(ChatEvent.of(ChatEvent.TYPE_REQUIREMENT_FORM,
+                        toRequirementFormPayload(outcome)));
+            }
+            case CANCELLED -> {
+                replyBuf.append("已取消规划。");
+                log.info("需求采集已取消（状态机复位）: 会话={}", sessionId);
+                return Flux.empty();
+            }
+            case COLLECTED -> {
+                log.info("需求采集已收齐，进入 v3 规划链路: 会话={}", sessionId);
+                return null;
+            }
+            default -> {
+                return null;
+            }
+        }
+    }
+
+    /** 清单卡片事件载荷：{fields:[...], hint, errors:[...]}（包私有：载荷形状单测直接锚定） */
+    static String toRequirementFormPayload(
+            com.travelscope.service.workflow.dto.CollectOutcome outcome) {
+        com.alibaba.fastjson2.JSONObject payload = new com.alibaba.fastjson2.JSONObject();
+        payload.put("fields", outcome.formSpec());
+        payload.put("hint", outcome.hint());
+        payload.put("errors", outcome.errors());
+        // WriteNulls：hint/value 为 null 时也保留键——前端按固定键集合解析（契约测试锁定）
+        return payload.toJSONString(com.alibaba.fastjson2.JSONWriter.Feature.WriteNulls);
     }
 
     /**
@@ -233,9 +309,18 @@ public class ChatService {
                             emitter.complete();
                             return Flux.<ChatEvent>empty();
                         }
+                        // S2.3 清单卡片桥接（最小接线：S2.5 会替换为完整五步编排）：
+                        // PLANNING 轮先过需求采集 workflow——待输入/取消则本轮在此结束，
+                        // 收齐（或幂等直通）才进入 v3 的 master 规划链路
+                        Flux<ChatEvent> planningFlow = planningIntent
+                                ? requirementBridge(conversation, userId, userMessage, replyBuf)
+                                : null;
                         return Flux.concat(
                             Flux.just(toIntentEvent(intent)),
-                            runAgent(conversation, userId, userMessage, intent, replyBuf, thinkingFull, usageTracker))
+                            planningFlow != null
+                                    ? planningFlow
+                                    : runAgent(conversation, userId, userMessage, intent, replyBuf,
+                                            thinkingFull, usageTracker))
                             // 快慢泳道线程池隔离（FR-S09）：按意图把整条对话链（含 Agent 执行）
                             // 调度到各自泳道池——PLANNING 的同步 spawn 长阻塞只占慢池，
                             // 查询类在快池独立执行互不拖拽（最内层 subscribeOn 生效于 Agent 链源头）
@@ -266,6 +351,15 @@ public class ChatService {
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
     private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage) {
+        // 清单卡片提交（S2.3）：{"__form__":{...}} 结构化消息恒走 PLANNING 编排——
+        // 它是界面动作而非自然语言，交给意图分类器会被判成 CHAT（实测 cancel 落到
+        // master 被当成普通闲聊回复），必须在此短路
+        if (isFormSubmission(userMessage)) {
+            log.info("意图=PLANNING（清单卡片结构化提交，跳过意图分类）: 会话={}",
+                    SESSION_PREFIX + conversation.getId());
+            return new com.travelscope.dto.IntentResult(IntentType.PLANNING.name(),
+                    "清单卡片结构化提交");
+        }
         // 意图分类上下文注入（失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块随消息
         // 送 L2/L3——「长春」这类对 intake 反问的裸名词短回答在语境下判 PLANNING，不再
         // 被判 CHAT 脱离规划流。messages 表是唯一可靠事实源（L0/状态机/缓存都是加速层，

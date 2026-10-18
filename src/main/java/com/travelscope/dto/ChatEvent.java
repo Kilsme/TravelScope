@@ -35,6 +35,10 @@ public class ChatEvent {
     /** Agent 活动流事件（工具调用/子代理委派/过程思考，前端小字区渲染） */
     public static final String TYPE_AGENT_STATUS = "agent_status";
     public static final String TYPE_CLARIFY_QUESTION = "clarify_question";
+    /** 需求清单卡片事件（S2.3 清单卡片方案）：payload 为 JSON
+     *  {@code {fields:[{name,label,type,value,filled,required,options,placeholder}...],hint,errors:[{field,message}]}}，
+     *  前端渲染可编辑清单卡片（要求采集期间每轮重发以原地刷新） */
+    public static final String TYPE_REQUIREMENT_FORM = "requirement_form";
     public static final String TYPE_REVIEW_REPORT = "review_report";
     public static final String TYPE_DONE = "done";
     public static final String TYPE_ERROR = "error";

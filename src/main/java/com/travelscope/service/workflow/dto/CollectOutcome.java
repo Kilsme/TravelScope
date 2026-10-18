@@ -12,9 +12,10 @@ import java.util.Objects;
  *                 （清单卡片待用户输入，本轮结束）/ CANCELLED（用户取消，状态机复位回普通聊天）
  * @param formSpec 需求清单规格（NEED_USER_INPUT 时承载，渲染卡片用；其余为空表）
  * @param hint     附加提示（可空——增量修改抽取全空时带「没听懂要改哪项，可直接点卡片修改」）
+ * @param errors   字段级校验错误（S2.3：geocode 查无此地的打回项；其余场景为空表）
  */
 public record CollectOutcome(Status status, List<RequirementFormSpec.FieldSpec> formSpec,
-                             String hint) {
+                             String hint, List<FieldError> errors) {
 
     /** 本轮终态 */
     public enum Status {
@@ -26,24 +27,45 @@ public record CollectOutcome(Status status, List<RequirementFormSpec.FieldSpec> 
         CANCELLED
     }
 
+    /**
+     * 字段级校验错误（前端把对应行标红并展示 message）。
+     *
+     * @param field   字段名（与 FieldSpec.name 一致）
+     * @param message 用户可读的错误说明
+     */
+    public record FieldError(String field, String message) {
+
+        public FieldError {
+            Objects.requireNonNull(field, "field");
+            Objects.requireNonNull(message, "message");
+        }
+    }
+
     public CollectOutcome {
         Objects.requireNonNull(status, "status");
         formSpec = formSpec == null ? List.of() : List.copyOf(formSpec);
+        errors = errors == null ? List.of() : List.copyOf(errors);
     }
 
     /** 收齐（含降级放行） */
     public static CollectOutcome collected() {
-        return new CollectOutcome(Status.COLLECTED, List.of(), null);
+        return new CollectOutcome(Status.COLLECTED, List.of(), null, List.of());
     }
 
     /** 取消（状态机复位） */
     public static CollectOutcome cancelled() {
-        return new CollectOutcome(Status.CANCELLED, List.of(), null);
+        return new CollectOutcome(Status.CANCELLED, List.of(), null, List.of());
     }
 
     /** 待用户输入（清单卡片；hint 可空） */
     public static CollectOutcome needUserInput(List<RequirementFormSpec.FieldSpec> formSpec,
                                                String hint) {
-        return new CollectOutcome(Status.NEED_USER_INPUT, formSpec, hint);
+        return new CollectOutcome(Status.NEED_USER_INPUT, formSpec, hint, List.of());
+    }
+
+    /** 待用户输入 + 字段级校验错误（S2.3：geocode 打回） */
+    public static CollectOutcome needUserInput(List<RequirementFormSpec.FieldSpec> formSpec,
+                                               String hint, List<FieldError> errors) {
+        return new CollectOutcome(Status.NEED_USER_INPUT, formSpec, hint, errors);
     }
 }

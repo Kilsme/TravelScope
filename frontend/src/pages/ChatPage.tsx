@@ -3,7 +3,15 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
-import type { AgentActivity, ChatMessage, ChatEvent, Conversation, IntentPayload } from '../types'
+import RequirementFormCard from '../components/RequirementFormCard'
+import type {
+  AgentActivity,
+  ChatMessage,
+  ChatEvent,
+  Conversation,
+  IntentPayload,
+  RequirementFormPayload,
+} from '../types'
 
 /**
  * Markdown 渲染前预处理（去 AI 味符号，2026-09-23）：
@@ -149,6 +157,87 @@ function ChatPage() {
     setMessages([])
   }, [refreshConversations])
 
+  /**
+   * SSE 事件应用（发送消息与清单提交共用，避免两份处理逻辑漂移）。
+   * 全部事件作用于「当前最后一条 assistant 消息」。
+   */
+  const applyEvent = useCallback(
+    (event: ChatEvent) => {
+      setMessages((prev) => {
+        const next = [...prev]
+        const cur = { ...next[next.length - 1] }
+
+        switch (event.event) {
+          case 'intent': {
+            try {
+              const payload = JSON.parse(event.data) as IntentPayload
+              cur.intent = payload.intent
+            } catch {
+              cur.intent = 'UNKNOWN'
+            }
+            break
+          }
+          case 'delta': {
+            cur.content += event.data
+            break
+          }
+          case 'tool': {
+            // 兼容旧事件（后端已废弃为 agent_status，防御性保留）
+            cur.activities = [...(cur.activities ?? []), { agent: 'tool', action: event.data, state: 'RUNNING' }]
+            break
+          }
+          case 'agent_status': {
+            // Agent 活动流（2026-09-22 过程/结果分离）：工具调用/子代理委派/过程思考
+            // 累积到气泡下方的小字活动流，不进正文
+            try {
+              const a = JSON.parse(event.data) as AgentActivity
+              cur.activities = [...(cur.activities ?? []), a]
+            } catch {
+              /* 忽略解析失败 */
+            }
+            break
+          }
+          case 'clarify_question': {
+            // 旧版 intake 反问（v3）：作为提示行追加
+            cur.content += `${cur.content ? '\n\n' : ''}💬 ${event.data}`
+            break
+          }
+          case 'requirement_form': {
+            // 需求清单卡片（S2.3）：覆盖式挂载——后端每轮重推即原地刷新
+            try {
+              cur.requirementForm = JSON.parse(event.data) as RequirementFormPayload
+              cur.formSubmitted = false
+            } catch {
+              /* 解析失败忽略 */
+            }
+            break
+          }
+          case 'review_report': {
+            // reviewer 质检报告（FR-S08）：markdown 全文，消息尾部折叠区渲染
+            cur.reviewReport = event.data
+            break
+          }
+          case 'done': {
+            if (!cur.content && event.data) cur.content = event.data
+            cur.streaming = false
+            break
+          }
+          case 'error': {
+            cur.content += `${cur.content ? '\n\n' : ''}⚠️ ${event.data}`
+            cur.streaming = false
+            break
+          }
+        }
+        next[next.length - 1] = cur
+        return next
+      })
+      if (event.event === 'done' || event.event === 'error') {
+        refreshConversations()
+      }
+    },
+    [refreshConversations],
+  )
+
   const handleSend = useCallback(async () => {
     const text = input.trim()
     if (!text || streaming) return
@@ -187,81 +276,69 @@ function ChatPage() {
     try {
       await streamChat(convId, text, (event: ChatEvent) => {
         if (abortRef.current) return false
-        setMessages((prev) => {
-          const next = [...prev]
-          const cur = { ...next[next.length - 1] }
-
-          switch (event.event) {
-            case 'intent': {
-              try {
-                const payload = JSON.parse(event.data) as IntentPayload
-                cur.intent = payload.intent
-              } catch {
-                cur.intent = 'UNKNOWN'
-              }
-              break
-            }
-            case 'delta': {
-              cur.content += event.data
-              break
-            }
-            case 'tool': {
-              // 兼容旧事件（后端已废弃为 agent_status，防御性保留）
-              cur.activities = [...(cur.activities ?? []), { agent: 'tool', action: event.data, state: 'RUNNING' }]
-              break
-            }
-            case 'agent_status': {
-              // Agent 活动流（2026-09-22 过程/结果分离）：工具调用/子代理委派/过程思考
-              // 累积到气泡下方的小字活动流，不进正文
-              try {
-                const a = JSON.parse(event.data) as AgentActivity
-                cur.activities = [...(cur.activities ?? []), a]
-              } catch {
-                /* 忽略解析失败 */
-              }
-              break
-            }
-            case 'clarify_question': {
-              // intake-agent 的反问（经 ask_user 工具）：作为提示行追加，后续 delta 仍是主 Agent 的整合输出
-              cur.content += `${cur.content ? '\n\n' : ''}💬 ${event.data}`
-              break
-            }
-            case 'review_report': {
-              // reviewer 质检报告（FR-S08）：markdown 全文，消息尾部折叠区渲染
-              cur.reviewReport = event.data
-              break
-            }
-            case 'done': {
-              if (!cur.content && event.data) cur.content = event.data
-              cur.streaming = false
-              break
-            }
-            case 'error': {
-              cur.content += `${cur.content ? '\n\n' : ''}⚠️ ${event.data}`
-              cur.streaming = false
-              break
-            }
-          }
-          next[next.length - 1] = cur
-          return next
-        })
-        if (event.event === 'done' || event.event === 'error') {
-          refreshConversations()
-        }
+        applyEvent(event)
       })
     } catch (e) {
-      setMessages((prev) => {
-        const next = [...prev]
-        const cur = { ...next[next.length - 1] }
-        cur.content += `\n\n⚠️ ${e instanceof Error ? e.message : '网络错误'}`
-        cur.streaming = false
-        next[next.length - 1] = cur
-        return next
-      })
+      appendAssistantError(e)
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, activeId, refreshConversations])
+  }, [input, streaming, activeId, refreshConversations, applyEvent])
+
+  /** 清单提交（S2.3）：结构化消息走既有 /api/chat/stream 通道（不新增端点） */
+  const submitForm = useCallback(
+    async (action: 'submit' | 'skip' | 'cancel', values: Record<string, string>) => {
+      if (streaming) return
+      let convId = activeId
+      if (convId == null) {
+        try {
+          const conv = await createConversation()
+          convId = conv.id
+          setActiveId(conv.id)
+          await refreshConversations()
+        } catch (e) {
+          appendAssistantError(e)
+          return
+        }
+      }
+      setStreaming(true)
+      abortRef.current = false
+
+      const body = JSON.stringify({ __form__: { __action__: action, ...values } })
+      const label =
+        action === 'cancel' ? '（取消规划）' : action === 'skip' ? '（按推荐安排）' : '（提交需求清单）'
+      // 旧卡片折叠为只读摘要，防重复提交；随后追加本轮用户/助手气泡
+      setMessages((prev) => [
+        ...prev.map((m) => (m.requirementForm ? { ...m, formSubmitted: true } : m)),
+        { role: 'user', content: label },
+        { role: 'assistant', content: '', streaming: true, activities: [] },
+      ])
+
+      try {
+        await streamChat(convId, body, (event: ChatEvent) => {
+          if (abortRef.current) return false
+          applyEvent(event)
+        })
+      } catch (e) {
+        appendAssistantError(e)
+      } finally {
+        setStreaming(false)
+      }
+    },
+    [streaming, activeId, refreshConversations, applyEvent],
+  )
+
+  /** 尾部错误提示（当前最后一条 assistant 气泡） */
+  const appendAssistantError = useCallback((e: unknown) => {
+    setMessages((prev) => {
+      const next = [...prev]
+      const cur = { ...next[next.length - 1] }
+      cur.content += `\n\n⚠️ ${e instanceof Error ? e.message : '网络错误'}`
+      cur.streaming = false
+      next[next.length - 1] = cur
+      return next
+    })
+  }, [])
 
   const handleStop = useCallback(() => {
     abortRef.current = true
@@ -327,6 +404,14 @@ function ChatPage() {
                   <div className="bubble-content">{msg.content}</div>
                 )}
                 {msg.streaming && <span className="cursor">▌</span>}
+                {msg.requirementForm && (
+                  <RequirementFormCard
+                    payload={msg.requirementForm}
+                    submitted={!!msg.formSubmitted}
+                    disabled={streaming}
+                    onAction={submitForm}
+                  />
+                )}
                 {msg.reviewReport && (
                   <details className="review-report">
                     <summary>📋 质检评分明细</summary>

@@ -75,6 +75,8 @@ public class CommuteMatrixBuilder {
     private final TransportTool transportTool;
     private final TaskResultCache taskResultCache;
 
+    /** Spring 装配入口（类内另有包私有三参构造，须显式标注，否则容器找不到默认构造器） */
+    @org.springframework.beans.factory.annotation.Autowired
     public CommuteMatrixBuilder(TransportTool transportTool, TaskResultCache taskResultCache) {
         this(transportTool, taskResultCache, CALL_MIN_INTERVAL_NANOS);
     }

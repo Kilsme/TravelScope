@@ -449,3 +449,166 @@
 .btn-danger { padding: 5px 12px; background: #ef4444; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
 .btn-primary { padding: 5px 12px; background: #3b82f6; color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 12px; }
 .btn-ghost { padding: 5px 12px; background: transparent; color: #555; border: 1px solid #d5dbe6; border-radius: 5px; cursor: pointer; font-size: 12px; }
+
+/* ==================== 需求清单卡片（S2.3） ==================== */
+.req-form {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.req-form-title {
+  font-weight: 600;
+  color: #2c3e50;
+  margin-bottom: 8px;
+}
+
+.req-form-hint {
+  margin-bottom: 8px;
+  color: #8a94a6;
+  font-size: 12px;
+}
+
+.req-form-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.req-form-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+.req-form-row.missing {
+  background: #fffbeb;
+  border: 1px dashed #f3d19e;
+}
+
+.req-form-row.error {
+  background: #fef2f2;
+  border: 1px solid #f2b8b5;
+}
+
+.req-form-label {
+  flex: 0 0 78px;
+  color: #5a6b82;
+  line-height: 26px;
+}
+
+.req-form-required {
+  color: #dc2626;
+  margin-left: 2px;
+}
+
+.req-form-control {
+  flex: 1;
+  min-width: 0;
+}
+
+.req-form-control input,
+.req-form-control select {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #d5dbe6;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  box-sizing: border-box;
+}
+
+.req-form-placeholder {
+  color: #9aa5b6;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.req-form-error {
+  color: #dc2626;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.req-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.req-chip {
+  padding: 3px 9px;
+  border: 1px solid #d5dbe6;
+  border-radius: 999px;
+  background: #fff;
+  color: #5a6b82;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.req-chip.active {
+  background: #e8f0fe;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
+.req-chip-custom {
+  width: 96px !important;
+  padding: 3px 8px !important;
+  font-size: 12px !important;
+}
+
+.req-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.req-btn {
+  padding: 5px 14px;
+  border: 1px solid #d5dbe6;
+  border-radius: 6px;
+  background: #fff;
+  color: #3c4a5c;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.req-btn.primary {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  color: #fff;
+}
+
+.req-btn.ghost {
+  background: transparent;
+  color: #8a94a6;
+}
+
+.req-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.req-form-note {
+  margin-top: 6px;
+  color: #9aa5b6;
+  font-size: 11px;
+}
+
+.req-form.submitted {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.req-form-summary {
+  color: #3c4a5c;
+  font-size: 12px;
+  line-height: 1.7;
+}
