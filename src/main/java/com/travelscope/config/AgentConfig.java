@@ -141,7 +141,8 @@ public class AgentConfig {
     @Bean
     public Toolkit travelToolkit(TaskRegistry taskRegistry, TripRequirementStore tripRequirementStore,
                                  com.travelscope.service.TaskResultCache taskResultCache,
-                                 com.travelscope.service.RagServiceImpl ragServiceImpl) {
+                                 com.travelscope.service.RagServiceImpl ragServiceImpl,
+                                 com.travelscope.agent.tools.CollabTools collabTools) {
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(weatherTool);
         toolkit.registerTool(hotelTool);
@@ -158,8 +159,11 @@ public class AgentConfig {
         // RAG 双路检索 + 任务结果缓存工具（FR-S06/S11/S14）：
         // search_pois_with_rag（poi-research 双路召回）+ get/register_task_result（planner 缓存复用）
         toolkit.registerTool(new com.travelscope.agent.tools.PoiRagTools(ragServiceImpl, taskResultCache, tracingHelper));
+        // 协作契约三件套（S2.6）：retrieve_poi_candidates / plan_route / write_collab_file——
+        // planning-agent 触发代码服务与落盘契约文件的唯一入口
+        toolkit.registerTool(collabTools);
         registerMcpClients(toolkit);
-        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + RAG双路/任务缓存 + MCP(12306、飞常准)");
+        log.info("Toolkit 注册完成: 天气/酒店/景点/交通 + 任务容器 + 需求状态机 + RAG双路/任务缓存 + 协作契约三件套 + MCP(12306、飞常准)");
         return toolkit;
     }
 

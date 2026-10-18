@@ -1008,8 +1008,18 @@ public class ChatService {
      */
     private String assemblePlanningReply(String userId, String agentSessionId) {
         try {
+            // S2.6：JSON 契约优先——planner 经 write_collab_file 产 itinerary_draft.json
+            //（markdownBody 即方案正文）；缺失时退回 v3 的 .md 产物（过渡期兼容）
+            java.util.Optional<com.travelscope.collab.ItineraryDraft> draftJson =
+                    taskWorkspaceService.readItineraryDraft(userId, agentSessionId);
+            if (draftJson.isPresent() && draftJson.get().markdownBody() != null
+                    && !draftJson.get().markdownBody().isBlank()) {
+                log.info("PLANNING 最终方案取自 itinerary_draft.json: 会话={}, {} 字符",
+                        agentSessionId, draftJson.get().markdownBody().length());
+                return draftJson.get().markdownBody();
+            }
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
-            // 过渡（S0.5）：planner 产物 JSON 化（S2.6）前仍读 .md
+            // 过渡（S0.5）：planner 产物 JSON 化前的 v3 存量 .md 兜底
             java.nio.file.Path draft = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
             if (java.nio.file.Files.exists(draft)) {
                 String content = java.nio.file.Files.readString(draft, java.nio.charset.StandardCharsets.UTF_8);
