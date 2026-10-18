@@ -8,11 +8,13 @@
 ##
 ## 启动方式：
 ##   docker-compose up -d
+## 全新环境首次启动前创建 PostgreSQL 外部数据卷（已有卷时可跳过）：
+##   docker volume create travelscope-postgres-data
 ## 仅启动部分服务：
 ##   docker-compose up -d redis
 ## 停止方式：
 ##   docker-compose down
-## 清除数据（重新初始化）：
+## 清除 Compose 管理的数据（PostgreSQL 外部卷保留）：
 ##   docker-compose down -v
 ## 查看本项目全部容器：
 ##   docker compose -p travelscope ps
@@ -37,7 +39,7 @@ services:
     image: pgvector/pgvector:pg16
     container_name: travelscope-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       # 首次启动（空数据目录）自动执行建表脚本；存量卷不重复执行
@@ -167,6 +169,9 @@ services:
 
 volumes:
   postgres-data:
+    # 复用原独立 PostgreSQL 的数据卷；保留现有业务数据，生命周期独立于 compose down -v。
+    external: true
+    name: travelscope-postgres-data
   redis-data:
   minio-data:
   es-data:
