@@ -33,6 +33,8 @@ import java.util.List;
  * <p>
  * v3 豁免（需求文档 4.2 步骤 [5]/[6]）：需求收集发生在任务登记<b>之前</b>，
  * 因此对 {@code agent_id=intake-agent} 的 spawn 不做门禁校验，直接放行。
+ * （S2.9：IntakeAgent 类已随职能代码化删除，豁免名按字面量 "intake-agent" 保留；
+ * 本中间件随 S2.10 整体删除）
  * </p>
  */
 public class PlanningGateMiddleware implements MiddlewareBase {
@@ -63,7 +65,7 @@ public class PlanningGateMiddleware implements MiddlewareBase {
         }
         // intake-agent 豁免：需求收集是任务登记的前置步骤，不受门禁约束
         boolean hasGatedSpawn = spawns.stream()
-                .anyMatch(t -> !IntakeAgent.AGENT_NAME.equals(agentIdOf(t)));
+                .anyMatch(t -> !"intake-agent".equals(agentIdOf(t)));
         if (!hasGatedSpawn) {
             // 仅剩 intake spawn：强制同步模式（timeout_seconds=0 为异步——异步下 intake 的
             // 反问事件不进本会话流，clarify_question 推不到用户；摘除该参数走默认同步）
@@ -85,7 +87,7 @@ public class PlanningGateMiddleware implements MiddlewareBase {
         List<ToolUseBlock> rewritten = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
             if ("agent_spawn".equals(call.getName())
-                    && !IntakeAgent.AGENT_NAME.equals(agentIdOf(call))) {
+                    && !"intake-agent".equals(agentIdOf(call))) {
                 rewritten.add(replaceWithHint(call, hint));
             } else {
                 rewritten.add(call);
@@ -115,7 +117,7 @@ public class PlanningGateMiddleware implements MiddlewareBase {
         boolean changed = false;
         for (ToolUseBlock call : input.toolCalls()) {
             if ("agent_spawn".equals(call.getName())
-                    && IntakeAgent.AGENT_NAME.equals(agentIdOf(call))
+                    && "intake-agent".equals(agentIdOf(call))
                     && call.getInput() != null) {
                 Object timeout = call.getInput().get("timeout_seconds");
                 if (timeout != null && "0".equals(String.valueOf(timeout))) {

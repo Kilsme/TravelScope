@@ -13,8 +13,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * PromptMaskingMiddleware 单测（P2-I 提示词按需加载，无环境门控）
  * <p>
- * 验证按意图的可见性过滤：PLANNING/未知意图全量、其余意图仅常驻段、
- * 开关关闭透传、分段拼接完整性（SYS_PROMPT = CORE + EXTENSION）。
+ * 验证按意图的可见性过滤：PLANNING/未知意图全量、其余意图仅常驻段、开关关闭透传。
+ * S2.8 起规划按需段已删除（SYS_PROMPT = SYS_PROMPT_CORE），掩码实际为恒等——
+ * 本类只锁机制行为；中间件本体由 S2.10 清理。
  * </p>
  */
 class PromptMaskingMiddlewareTest {
@@ -33,14 +34,12 @@ class PromptMaskingMiddlewareTest {
     }
 
     @Test
-    @DisplayName("PLANNING 意图 → 全量提示词（含规划流程与共享任务区间）")
+    @DisplayName("PLANNING 意图 → 全量提示词（S2.8 起规划按需段已删，全量即常驻段）")
     void testPlanningGetsFullPrompt() {
         PromptMaskingMiddleware m = new PromptMaskingMiddleware(true);
         String out = apply(m, ctxWithIntent(IntentType.PLANNING.name()));
 
         assertEquals(TravelMasterAgent.SYS_PROMPT, out);
-        assertTrue(out.contains("行程规划的处理流程"), "PLANNING 轮应含规划流程");
-        assertTrue(out.contains("共享任务区间"), "PLANNING 轮应含共享区间契约");
     }
 
     @Test
@@ -79,12 +78,10 @@ class PromptMaskingMiddlewareTest {
     }
 
     @Test
-    @DisplayName("分段拼接完整性：SYS_PROMPT = CORE + EXTENSION（防重构丢内容）")
-    void testSegmentsComposeFullPrompt() {
-        assertEquals(TravelMasterAgent.SYS_PROMPT_CORE + TravelMasterAgent.SYS_PROMPT_PLANNING_EXTENSION,
-                TravelMasterAgent.SYS_PROMPT);
-        assertTrue(TravelMasterAgent.SYS_PROMPT_CORE.length() > 2000, "常驻段应含主体内容");
-        assertTrue(TravelMasterAgent.SYS_PROMPT_PLANNING_EXTENSION.length() > 1500,
-                "按需段应含规划流程与共享区间");
+    @DisplayName("S2.8 恒等锚定：SYS_PROMPT = SYS_PROMPT_CORE（规划按需段已删）")
+    void testPromptIsCoreAfterSlimming() {
+        assertEquals(TravelMasterAgent.SYS_PROMPT_CORE, TravelMasterAgent.SYS_PROMPT);
+        assertTrue(TravelMasterAgent.SYS_PROMPT_CORE.length() > 1000,
+                "常驻段应含主体内容（瘦身后约 1.2k 字符，原 ~2.4k）");
     }
 }

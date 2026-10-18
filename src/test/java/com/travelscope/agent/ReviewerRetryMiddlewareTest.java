@@ -132,7 +132,7 @@ class ReviewerRetryMiddlewareTest {
     void testNonReviewerSpawnIgnored() {
         ActingInput poiSpawn = new ActingInput(List.of(
                 new ToolUseBlock("id-2", "agent_spawn",
-                        Map.of("agent_id", PoiResearchAgent.AGENT_NAME, "task", "检索"))));
+                        Map.of("agent_id", "poi-research", "task", "检索"))));
         Recorder r = new Recorder();
         middleware.onActing(null, ctx(), poiSpawn, r::pass);
         assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName());
@@ -179,7 +179,7 @@ class ReviewerRetryMiddlewareTest {
         }
         ActingInput mixed = new ActingInput(List.of(
                 new ToolUseBlock("id-p", "agent_spawn",
-                        Map.of("agent_id", PoiResearchAgent.AGENT_NAME, "task", "检索")),
+                        Map.of("agent_id", "poi-research", "task", "检索")),
                 new ToolUseBlock("id-r", "agent_spawn",
                         Map.of("agent_id", ReviewerAgent.AGENT_NAME, "task", "送审"))));
         Recorder r = new Recorder();

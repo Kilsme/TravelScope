@@ -3,15 +3,12 @@ package com.travelscope.config;
 import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.agent.IntentClassifier;
 import com.travelscope.agent.IntentRouterMiddleware;
-import com.travelscope.agent.IntakeAgent;
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.LightweightIntentClassifier;
 import com.travelscope.agent.PlanningGateMiddleware;
-import com.travelscope.agent.PoiResearchAgent;
 import com.travelscope.agent.PromptMaskingMiddleware;
 import com.travelscope.agent.ReviewerAgent;
 import com.travelscope.agent.ReviewerRetryMiddleware;
-import com.travelscope.agent.RouteOptimizerAgent;
 import com.travelscope.agent.TravelMasterAgent;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.agent.tools.AttractionTool;
@@ -79,19 +76,20 @@ import java.util.Map;
  * <p>
  * planning-agent 经 subagentFactory 工厂手工构建的原因：声明式 SubagentDeclaration
  * 注册的子 Agent 会被框架标记为叶子节点（toolkit 无 agent_spawn，无法再委派），
- * 而 v3 要求 Planner 并行调度 poi-research / route-optimizer 并送审 reviewer
- * （需求文档 4.1/4.2），故走公开 API subagentFactory(name, description, factory)
- * 在工厂内手工构建——工厂返回的 Agent 不做叶子标记，build 时自带 SubagentsMiddleware。
- * spawn 深度 master(0) → planner(1) → poi/route/reviewer(2) ≤ 框架上限 3，合法。
+ * 而 Planner 需要再送审 reviewer（质检闭环），故走公开 API subagentFactory(name,
+ * description, factory) 在工厂内手工构建——工厂返回的 Agent 不做叶子标记，
+ * build 时自带 SubagentsMiddleware。
+ * spawn 深度 master(0) → planner(1) → reviewer(2) ≤ 框架上限 3，合法。
  * </p>
  * <p>
- * 协作流程（需求文档 4.2）：
+ * 协作流程（v4，S2.5 起编排收归代码）：
  * <ol>
- *   <li>主 Agent 意图路由（应用层）</li>
- *   <li>委派 intake-agent 收口需求（状态机工具判缺项，≤3 轮反问）→ intake_done.md</li>
- *   <li>主 Agent 拆分任务，create_task_backlog 登记任务容器</li>
- *   <li>委派 planning-agent：直调工具 + 并行 spawn poi/route + 组装 + reviewer 质检</li>
- *   <li>主 Agent 读取 itinerary_draft.md / review_passed.md 整合返回用户</li>
+ *   <li>ChatService 意图路由（应用层）</li>
+ *   <li>PLANNING：需求采集 workflow（清单卡片）→ intake_result.json</li>
+ *   <li>TaskBacklogPlanner 代码模板拆分并登记 task_backlog.json</li>
+ *   <li>ChatService 直持 planning-agent：直调工具 + CollabTools 触发代码服务
+ *       （POI 池/路线求解）+ 组装 itinerary_draft.json + reviewer 质检按段回炉</li>
+ *   <li>ChatService 读 itinerary_draft.json + 评审产物渲染返回用户</li>
  * </ol>
  * </p>
  */
@@ -417,24 +415,6 @@ public class AgentConfig {
                                           TaskRegistry taskRegistry,
                                           TaskWorkspace taskWorkspaceService,
                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
-        // 需求收集子 Agent（intake-agent）：inline 模式声明，注册到主 Agent
-        // tools 白名单限定其只能调需求状态机工具（get_missing_fields / update_requirement_state /
-        // ask_user 反问出口——ask_user 的工具结果经 SSE 层转为 clarify_question 事件推给前端）
-        SubagentDeclaration intakeSubAgent = SubagentDeclaration.builder()
-                .name(IntakeAgent.AGENT_NAME)
-                .description("需求收集 Agent（接待员），负责规划前的关键信息反问："
-                        + "调需求状态机工具判断缺项（纯代码零模型调用），理解用户模糊回答并写回状态，"
-                        + "反问经 ask_user 工具发出（≤3 轮，超限 DEGRADED 带默认值放行），产出 intake_done.md")
-                .inlineAgentsBody(IntakeAgent.SYS_PROMPT)
-                .model(appProperties.getModelGateway().getModel())
-                .maxIters(IntakeAgent.MAX_ITERS)
-                .workspaceMode(WorkspaceMode.SHARED)
-                .tools(List.of(
-                        "get_missing_fields",
-                        "update_requirement_state",
-                        "ask_user"))
-                .build();
-
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
                 .sysPrompt(TravelMasterAgent.SYS_PROMPT)
@@ -468,36 +448,38 @@ public class AgentConfig {
                 // RedisStateStoreConfig 提供，Redis 不可用自动降级 InMemory）——2000 用户下
                 // 状态不占应用堆 + 进程重启不失忆；替代原先直接 new InMemoryAgentStateStore()
                 .stateStore(travelAgentStateStore)
-                // 子 Agent 一：intake-agent（声明式叶子，需求收集）
-                .subagent(intakeSubAgent)
-                // 子 Agent 二：planning-agent（subagentFactory 工厂手工构建非叶子二级编排者，
-                // 工厂内挂 poi-research / route-optimizer 三个声明，见 buildPlannerAgent；
+                // 唯一子 Agent：planning-agent（subagentFactory 工厂手工构建非叶子编排者，
+                // 工厂内只挂 reviewer 质检声明，见 buildPlannerAgent；
                 // 框架每次 spawn 时调用工厂 build 新实例，与 IntentClassifier 每次新建同款模式；
                 // master 兜底路径不带中间件——回炉保险丝经 master 自身中间件链生效，List.of()）
+                // （S2.9：intake-agent 职能已迁 RequirementWorkflowService，声明移除）
                 .subagentFactory(ItineraryAgent.AGENT_NAME,
-                        "规划 Agent（行程规划师，二级编排者）：直调工具获取天气/酒店/车票实时数据，"
-                                + "并行调度 poi-research 与 route-optimizer 两个子 Agent，"
+                        "规划 Agent（行程规划师）：直调工具获取天气/酒店/车票实时数据，"
+                                + "经 retrieve_poi_candidates / plan_route 代码服务取候选池与分日路线，"
                                 + "组装行程草案并经 reviewer-agent 质检闭环",
                         name -> buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
                                 List.of()))
                 .build();
 
-        log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 声明式 + {} 工厂式[内含 {}/{}/{}])",
+        log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 工厂式[内含 {}])",
                 TravelMasterAgent.AGENT_NAME,
                 appProperties.getAgentscope().getWorkspacePath(),
-                IntakeAgent.AGENT_NAME,
-                ItineraryAgent.AGENT_NAME,
-                PoiResearchAgent.AGENT_NAME, RouteOptimizerAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME);
+                ItineraryAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME);
         return agent;
     }
 
     /**
-     * 手工构建规划 Agent（planning-agent，非叶子二级编排者）
+     * 手工构建规划 Agent（planning-agent，非叶子编排者）
      * <p>
      * 不走声明式 SubagentDeclaration（其子 Agent 被框架标记为叶子、无 agent_spawn），
      * 而是直接用 HarnessAgent.builder() 构建：build 时自动安装 SubagentsMiddleware，
      * 注册 agent_spawn / agent_send / agent_list / task_* 工具，因此本 Agent 能 spawn
-     * 自己声明的三个子 Agent。深度 master(0) → planner(1) → 子(2)，在框架上限 3 之内。
+     * 自己声明的子 Agent。深度 master(0) → planner(1) → reviewer(2)，在框架上限 3 之内。
+     * </p>
+     * <p>
+     * S2.9：poi-research / route-optimizer 两个子 Agent 声明已随职能代码化移除
+     * （POI 检索走 PoiRetrievalService、路线求解走 RoutePlannerService，planner 经
+     * CollabTools 三件套触发）——本 Agent 只剩 reviewer-agent 一个质检子 Agent。
      * </p>
      * <p>
      * 传入共享 toolkit 引用（HarnessAgent.build() 内部会 copy，浅拷贝共享工具实例，
@@ -508,38 +490,6 @@ public class AgentConfig {
     private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model gatewayChatModel,
                                            Model gatewayReviewerModel,
                                            List<io.agentscope.core.middleware.MiddlewareBase> middlewares) {
-        // 景点检索子 Agent：多轮换词重查（RAG 双路检索待 FR-S11 落地后接入）
-        SubagentDeclaration poiResearch = SubagentDeclaration.builder()
-                .name(PoiResearchAgent.AGENT_NAME)
-                .description("景点检索 Agent（检索员）：按目的地+天数+偏好多轮检索筛选景点候选，"
-                        + "召回不足时换关键词重查，产出 poi_shortlist.md")
-                .inlineAgentsBody(PoiResearchAgent.SYS_PROMPT)
-                .model(appProperties.getModelGateway().getModel())
-                .maxIters(PoiResearchAgent.MAX_ITERS)
-                .workspaceMode(WorkspaceMode.SHARED)
-                .skills(List.of("attraction-search"))
-                .build();
-
-        // 路线调优子 Agent：读候选清单迭代排线，产出 route_plan.md（FR-S07）。
-        // tools 白名单限定排线所需（路线工具/文件/缓存登记——登记由 route-optimizer 自完成，
-        // 不依赖 planner 代登：poi 落地时 planner 代登实测翻车，见 fix-record 7.10/7.11）
-        SubagentDeclaration routeOptimizer = SubagentDeclaration.builder()
-                .name(RouteOptimizerAgent.AGENT_NAME)
-                .description("路线调优 Agent（排线员）：读 poi_shortlist.md，两两调路线工具算通勤，"
-                        + "就近聚类分日 + 迭代调整再算，产出 route_plan.md 并自行登记缓存")
-                .inlineAgentsBody(RouteOptimizerAgent.SYS_PROMPT)
-                .model(appProperties.getModelGateway().getModel())
-                .maxIters(RouteOptimizerAgent.MAX_ITERS)
-                .workspaceMode(WorkspaceMode.SHARED)
-                .skills(List.of("route-planning"))
-                .tools(List.of(
-                        "getDrivingRoute",
-                        "getTransitRoute",
-                        "geocode",
-                        "register_task_result",
-                        "get_cached_task_result"))
-                .build();
-
         // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，
         // S2.7 起产物经 write_collab_file 写 review_passed.json / review_report.json。
         // 模型经 modelResolver 按 name 分流到质检评分模型（glm-5-3-260814，独立配置）；
@@ -576,7 +526,7 @@ public class AgentConfig {
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
                     .model(gatewayChatModel)
                     // 模型分流（FR-S08）：reviewer-agent 解析到质检评分模型（独立配置），
-                    // 其余（poi/route/planner 自身）走主链路装饰模型——原一刀切 resolver 会把
+                    // 其余（planner 自身）走主链路装饰模型——原一刀切 resolver 会把
                     // 声明里的模型名无视掉，评分模型必须在这里分流才生效
                     .modelResolver(name -> ReviewerAgent.AGENT_NAME.equals(name)
                             ? gatewayReviewerModel : gatewayChatModel)
@@ -590,7 +540,7 @@ public class AgentConfig {
                     .workspace(appProperties.getAgentscope().getWorkspacePath())
                     .skillRepository(new ClasspathSkillRepository("skills"))
                     .stateStore(new InMemoryAgentStateStore())
-                    .subagents(List.of(poiResearch, routeOptimizer, reviewer));
+                    .subagents(List.of(reviewer));
             if (!middlewares.isEmpty()) {
                 builder.middlewares(middlewares);
             }
