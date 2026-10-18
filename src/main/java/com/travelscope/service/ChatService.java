@@ -292,12 +292,23 @@ public class ChatService {
     }
 
     /**
-     * 质检标注（代码版 v3 文案规则）：review_passed.md 存在 →「✅ 已通过质量审阅（评分 x/100）」；
-     * 否则 review_report.md 存在 →「⚠️ 当前最佳版本（已尽力，评分 x/100）」（回炉超限场景）；
-     * 都无 → 空串（未走到质检）。过渡期仍按 .md 文件判定（reviewer 产物 JSON 化在 S2.7）。
+     * 质检标注（代码版 v3 文案规则）：质检通过 →「✅ 已通过质量审阅（评分 x/100）」；
+     * 未通过（回炉超限）→「⚠️ 当前最佳版本（已尽力，评分 x/100）」；未走到质检 → 空串。
+     * S2.7 起 JSON 契约优先（typed total）；旧 .md 产物正则兜底（v3 存量会话目录）。
      */
     private String reviewAnnotation(String userId, String sessionId) {
         try {
+            java.util.Optional<com.travelscope.collab.ReviewPassed> passedJson =
+                    taskWorkspaceService.readReviewPassed(userId, sessionId);
+            if (passedJson.isPresent()) {
+                return "\n\n✅ 已通过质量审阅（评分 " + passedJson.get().total() + "/100）";
+            }
+            java.util.Optional<com.travelscope.collab.ReviewReport> reportJson =
+                    taskWorkspaceService.readReviewReport(userId, sessionId);
+            if (reportJson.isPresent()) {
+                return "\n\n⚠️ 当前最佳版本（已尽力，评分 " + reportJson.get().total() + "/100）";
+            }
+            // 旧版 .md 兜底
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
             java.nio.file.Path passed = dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD);
             if (java.nio.file.Files.exists(passed)) {
@@ -1046,6 +1057,11 @@ public class ChatService {
      * 读取本轮质检报告 markdown（检测标准 2 的数据源）：
      * 回复含「已通过质量审阅」→ review_passed.md；含「已尽力」→ 最近一次 review_report.md。
      * 回复无质检标注（纯查询/闲聊/未走到质检）返回 null 不推事件。
+     * <p>
+     * 窗口说明（S2.7→S3.1）：reviewer 产物已切 JSON，但本事件仍只读 .md——窗口期内
+     * review_report 事件静默缺失（done 的 ✅/⚠️ 标注经 reviewAnnotation 双读不受影响），
+     * S3.1 正式把本事件切到 JSON 读取。
+     * </p>
      */
     private String readReviewMarkdown(String userId, String agentSessionId, String reply) {
         boolean passed = reply.contains("已通过质量审阅");

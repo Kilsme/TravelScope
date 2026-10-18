@@ -83,6 +83,22 @@ class ReviewerRetryMiddlewareTest {
     }
 
     @Test
+    @DisplayName("S2.7 双读：仅 review_passed.json（无 .md）存在时送审放行且计数重置")
+    void testJsonPassedResetsRetryCount() {
+        // 先累计 3 次送审（首审+2 回炉，达上限）
+        for (int i = 0; i < 3; i++) {
+            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+        }
+        // S2.7 起 reviewer 只写 JSON 产物（无双读时保险丝会误判未通过而把第 4 次拦成 hint）
+        workspace.writeReviewPassed("u1", "conv-t",
+                new com.travelscope.collab.ReviewPassed(88, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
+        Recorder r = new Recorder();
+        middleware.onActing(null, ctx(), reviewerSpawn(), r::pass);
+        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(),
+                "review_passed.json 存在时应放行（双读生效）");
+    }
+
+    @Test
     @DisplayName("首审与第 2/3 次送审放行（首审+2 回炉=3 次上限内）")
     void testFirstThreeAttemptsPassThrough() {
         for (int i = 1; i <= 3; i++) {

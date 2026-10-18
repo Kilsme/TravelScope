@@ -540,19 +540,23 @@ public class AgentConfig {
                         "get_cached_task_result"))
                 .build();
 
-        // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，产出 review_passed.md / review_report.md。
+        // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，
+        // S2.7 起产物经 write_collab_file 写 review_passed.json / review_report.json。
         // 模型经 modelResolver 按 name 分流到质检评分模型（glm-5-3-260814，独立配置）；
-        // tools 白名单限定核验工具面（天气/路线/地理 + 文件 + 缓存登记）
+        // temperature=0.1 降温（质检评分需要稳定性；agentscope 2.0.3 SubagentDeclaration
+        // 原生支持 per-agent 温度，v3 未利用）；
+        // tools 白名单限定核验工具面（天气/路线/地理 + 契约落盘 + 缓存登记）
         SubagentDeclaration reviewer = SubagentDeclaration.builder()
                 .name(ReviewerAgent.AGENT_NAME)
-                .description("质量审阅 Agent（质检员，评分模型独立配置）：对 itinerary_draft.md 做分段审核"
+                .description("质量审阅 Agent（质检员，评分模型独立配置）：对 itinerary_draft.json 做分段审核"
                         + "（段1 POI 有效性 / 段2 路线连贯性+时间密度 / 段3 预算+偏好匹配，各段 pass|fail），"
                         + "以 5 维评分（完备性/可行性/时间冲突/费用预算/POI 合理性，各 20 分）作量化依据，"
                         + "总分≥80 且无单维<12 且三段全 pass 才通过；调工具核验事实（重查距离/天气），"
-                        + "通过写 review_passed.md，不通过写 review_report.md"
+                        + "通过写 review_passed.json，不通过写 review_report.json"
                         + "（含分段结论与改进建议，供 planner 按段回炉）")
                 .inlineAgentsBody(ReviewerAgent.SYS_PROMPT)
                 .model(appProperties.getModelGateway().getReviewerModel())
+                .temperature(0.1)
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .tools(List.of(
@@ -561,6 +565,7 @@ public class AgentConfig {
                         "getDrivingRoute",
                         "getTransitRoute",
                         "geocode",
+                        "write_collab_file",
                         "register_task_result",
                         "get_cached_task_result"))
                 .build();

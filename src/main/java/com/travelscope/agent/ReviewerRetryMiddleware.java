@@ -120,9 +120,9 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
                 attempt, MAX_SPAWN_ATTEMPTS, MAX_REVIEW_RETRIES, RETRY_HINT_TOOL, userId, sessionId);
         String hint = "RETRY_LIMIT_REACHED: 质检送审已达上限（首审 + " + MAX_REVIEW_RETRIES
                 + " 次回炉），本次送审已被系统拦截未执行。"
-                + "请立即停止送审，按当前最佳版本的 itinerary_draft.md 汇报收尾："
+                + "请立即停止送审，按当前最佳版本的 itinerary_draft.json 汇报收尾："
                 + "汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」"
-                + "（x 取最近一次 review_report.md 的总分），列出未解决的扣分项，"
+                + "（x 取最近一次 review_report.json 的 total），列出未解决的扣分项，"
                 + "并调用 register_task_result(taskType=itinerary) 登记当前版本。";
         List<ToolUseBlock> rewritten = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
@@ -162,11 +162,23 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
         }
     }
 
-    /** 读取最近一次评审结论写入打点属性：review_passed.md → PASS；否则 review_report.md → FAIL */
+    /** 读取最近一次评审结论写入打点属性：S2.7 起 JSON 契约优先（typed total），旧 .md 正则兜底 */
     private void readLatestReviewOutcome(String userId, String sessionId, Map<String, String> attrs) {
         try {
+            var passedJson = taskWorkspaceService.readReviewPassed(userId, sessionId);
+            if (passedJson.isPresent()) {
+                attrs.put("result", "PASS");
+                attrs.put("score", String.valueOf(passedJson.get().total()));
+                return;
+            }
+            var reportJson = taskWorkspaceService.readReviewReport(userId, sessionId);
+            if (reportJson.isPresent()) {
+                attrs.put("result", "FAIL");
+                attrs.put("score", String.valueOf(reportJson.get().total()));
+                return;
+            }
+            // 旧版 .md 兜底（v3 存量会话目录）
             Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍检查 .md
             Path passed = dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD);
             Path report = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
             Path file = Files.exists(passed) ? passed : (Files.exists(report) ? report : null);
@@ -183,14 +195,14 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
         }
     }
 
-    /** review_passed.md 是否存在（存在 = 质检已通过） */
+    /** review_passed 产物是否存在（存在 = 质检已通过；S2.7 起 JSON，旧 .md 双读兜底） */
     private boolean reviewPassedFileExists(String userId, String sessionId) {
         try {
             Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍检查 .md
-            return Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
+            return Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED))
+                    || Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
         } catch (Exception e) {
-            log.debug("检查 review_passed.md 失败（按不存在处理）: {}", e.getMessage());
+            log.debug("检查 review_passed 产物失败（按不存在处理）: {}", e.getMessage());
             return false;
         }
     }

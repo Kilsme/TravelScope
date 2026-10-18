@@ -209,6 +209,33 @@ class ChatServicePlanningOrchestrationTest {
         verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
     }
 
+    // ---------- 用例 6：评审产物 JSON（S2.7 双读）→ ✅ 标注照常；review_report 事件窗口期静默 ----------
+    @Test
+    void jsonReviewPassedDrivesAnnotation() throws Exception {
+        workspace.writeIntakeResult("1", "conv-13", intakeResult());
+        Path dir = workspace.getTaskDir("1", "conv-13");
+        Files.writeString(dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
+                "# 杭州两日游完整方案\nDay1 西湖环湖。");
+        // S2.7 起 reviewer 只写 JSON 产物（无双读时标注会丢失）
+        workspace.writeReviewPassed("1", "conv-13",
+                new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        List<String> items = awaitEvent(emitter, "done");
+
+        assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
+                .contains("✅ 已通过质量审阅（评分 91/100）");
+        // 窗口期行为锁档：review_report SSE 事件只读 .md（S3.1 切 JSON 时翻转本断言）
+        assertThat(eventNames(items)).doesNotContain("review_report");
+    }
+
     // ==================== 测试数据与 SSE 捕获 ====================
 
     private static Conversation conversation() {
