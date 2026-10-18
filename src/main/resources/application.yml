@@ -188,12 +188,6 @@ travelscope:
     planning-cost: 200
     initial-balance: 500
 
-  # ---- 提示词按需加载（2026-10-11 P2-I）----
-  # 主 Agent 规划按需段（行程规划流程/共享任务区间/规划委派规则，~45% 篇幅）仅 PLANNING 轮发送；
-  # false 回退全量常驻
-  prompt-masking:
-    enabled: true
-
   # ---- 意图三层级联配置（FR-S01）----  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 deepseek-v4-flash-0731 单标签 → L3 IntentClassifier 兜底
   # 上层命中即短路；规则表为空时代码内置同款默认规则
   intent-cascade:

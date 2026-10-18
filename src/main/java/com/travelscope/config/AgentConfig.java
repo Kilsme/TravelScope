@@ -5,8 +5,6 @@ import com.travelscope.agent.IntentClassifier;
 import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.LightweightIntentClassifier;
-import com.travelscope.agent.PlanningGateMiddleware;
-import com.travelscope.agent.PromptMaskingMiddleware;
 import com.travelscope.agent.ReviewerAgent;
 import com.travelscope.agent.ReviewerRetryMiddleware;
 import com.travelscope.agent.TravelMasterAgent;
@@ -412,7 +410,6 @@ public class AgentConfig {
     @org.springframework.context.annotation.Primary
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
                                           OpenAIChatModel gatewayReviewerModel,
-                                          TaskRegistry taskRegistry,
                                           TaskWorkspace taskWorkspaceService,
                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
         HarnessAgent agent = HarnessAgent.builder()
@@ -428,14 +425,11 @@ public class AgentConfig {
                 // 后续每条消息都抛 IllegalStateException（Pending tool calls exist without results），
                 // 会话永久卡死。开启后框架自动为 pending 调用生成错误结果，对话可继续。
                 .enablePendingToolRecovery(true)
-                // 责任链：提示词按需加载（P2-I：onSystemPrompt 按意图掩掉规划按需段，order=-10 最先）
-                //         + 意图路由（onSystemPrompt 注入本轮路由指令）
-                //         + 规划委派门禁（onActing 拦截 agent_spawn，强制先登记任务清单）
-                //         + Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint，杜绝无限回炉）
-                .middlewares(List.of(new PromptMaskingMiddleware(
-                                appProperties.getPromptMasking().isEnabled()),
-                        new IntentRouterMiddleware(),
-                        new PlanningGateMiddleware(taskRegistry),
+                // 责任链（S2.10 清理后）：意图路由（onSystemPrompt 注入本轮路由指令——
+                // 非规划轮禁派）+ Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint）；
+                // 提示词掩码（规划按需段已删）与委派门禁（PLANNING 已代码编排，登记由
+                // ChatService step2 保证）随 S2.10 移除
+                .middlewares(List.of(new IntentRouterMiddleware(),
                         new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)))
                 // 本助手全部为只读查询工具 + 工作区 MD 文件协作，BYPASS 免确认，
                 // 否则工具调用会挂起等待用户确认导致对话提前结束

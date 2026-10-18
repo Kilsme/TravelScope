@@ -68,6 +68,13 @@ public class ChatService {
     /** AgentScope 会话 ID 前缀（与 conversations 表 ID 关联，保证多轮上下文） */
     private static final String SESSION_PREFIX = "conv-";
 
+    /**
+     * RuntimeContext 协作目录键（S2.10 起收编为本类私有——原 IntentRouterMiddleware
+     * 的常量随中间件简化删除）。PoiRagTools / RequirementTools 的 resolveSessionId
+     * 在本键兜底解析主会话 ID（模型传错 sessionId 时的纠偏），注入不可停。
+     */
+    private static final String CTX_COLLAB_DIR_KEY = "travelscope.collab.dir";
+
     private final HarnessAgent travelMasterAgent;
     private final IntentCascadeRouter intentCascadeRouter;
     private final RagService ragService;
@@ -246,6 +253,8 @@ public class ChatService {
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 600);
         String collabDir = taskWorkspaceService.collabDirRelativePath(sessionId);
+        // 协作目录键同注入（planner 侧缓存/任务状态工具的 resolveSessionId 兜底，与 master 链一致）
+        ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
         // 清单卡片结构化提交的原文是 JSON 控制报文，不带入任务说明（intake_result.json 已承载事实）
         String userContext = isFormSubmission(userMessage) ? "" : "\n\n【本轮用户消息】" + userMessage;
         String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
@@ -571,9 +580,10 @@ public class ChatService {
             ctx.put(IntentRouterMiddleware.CTX_INTENT_KEY, type.name());
         }
         // 需求 1：把本会话的隔离协作目录（相对路径 tasks/{sessionId}）注入上下文，
-        // 供 IntentRouterMiddleware 在 PLANNING 指令中给出具体路径，并供委派门禁按会话校验
+        // 供 PoiRagTools/RequirementTools 的 resolveSessionId 兜底解析主会话 ID
+        //（S2.10 前还供 IntentRouterMiddleware 路由指令与委派门禁——两者已删）
         String agentSessionId = SESSION_PREFIX + conversation.getId();
-        ctx.put(IntentRouterMiddleware.CTX_COLLAB_DIR_KEY,
+        ctx.put(CTX_COLLAB_DIR_KEY,
                 taskWorkspaceService.collabDirRelativePath(agentSessionId));
         // 前端可见性改造（2026-10-04，2026-10-05 模型网关迁移后再校准 420→600）：
         // PLANNING 轮强制 spawn 同步等待 600s——框架默认同步等待仅 30s；qwen 时期全链

@@ -104,16 +104,6 @@ public class TaskTools {
     }
 
     /**
-     * 委派门禁的纠正提示（PlanningGateMiddleware 拦截 agent_spawn 后重定向到此工具），Agent 不要主动调用
-     */
-    @Tool(description = "系统内部工具：委派被拦截时的纠正提示，不要主动调用")
-    public String planning_gate_hint(
-            @ToolParam(name = "reason", description = "拦截原因")
-            String reason) {
-        return reason;
-    }
-
-    /**
      * Reviewer 回炉保险丝的纠正提示（ReviewerRetryMiddleware 拦截超限送审后重定向到此工具），Agent 不要主动调用
      */
     @Tool(description = "系统内部工具：质检送审超限被拦截时的纠正提示，不要主动调用")

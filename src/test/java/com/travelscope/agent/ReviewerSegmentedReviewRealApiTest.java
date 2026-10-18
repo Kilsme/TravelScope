@@ -28,13 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ReviewerAgent 分段审核真实验收测试（FR-S08 v3.2 / B1）。
+ * ReviewerAgent 分段审核真实验收测试（FR-S08 v3.2 / B1；S2.7 产物 JSON 化适配）。
  * <p>
  * 不经 Spring 上下文，直接用 ReviewerAgent.SYS_PROMPT + 质检模型（glm-5-3-260814 @
  * 模型网关）构建 HarnessAgent（IntentCascadeRealApiTest 门控先例 + RubricScorer 单 Agent
- * 直跑骨架），把一份真实超预算的 itinerary_draft.md（杭州 2 日 500 元预算、总计 642
- * 超支 142，取自 conv-52 实测样本）喂给 reviewer，验证分段审核契约：
- * review_report.md 含分段结论表/总分行（SCORE_PATTERN 兼容）/改进建议，
+ * 直跑骨架），把一份真实超预算的 itinerary_draft.json（杭州 2 日 500 元预算、总计 642
+ * 超支 142，取自 conv-52 实测样本，markdownBody 承载正文）喂给 reviewer，验证分段审核契约：
+ * review_report.json 经 write_collab_file 落盘（Schema 校验）且段3 fail + 改进建议按段给出，
  * 回复首行带扩展标记 REVIEW_RESULT: FAIL 总分=xx 失败段=…（预算段必失败）。
  * </p>
  */
@@ -78,7 +78,7 @@ class ReviewerSegmentedReviewRealApiTest {
             """;
 
     @Test
-    @DisplayName("超预算草案 → review_report.md 含分段结论表与失败段标记，首行 REVIEW_RESULT: FAIL 总分=xx 失败段含 3")
+    @DisplayName("超预算草案 → review_report.json 段3 fail + 改进建议按段给出，首行 REVIEW_RESULT: FAIL 总分=xx 失败段含 3")
     void segmentedReviewOnOverBudgetItinerary() throws Exception {
         // 自管临时目录（不用 @TempDir：harness 工作区在 Windows 下句柄未释放，TempDir 强制删除会误报失败）
         Path workspaceRoot = Files.createTempDirectory("reviewer-seg-test-");
@@ -90,19 +90,30 @@ class ReviewerSegmentedReviewRealApiTest {
     }
 
     private void runSegmentedReview(Path workspaceRoot) throws IOException, InterruptedException {
-        // ---- 准备协作目录与超预算草案（文件工具把相对路径解析到 {workspace}/{userId}/ 之下）----
+        // ---- 准备协作目录与超预算草案（S2.7：契约 JSON——类型化写入经 Schema 校验）----
         String userId = "1";
         String collabDir = "tasks/conv-9001";
         Path taskDir = workspaceRoot.resolve(userId).resolve("tasks").resolve("conv-9001");
-        Files.createDirectories(taskDir);
-        Files.writeString(taskDir.resolve("itinerary_draft.md"), OVER_BUDGET_ITINERARY, StandardCharsets.UTF_8);
+        com.travelscope.collab.CollabFileWriter writer =
+                new com.travelscope.collab.CollabFileWriter(workspaceRoot.toString());
+        com.travelscope.collab.TaskWorkspace workspace = new com.travelscope.collab.TaskWorkspace(
+                writer, new com.travelscope.collab.CollabFileReader());
+        workspace.writeItineraryDraft(userId, "conv-9001", new com.travelscope.collab.ItineraryDraft(
+                java.util.List.of(), null, java.util.List.of(), java.util.List.of(),
+                OVER_BUDGET_ITINERARY));
 
         // ---- 构建 reviewer：同 SYS_PROMPT + 质检评分模型（glm-5-3-260814 @ 模型网关）；
         // 核验工具用确定性桩（本测试验证提示词契约：分段结构/产物文件/标记行，不验证真实
         // 核验工具质量。真实 AMAP/和风 API 有配额限流，限流时模型进入降级态会让测试随外部
-        // 环境抖动；桩数据合理且恒定，模型保持工具调用行为）----
+        // 环境抖动；桩数据合理且恒定，模型保持工具调用行为）；
+        // S2.7 起产物落盘走 write_collab_file——CollabTools 入 toolkit（检索/路线服务打桩，
+        // 本测试只走到 write_collab_file）----
         Toolkit toolkit = new Toolkit();
         toolkit.registerTool(new VerificationStubs());
+        toolkit.registerTool(new com.travelscope.agent.tools.CollabTools(
+                org.mockito.Mockito.mock(com.travelscope.service.retrieval.PoiRetrievalService.class),
+                org.mockito.Mockito.mock(com.travelscope.service.route.RoutePlannerServiceImpl.class),
+                workspace, writer));
 
         HarnessAgent reviewer = HarnessAgent.builder()
                 .name(ReviewerAgent.AGENT_NAME)
@@ -119,7 +130,7 @@ class ReviewerSegmentedReviewRealApiTest {
         // ---- 模拟 planner 的委派任务说明（协作目录 + 需求摘要，SYS_PROMPT 第一节的输入约定）----
         String task = "协作目录: " + collabDir + "\n"
                 + "用户需求摘要：杭州 2 日游（10月25日~26日），2 人同行，总预算 500 元（硬约束，含往返高铁）。\n"
-                + "请审核行程草案。";
+                + "请审核行程草案（" + collabDir + "/itinerary_draft.json）。";
         RuntimeContext ctx = RuntimeContext.builder().userId(userId).sessionId("conv-9001").build();
 
         StringBuilder replyBuf = new StringBuilder();
@@ -139,8 +150,9 @@ class ReviewerSegmentedReviewRealApiTest {
 
         // ---- 契约断言：最终回复含可解析的 REVIEW_RESULT 标记行 ----
         // B2 planner 按段路由的机器输入。硬契约 = 标记行存在且结构精确（LLM 读全文消费）；
-        // 「字面首行」是提示词目标但 qwen-max 遵从非 100%，作为可观测项打印不作为硬断言，
-        // 防止门禁随模型方差随机抖动。文件里的「- 失败段:」行是机器解析通道（下方断言）。
+        // 「字面首行」是提示词目标但模型遵从非 100%，作为可观测项打印不作为硬断言，
+        // 防止门禁随模型方差随机抖动。S2.7 起失败段的机器解析通道是 review_report.json
+        // 的 segments/suggestionsBySegment（下方断言）。
         String reply = replyBuf.toString().strip();
         System.out.println("[REVIEW-TEST] reviewer 回复:\n" + reply);
         assertFalse(reply.isBlank(), "reviewer 应有最终回复");
@@ -162,19 +174,21 @@ class ReviewerSegmentedReviewRealApiTest {
         assertTrue(marker.group(2).contains("3"),
                 "预算 642 超支 142 元，失败段应含 3（预算+偏好匹配），实际: " + marker.group(2));
 
-        // ---- 契约断言：review_report.md 分段格式 + 兼容性 ----
-        Path report = taskDir.resolve("review_report.md");
-        assertTrue(Files.exists(report), "不通过分支应产出 review_report.md");
-        String reportText = Files.readString(report, StandardCharsets.UTF_8);
-        System.out.println("[REVIEW-TEST] review_report.md:\n" + reportText);
+        // ---- 契约断言：review_report.json（S2.7 JSON 契约；落盘即已过 Schema 校验）----
+        java.util.Optional<com.travelscope.collab.ReviewReport> report =
+                workspace.readReviewReport(userId, "conv-9001");
+        assertTrue(report.isPresent(), "不通过分支应产出 review_report.json");
+        System.out.println("[REVIEW-TEST] review_report.json: total=" + report.get().total()
+                + " segments=" + report.get().segments()
+                + " suggestions=" + report.get().suggestionsBySegment());
 
-        assertTrue(reportText.contains("分段结论"), "报告应含分段结论表");
-        assertTrue(reportText.contains("失败段"), "报告应含失败段行（planner 路由依据）");
-        assertTrue(Pattern.compile("总分[:：]\\s*\\d+").matcher(reportText).find(),
-                "总分行格式须可被 ReviewerRetryMiddleware 的 SCORE_PATTERN 命中（兼容性）");
-        assertTrue(reportText.contains("改进建议"), "报告应含改进建议节（planner 回炉指令）");
-        assertFalse(Files.exists(taskDir.resolve("review_passed.md")),
-                "FAIL 分支不应写 review_passed.md（二选一契约）");
+        assertTrue(report.get().segments().stream().anyMatch(s -> s.segment() == 3 && !s.pass()),
+                "预算 642 超支 142 元，段3（预算+偏好匹配）应 fail");
+        assertTrue(report.get().suggestionsBySegment().containsKey("3")
+                        && !report.get().suggestionsBySegment().get("3").isEmpty(),
+                "改进建议应按失败段 3 给出（planner 回炉指令）: " + report.get().suggestionsBySegment());
+        assertFalse(Files.exists(taskDir.resolve("review_passed.json")),
+                "FAIL 分支不应写 review_passed.json（二选一契约）");
     }
 
     /**
