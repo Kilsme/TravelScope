@@ -49,7 +49,7 @@ public class RubricScorer {
     public RubricScores score(EvalCase evalCase, EvalRunArtifact artifact) {
         String plan = artifact.itineraryOrReply();
         if (plan == null || plan.isBlank()) {
-            throw new IllegalStateException("无行程产物可评分（itinerary_draft.md 与最终回复均为空）");
+            throw new IllegalStateException("无行程产物可评分（itinerary_draft.json 与最终回复均为空）");
         }
         String prompt = "【用户需求（多轮输入）】\n" + String.join("\n", evalCase.userMessages())
                 + "\n\n【行程方案】\n" + truncate(plan)

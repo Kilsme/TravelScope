@@ -125,15 +125,15 @@ class RuleAssertersTest {
     @Test
     @DisplayName("TOOL_ORDER：产物时间正序 PASS、倒序 FAIL、缺失 SKIP（@TempDir 造时间戳）")
     void toolOrderChecksTimes(@TempDir Path tempDir) throws IOException {
-        writeWithMtime(tempDir.resolve("poi_shortlist.md"), "2026-10-02T10:00:00Z");
-        writeWithMtime(tempDir.resolve("route_plan.md"), "2026-10-02T10:05:00Z");
-        writeWithMtime(tempDir.resolve("itinerary_draft.md"), "2026-10-02T10:10:00Z");
+        writeWithMtime(tempDir.resolve("poi_shortlist.json"), "2026-10-02T10:00:00Z");
+        writeWithMtime(tempDir.resolve("route_plan.json"), "2026-10-02T10:05:00Z");
+        writeWithMtime(tempDir.resolve("itinerary_draft.json"), "2026-10-02T10:10:00Z");
         EvalRunArtifact ordered = new EvalRunArtifact(null, "方案", "poi", "route", tempDir);
         assertTrue(RuleAsserters.toolOrder(ordered).passed(), "poi→route→itinerary 正序应 PASS");
 
-        writeWithMtime(tempDir.resolve("poi_shortlist.md"), "2026-10-02T10:10:00Z");
-        writeWithMtime(tempDir.resolve("route_plan.md"), "2026-10-02T10:00:00Z");
-        writeWithMtime(tempDir.resolve("itinerary_draft.md"), "2026-10-02T10:05:00Z");
+        writeWithMtime(tempDir.resolve("poi_shortlist.json"), "2026-10-02T10:10:00Z");
+        writeWithMtime(tempDir.resolve("route_plan.json"), "2026-10-02T10:00:00Z");
+        writeWithMtime(tempDir.resolve("itinerary_draft.json"), "2026-10-02T10:05:00Z");
         RuleAssertion inverted = RuleAsserters.toolOrder(ordered);
         assertFalse(inverted.passed(), "route 早于 poi 应 FAIL");
         assertFalse(inverted.skipped());
@@ -173,25 +173,25 @@ class RuleAssertersTest {
     @Test
     @DisplayName("REWORK_OCCURRED：双产物齐 PASS / 只通过未回炉 SKIP / 最终未通过 FAIL / 无目录 SKIP")
     void reworkOccurredChecks(@TempDir Path tempDir) throws IOException {
-        // 回炉发生且恢复：review_report.md + review_passed.md 同时存在
-        Files.writeString(tempDir.resolve("review_report.md"), "REVIEW_RESULT: FAIL 总分=72 失败段=1");
-        Files.writeString(tempDir.resolve("review_passed.md"), "REVIEW_RESULT: PASS 总分=88 失败段=无");
+        // 回炉发生且恢复：review_report.json + review_passed.json 同时存在
+        Files.writeString(tempDir.resolve("review_report.json"), "REVIEW_RESULT: FAIL 总分=72 失败段=1");
+        Files.writeString(tempDir.resolve("review_passed.json"), "REVIEW_RESULT: PASS 总分=88 失败段=无");
         assertTrue(RuleAsserters.reworkOccurred(new EvalRunArtifact(null, "itinerary", null, null, tempDir)).passed(),
                 "双产物齐备应 PASS");
 
         // 单向守护：一次通过（无失败报告）→ SKIP 不误报
         Path onceOnly = Files.createDirectory(tempDir.resolve("once"));
-        Files.writeString(onceOnly.resolve("review_passed.md"), "REVIEW_RESULT: PASS");
+        Files.writeString(onceOnly.resolve("review_passed.json"), "REVIEW_RESULT: PASS");
         RuleAssertion skipped = RuleAsserters.reworkOccurred(
                 new EvalRunArtifact(null, "itinerary", null, null, onceOnly));
         assertTrue(skipped.skipped(), "一次通过未回炉应 SKIP: " + skipped.details());
 
         // 最终未通过 → FAIL
         Path failed = Files.createDirectory(tempDir.resolve("failed"));
-        Files.writeString(failed.resolve("review_report.md"), "REVIEW_RESULT: FAIL");
+        Files.writeString(failed.resolve("review_report.json"), "REVIEW_RESULT: FAIL");
         assertFalse(RuleAsserters.reworkOccurred(
                 new EvalRunArtifact(null, "itinerary", null, null, failed)).passed(),
-                "review_passed.md 缺失应 FAIL");
+                "review_passed.json 缺失应 FAIL");
 
         assertTrue(RuleAsserters.reworkOccurred(new EvalRunArtifact(null, "itinerary", null, null, null)).skipped(),
                 "无协作目录应 SKIP");

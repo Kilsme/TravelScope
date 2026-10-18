@@ -159,7 +159,7 @@ class EvalCaseRunnerTest {
                 if (plan != null && !plan.isBlank()) {
                     rubric = new RubricScorer(reviewerModel).score(evalCase, artifact);
                 } else {
-                    error = "无行程产物（itinerary_draft.md 与最终回复均为空），无法评分";
+                    error = "无行程产物（itinerary_draft.json 与最终回复均为空），无法评分";
                 }
             }
         } catch (Exception e) {
@@ -217,14 +217,19 @@ class EvalCaseRunnerTest {
 
     // ==================== 产物采集与落库 ====================
 
-    /** 采集最终回复与协作目录产物（PLANNING 轮 done 载荷即 itinerary_draft.md 全文） */
+    /** 采集最终回复与协作目录产物（S2.6 起产物为 JSON 契约；行程文本取 itinerary_draft.json
+     *  的 markdownBody——PLANNING 轮 done 载荷即其全文，见 ChatService step5） */
     private EvalRunArtifact collectArtifact(Long userId, Long conversationId) {
-        Path taskDir = taskWorkspaceService.getTaskDir(String.valueOf(userId), "conv-" + conversationId);
+        String sessionId = "conv-" + conversationId;
+        Path taskDir = taskWorkspaceService.getTaskDir(String.valueOf(userId), sessionId);
+        String itineraryText = taskWorkspaceService.readItineraryDraft(String.valueOf(userId), sessionId)
+                .map(com.travelscope.collab.ItineraryDraft::markdownBody)
+                .orElse(null);
         return new EvalRunArtifact(
                 lastAssistantReply(conversationId),
-                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD)),
-                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_POI_SHORTLIST_MD)),
-                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_ROUTE_PLAN_MD)),
+                itineraryText,
+                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_POI_SHORTLIST)),
+                readFileOrNull(taskDir.resolve(TaskWorkspace.FILE_ROUTE_PLAN)),
                 taskDir);
     }
 

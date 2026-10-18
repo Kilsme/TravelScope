@@ -524,7 +524,8 @@ public class AgentConfig {
                     // 声明里的模型名无视掉，评分模型必须在这里分流才生效
                     .modelResolver(name -> ReviewerAgent.AGENT_NAME.equals(name)
                             ? gatewayReviewerModel : gatewayChatModel)
-                    .toolkit(toolkit)
+                    // S2.11 工具面收紧：共享 toolkit 的白名单视图（copy+剪枝，不影响共享实例）
+                    .toolkit(plannerToolkitView(toolkit))
                     .maxIters(ItineraryAgent.MAX_ITERS)
                     // 挂起工具调用自动补错误结果（与 master 同款，防链路打断后 spawn 卡死）
                     .enablePendingToolRecovery(true)
@@ -559,8 +560,45 @@ public class AgentConfig {
     public HarnessAgent itineraryPlanningAgent(Toolkit toolkit, Model gatewayChatModel,
                                                OpenAIChatModel gatewayReviewerModel,
                                                TaskWorkspace taskWorkspaceService) {
-        return buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
+        HarnessAgent agent = buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
                 List.of(new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)));
+        log.info("Agent 拓扑终态（v4 P2 收口）：{} → {} → {}（spawn 深度 3 层内）；"
+                        + "planning 工具面 = 白名单 {} 项 + MCP(mcp__*) 放行 + agent_spawn/task_* 内置",
+                TravelMasterAgent.AGENT_NAME, ItineraryAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME,
+                PLANNER_TOOL_WHITELIST.size());
+        return agent;
+    }
+
+    /**
+     * planning-agent 工具白名单（S2.11 终态收紧）：数据查询（天气/酒店/交通地理/车票机票）
+     * + CollabTools 三件套 + 任务缓存/状态回报 + review_retry_hint。
+     * <p>
+     * 两个隐性约束（勿破）：①{@code review_retry_hint} 必须可见——回炉保险丝
+     * （ReviewerRetryMiddleware）把超限送审改写为该工具调用，在 planner 的 toolkit 解析，
+     * 缺失会把保险丝变成未知工具错误；②reviewer 的声明白名单从本 toolkit 取子集，
+     * 其事实核验工具（getDrivingRoute/getTransitRoute/geocode）必须含在内。
+     * MCP 工具（mcp__* 前缀，12306/飞常准）不在名单但前缀放行（对照/降级源）。
+     * </p>
+     */
+    private static final java.util.Set<String> PLANNER_TOOL_WHITELIST = java.util.Set.of(
+            "getWeather", "getWeatherForecast", "searchHotels",
+            "getDrivingRoute", "getTransitRoute", "geocode",
+            "queryTrainTickets", "queryFlightTickets",
+            "retrieve_poi_candidates", "plan_route", "write_collab_file",
+            "register_task_result", "get_cached_task_result",
+            "update_task_status", "get_task_progress",
+            "review_retry_hint");
+
+    /** 共享 toolkit 的 planner 视图：copy 后按白名单剪枝（mcp__* 前缀放行；agent_spawn/task_*
+     *  由 SubagentsMiddleware 内置注册，不经 toolkit，不受剪枝影响） */
+    private static Toolkit plannerToolkitView(Toolkit shared) {
+        Toolkit view = shared.copy();
+        for (String name : new java.util.ArrayList<>(view.getToolNames())) {
+            if (!PLANNER_TOOL_WHITELIST.contains(name) && !name.startsWith("mcp__")) {
+                view.removeTool(name);
+            }
+        }
+        return view;
     }
 
     /**

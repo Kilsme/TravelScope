@@ -74,7 +74,7 @@ public final class RuleAsserters {
     public static RuleAssertion fieldComplete(EvalRunArtifact artifact) {
         String text = artifact.itineraryOrReply();
         if (text == null || text.isBlank()) {
-            return RuleAssertion.fail("FIELD_COMPLETE", "无行程产物（itinerary_draft.md 与最终回复均为空）");
+            return RuleAssertion.fail("FIELD_COMPLETE", "无行程产物（itinerary_draft.json 与最终回复均为空）");
         }
         List<String> misses = new ArrayList<>();
         int dayHeaders = countMatches(DAY_HEADER, text);
@@ -166,18 +166,18 @@ public final class RuleAsserters {
         if (dir == null) {
             return RuleAssertion.skip("TOOL_ORDER", "无协作目录，无法判断产物时间序（降级跳过）");
         }
-        Path poi = dir.resolve(TaskWorkspace.FILE_POI_SHORTLIST_MD);
-        Path route = dir.resolve(TaskWorkspace.FILE_ROUTE_PLAN_MD);
-        Path itinerary = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
+        Path poi = dir.resolve(TaskWorkspace.FILE_POI_SHORTLIST);
+        Path route = dir.resolve(TaskWorkspace.FILE_ROUTE_PLAN);
+        Path itinerary = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT);
         List<String> missing = new ArrayList<>();
         if (!Files.isRegularFile(poi)) {
-            missing.add(TaskWorkspace.FILE_POI_SHORTLIST_MD);
+            missing.add(TaskWorkspace.FILE_POI_SHORTLIST);
         }
         if (!Files.isRegularFile(route)) {
-            missing.add(TaskWorkspace.FILE_ROUTE_PLAN_MD);
+            missing.add(TaskWorkspace.FILE_ROUTE_PLAN);
         }
         if (!Files.isRegularFile(itinerary)) {
-            missing.add(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
+            missing.add(TaskWorkspace.FILE_ITINERARY_DRAFT);
         }
         if (!missing.isEmpty()) {
             return RuleAssertion.skip("TOOL_ORDER",
@@ -238,18 +238,18 @@ public final class RuleAsserters {
         if (dir == null) {
             return RuleAssertion.skip("REWORK_OCCURRED", "无协作目录，无法判断回炉产物（降级跳过）");
         }
-        boolean failedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD));
-        boolean passedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
+        boolean failedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT));
+        boolean passedReport = Files.isRegularFile(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED));
         if (!passedReport) {
             return RuleAssertion.fail("REWORK_OCCURRED",
-                    "review_passed.md 缺失（最终未通过审核，回炉恢复链路断裂）");
+                    "review_passed.json 缺失（最终未通过审核，回炉恢复链路断裂）");
         }
         if (!failedReport) {
             return RuleAssertion.skip("REWORK_OCCURRED",
-                    "review_report.md 缺失（审核一次通过，未触发回炉）——单向守护不误报");
+                    "review_report.json 缺失（审核一次通过，未触发回炉）——单向守护不误报");
         }
         return RuleAssertion.pass("REWORK_OCCURRED",
-                "review_report.md 与 review_passed.md 同时存在：审核 fail → 回炉 → 最终通过");
+                "review_report.json 与 review_passed.json 同时存在：审核 fail → 回炉 → 最终通过");
     }
 
     /**
