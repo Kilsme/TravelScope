@@ -61,7 +61,7 @@ public class AssessmentQueries {
         var rows=jdbc.queryForList("""
             SELECT p.id,p.name,p.body,p.created_at FROM assessment_runs r
             JOIN assessment_payloads p ON p.id=r.planning_artifact_id AND p.run_id=r.id
-            WHERE r.id=? AND p.kind='ARTIFACT' AND p.name='itinerary_draft.md'
+            WHERE r.id=? AND p.kind='ARTIFACT' AND p.name IN ('itinerary_draft.json','itinerary_draft.md')
               AND p.created_at>=now()-interval '30 days'
             """,id);
         return rows.stream().findFirst();

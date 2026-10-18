@@ -318,7 +318,8 @@ class ChatServicePlanningOrchestrationTest {
                 "# 隔离评测的行程方案");
         when(intentCascadeRouter.classify(anyString(), eq(""), eq("13"), eq("conv-13"), eq(observation)))
                 .thenReturn(new IntentResult("PLANNING", "行程规划"));
-        when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), eq(observation)))
+        when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), eq(observation),
+                any(com.travelscope.agent.tools.TransportTool.class)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("13"), any(IntakeResult.class))).thenReturn(backlog());
         when(isolatedPlanner.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))

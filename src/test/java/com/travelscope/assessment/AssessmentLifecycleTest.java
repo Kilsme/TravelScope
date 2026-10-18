@@ -1,7 +1,7 @@
 package com.travelscope.assessment;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.travelscope.config.AppProperties;
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.service.ChatService;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -25,13 +25,13 @@ class AssessmentLifecycleTest {
         JdbcTemplate jdbc=mock(JdbcTemplate.class);var properties=new AssessmentProperties();properties.setEnabled(true);properties.setBatchesEnabled(true);
         UUID existing=UUID.randomUUID();when(jdbc.queryForList("SELECT id FROM assessment_batches WHERE request_key=?","same-request")).thenReturn(List.of(Map.of("id",existing)));
         var chat=mock(ChatService.class);
-        var batches=new AssessmentBatches(jdbc,new ObjectMapper(),properties,chat,mock(ObservationStore.class),mock(TaskWorkspaceService.class),mock(PosthocScorer.class),mock(AssessmentQueries.class),new AppProperties());
+        var batches=new AssessmentBatches(jdbc,new ObjectMapper(),properties,chat,mock(ObservationStore.class),mock(TaskWorkspace.class),mock(PosthocScorer.class),mock(AssessmentQueries.class),new AppProperties());
         assertEquals(existing,batches.create(new AssessmentBatches.Request(List.of("EC-001"),"FIXTURE",3,"same-request")));
         verifyNoInteractions(chat);assertEquals(2,mockingDetails(jdbc).getInvocations().size());batches.close();
     }
     @Test void recoveryNeverResubmitsPaidCalls(){
         JdbcTemplate jdbc=mock(JdbcTemplate.class);var properties=new AssessmentProperties();properties.setEnabled(true);var chat=mock(ChatService.class);
-        var batches=new AssessmentBatches(jdbc,new ObjectMapper(),properties,chat,mock(ObservationStore.class),mock(TaskWorkspaceService.class),mock(PosthocScorer.class),mock(AssessmentQueries.class),new AppProperties());
+        var batches=new AssessmentBatches(jdbc,new ObjectMapper(),properties,chat,mock(ObservationStore.class),mock(TaskWorkspace.class),mock(PosthocScorer.class),mock(AssessmentQueries.class),new AppProperties());
         batches.recover();verifyNoInteractions(chat);
         assertTrue(mockingDetails(jdbc).getInvocations().stream().anyMatch(i->i.getArgument(0).toString().contains("status='INTERRUPTED'")));
         batches.close();

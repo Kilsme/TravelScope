@@ -8,7 +8,7 @@ import jakarta.persistence.EntityManagerFactory;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIf;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -19,11 +19,13 @@ import org.springframework.orm.jpa.LocalContainerEntityManagerFactoryBean;
 import org.springframework.orm.jpa.vendor.HibernateJpaVendorAdapter;
 
 import java.math.BigDecimal;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.List;
+import java.util.Locale;
+import java.util.Properties;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -43,9 +45,8 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>服务逻辑：Mockito（同 ReviewerRetryMiddlewareTest 风格），验证 save 委托与
  *       recent 的 createdAt 倒序分页构造</li>
- *   <li>真库 save→query 往返：@EnabledIf 端口探测门控（同 TaskResultCacheTest.RedisRoundTrip /
- *       TripRequirementStoreRedisTest）——application-test.yml 排除了 DataSource 自动配置，
- *       手工构造 DataSource + EntityManagerFactory，不走 Spring 上下文。PG 未启动时优雅跳过</li>
+ *   <li>真库 save→query 往返：仅显式配置 ASSESSMENT_TEST_DATABASE_URL 时运行，
+ *       在测试库中创建独立 schema；未配置时跳过，绝不自动连接应用数据库。</li>
  * </ul>
  * </p>
  */
@@ -159,16 +160,7 @@ class EvaluationRecordServiceTest {
                 org.mockito.ArgumentMatchers.eq(true), any(Pageable.class));
     }
 
-    // ==================== 真库 save→query 往返（端口探测门控） ====================
-
-    static boolean pgReachable() {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("localhost", 5432), 1000);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
+    // ==================== 真库 save→query 往返（显式测试库 + 隔离 schema） ====================
 
     /** 建表 DDL（与 schema.sql 第 6 节保持一致；幂等） */
     private static final String CREATE_TABLE_DDL = """
@@ -185,76 +177,97 @@ class EvaluationRecordServiceTest {
             )""";
 
     @Nested
-    @EnabledIf(value = "com.travelscope.service.EvaluationRecordServiceTest#pgReachable",
-            disabledReason = "本机 5432 无 PostgreSQL 监听（启动本地 PG 后重跑）")
+    @EnabledIfEnvironmentVariable(named = "ASSESSMENT_TEST_DATABASE_URL", matches = ".+")
     class PgRoundTrip {
 
         @Test
         @DisplayName("真库 save→query 往返：JSONB/可空 case_id/BigDecimal/时间戳全字段往返")
         void saveQueryRoundTrip() throws Exception {
-            // —— 手工构造 JPA 环境（连接参数与 application.yml 一致）——
-            DriverManagerDataSource dataSource = new DriverManagerDataSource(
-                    "jdbc:postgresql://localhost:5432/travelscope?stringtype=unspecified",
-                    "root", "root");
-            LocalContainerEntityManagerFactoryBean emfBean = new LocalContainerEntityManagerFactoryBean();
-            emfBean.setDataSource(dataSource);
-            emfBean.setPackagesToScan("com.travelscope.entity");
-            emfBean.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
-            emfBean.afterPropertiesSet();
-            EntityManagerFactory emf = emfBean.getObject();
-            assertNotNull(emf, "EntityManagerFactory 构建失败");
-
-            // 建表（幂等，存量库由 schema.sql 手动升级，这里保证测试自包含）
-            try (Connection conn = dataSource.getConnection(); Statement st = conn.createStatement()) {
-                st.execute(CREATE_TABLE_DDL);
+            Properties credentials = new Properties();
+            for (String key : List.of("USER", "PASSWORD")) {
+                String value = System.getenv("ASSESSMENT_TEST_DATABASE_" + key);
+                if (value != null) credentials.setProperty(key.toLowerCase(Locale.ROOT), value);
             }
+            String url = System.getenv("ASSESSMENT_TEST_DATABASE_URL");
+            String schema = "evaluation_it_" + UUID.randomUUID().toString().replace("-", "");
+            try (Connection owner = DriverManager.getConnection(url, credentials)) {
+                try (Statement statement = owner.createStatement()) {
+                    statement.execute("CREATE SCHEMA " + schema);
+                }
+                try {
+                    Properties isolated = new Properties();
+                    isolated.putAll(credentials);
+                    isolated.setProperty("currentSchema", schema);
+                    isolated.setProperty("stringtype", "unspecified");
+                    DriverManagerDataSource dataSource = new DriverManagerDataSource();
+                    dataSource.setUrl(url);
+                    dataSource.setConnectionProperties(isolated);
+                    LocalContainerEntityManagerFactoryBean emfBean = new LocalContainerEntityManagerFactoryBean();
+                    emfBean.setDataSource(dataSource);
+                    emfBean.setPackagesToScan("com.travelscope.entity");
+                    emfBean.setJpaVendorAdapter(new HibernateJpaVendorAdapter());
+                    emfBean.afterPropertiesSet();
+                    EntityManagerFactory emf = emfBean.getObject();
+                    assertNotNull(emf, "EntityManagerFactory 构建失败");
 
-            String traceId = "roundtrip-" + System.currentTimeMillis();
-            String ruleResults = "[{\"type\":\"FIELD_COMPLETE\",\"pass\":true},"
-                    + "{\"type\":\"CONSTRAINT_COVERED\",\"pass\":false}]";
-            String rubricScores = "{\"coherence\":9,\"density\":8,\"preference\":7}";
-            EntityManager em = emf.createEntityManager();
-            try {
-                em.getTransaction().begin();
-                EvaluationRecord record = new EvaluationRecord();
-                record.setTraceId(traceId);
-                record.setCaseId(null);   // 线上真实对话评估场景
-                record.setCategory("REWORK_RECOVERY");   // 2026-10-14 P2-M 补列：类别往返
-                record.setRuleResults(ruleResults);
-                record.setRubricScores(rubricScores);
-                record.setTotalScore(new BigDecimal("82.50"));
-                record.setIsBadCase(false);
-                em.persist(record);
-                em.flush();
-                assertNotNull(record.getId(), "落库后应生成主键");
-                em.clear();   // 脱离一级缓存，确保查库
+                    // 建表（幂等，存量库由 schema.sql 手动升级，这里保证测试自包含）
+                    try (Connection conn = dataSource.getConnection(); Statement st = conn.createStatement()) {
+                        st.execute(CREATE_TABLE_DDL);
+                    }
 
-                List<EvaluationRecord> found = em.createQuery(
-                                "select r from EvaluationRecord r where r.traceId = :tid",
-                                EvaluationRecord.class)
-                        .setParameter("tid", traceId)
-                        .getResultList();
+                    String traceId = "roundtrip-" + System.currentTimeMillis();
+                    String ruleResults = "[{\"type\":\"FIELD_COMPLETE\",\"pass\":true},"
+                            + "{\"type\":\"CONSTRAINT_COVERED\",\"pass\":false}]";
+                    String rubricScores = "{\"coherence\":9,\"density\":8,\"preference\":7}";
+                    EntityManager em = emf.createEntityManager();
+                    try {
+                        em.getTransaction().begin();
+                        EvaluationRecord record = new EvaluationRecord();
+                        record.setTraceId(traceId);
+                        record.setCaseId(null);   // 线上真实对话评估场景
+                        record.setCategory("REWORK_RECOVERY");   // 2026-10-14 P2-M 补列：类别往返
+                        record.setRuleResults(ruleResults);
+                        record.setRubricScores(rubricScores);
+                        record.setTotalScore(new BigDecimal("82.50"));
+                        record.setIsBadCase(false);
+                        em.persist(record);
+                        em.flush();
+                        assertNotNull(record.getId(), "落库后应生成主键");
+                        em.clear();   // 脱离一级缓存，确保查库
 
-                assertEquals(1, found.size());
-                EvaluationRecord back = found.get(0);
-                assertEquals(traceId, back.getTraceId());
-                assertNull(back.getCaseId(), "线上场景 caseId 应保持 NULL");
-                assertEquals("REWORK_RECOVERY", back.getCategory(), "category 应往返（P2-M 补列）");
-                // JSONB 读取会规范化（对象键重排），按语义比较而非字符串
-                assertEquals(JSON.parse(ruleResults), JSON.parse(back.getRuleResults()),
-                        "rule_results JSONB 应语义往返");
-                assertEquals(JSON.parse(rubricScores), JSON.parse(back.getRubricScores()),
-                        "rubric_scores JSONB 应语义往返");
-                assertEquals(new BigDecimal("82.50"), back.getTotalScore(), "totalScore 应精确往返");
-                assertEquals(Boolean.FALSE, back.getIsBadCase());
-                assertNotNull(back.getCreatedAt(), "createdAt 应由 @PrePersist 填充");
+                        List<EvaluationRecord> found = em.createQuery(
+                                        "select r from EvaluationRecord r where r.traceId = :tid",
+                                        EvaluationRecord.class)
+                                .setParameter("tid", traceId)
+                                .getResultList();
 
-                // 清理测试行
-                em.remove(back);
-                em.getTransaction().commit();
-            } finally {
-                em.close();
-                emf.close();
+                        assertEquals(1, found.size());
+                        EvaluationRecord back = found.get(0);
+                        assertEquals(traceId, back.getTraceId());
+                        assertNull(back.getCaseId(), "线上场景 caseId 应保持 NULL");
+                        assertEquals("REWORK_RECOVERY", back.getCategory(), "category 应往返（P2-M 补列）");
+                        // JSONB 读取会规范化（对象键重排），按语义比较而非字符串
+                        assertEquals(JSON.parse(ruleResults), JSON.parse(back.getRuleResults()),
+                                "rule_results JSONB 应语义往返");
+                        assertEquals(JSON.parse(rubricScores), JSON.parse(back.getRubricScores()),
+                                "rubric_scores JSONB 应语义往返");
+                        assertEquals(new BigDecimal("82.50"), back.getTotalScore(), "totalScore 应精确往返");
+                        assertEquals(Boolean.FALSE, back.getIsBadCase());
+                        assertNotNull(back.getCreatedAt(), "createdAt 应由 @PrePersist 填充");
+
+                        // 清理测试行
+                        em.remove(back);
+                        em.getTransaction().commit();
+                    } finally {
+                        if (em.getTransaction().isActive()) em.getTransaction().rollback();
+                        em.close();
+                        emf.close();
+                    }
+                } finally {
+                    try (Statement statement = owner.createStatement()) {
+                        statement.execute("DROP SCHEMA " + schema + " CASCADE");
+                    }
+                }
             }
         }
     }

@@ -201,7 +201,9 @@ mvn test -Dtest=ReworkCostBenchmarkRealApiTest          # B3：回炉成本实�
 EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
 ```
 
-EvalCase 用例库在 `src/test/resources/evalcases/`（EC-001~010），覆盖多城市 / 亲子 / 严格预算 / 地点不存在 / 路路过密五类场景，真实跑完整多智能体链路后按双轨判定；未设置环境变量时自动跳过，不影响 `mvn test`。
+EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 条、覆盖 12 类场景。EC-001～EC-020 保留评估模块的场景；主线原 EC-011/012 回炉恢复场景迁为 EC-021/022，原 EC-013/014 预算边缘场景迁为 EC-023/024。编号调整不改写已冻结的历史批次及其用例正文。
+
+评测与日常规划共用需求工作流、任务登记、路线规划及审核流程。JSON 契约 `itinerary_draft.json` 优先，文本评分使用其中的 `markdownBody`；仅本轮成功写入并明确关联的产物可以作为最终行程，保留旧 Markdown 兼容。FIXTURE 只替换外部数据源，继续执行本地检索编排、路线算法和契约校验；工具顺序缺少真实事件证据时标记无法判断。未启用真实 API 门控时，相关集成测试自动跳过。
 
 ## 📁 项目结构
 
@@ -253,7 +255,7 @@ TravelScope/
 | SSE 事件协议与流式编排 | `src/main/java/com/travelscope/service/ChatService.java` |
 | 意图三层级联路由 | `src/main/java/com/travelscope/agent/IntentCascadeRouter.java` |
 | 真实链路验收测试（门控） | `src/test/java/com/travelscope/agent/PlannerSegmentReworkRealApiTest.java`、`ReworkCostBenchmarkRealApiTest.java` |
-| EvalCase 双轨质量门禁 | `src/test/java/com/travelscope/eval/` + `src/test/resources/evalcases/` |
+| EvalCase 双轨质量门禁 | `src/main/java/com/travelscope/eval/` + `src/main/resources/evalcases/` + `src/test/java/com/travelscope/eval/` |
 
 ---
 

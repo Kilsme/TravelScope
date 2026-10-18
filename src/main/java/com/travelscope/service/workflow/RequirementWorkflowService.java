@@ -88,6 +88,11 @@ public class RequirementWorkflowService {
 
     public CollectOutcome handle(String userMessage, String userId, String sessionId,
             com.travelscope.assessment.ObservationContext observation) {
+        return handle(userMessage, userId, sessionId, observation, transportTool);
+    }
+
+    public CollectOutcome handle(String userMessage, String userId, String sessionId,
+            com.travelscope.assessment.ObservationContext observation, TransportTool placeValidator) {
         TripRequirementState state = store.get(userId, sessionId);
         // 分流 c：DONE/DEGRADED 幂等直通（重复触发不重新采集）
         if (state.status != TripRequirementState.Status.COLLECTING) {
@@ -97,7 +102,7 @@ public class RequirementWorkflowService {
         JSONObject form = parseFormMessage(userMessage);
         if (form != null) {
             // 分流 a：结构化表单提交（不过 LLM）
-            return handleForm(form, state, userId, sessionId);
+            return handleForm(form, state, userId, sessionId, placeValidator);
         }
         // 分流 b：普通文本（增量修改）
         return handleText(userMessage, state, userId, sessionId, observation);
@@ -106,7 +111,7 @@ public class RequirementWorkflowService {
     // ==================== 分支 a：表单提交 ====================
 
     private CollectOutcome handleForm(JSONObject form, TripRequirementState state,
-                                      String userId, String sessionId) {
+                                      String userId, String sessionId, TransportTool placeValidator) {
         String action = form.getString("__action__");
         if ("cancel".equals(action)) {
             store.clear(userId, sessionId);
@@ -118,7 +123,7 @@ public class RequirementWorkflowService {
         // S2.3 提交校验：destination/fromCity 走高德 geocode（控件天然免疫错值的字段不查）。
         // 校验只针对本次提交携带的字段（避免每轮重复请求）；失败时不落状态机、不填默认值，
         // 用内存中已合并的 state 回推清单（用户已填内容不丢）+ 打回字段标红
-        List<CollectOutcome.FieldError> errors = validatePlaces(form);
+        List<CollectOutcome.FieldError> errors = validatePlaces(form, placeValidator);
         if (!errors.isEmpty()) {
             log.info("需求采集表单校验失败: 用户={}, 会话={}, 错误字段={}",
                     userId, sessionId, errors.stream().map(CollectOutcome.FieldError::field).toList());
@@ -170,7 +175,7 @@ public class RequirementWorkflowService {
      * （log.debug 不阻断——开发/测试环境无 key 不应使表单不可用）。
      * </p>
      */
-    private List<CollectOutcome.FieldError> validatePlaces(JSONObject form) {
+    private List<CollectOutcome.FieldError> validatePlaces(JSONObject form, TransportTool placeValidator) {
         List<CollectOutcome.FieldError> errors = new ArrayList<>();
         for (String field : List.of("destination", "fromCity")) {
             String place = form.getString(field);
@@ -178,7 +183,7 @@ public class RequirementWorkflowService {
                 continue;
             }
             try {
-                String json = transportTool.geocode(place.trim());
+                String json = placeValidator.geocode(place.trim());
                 JSONObject result = JSON.parseObject(json);
                 if (result == null) {
                     continue;   // 非法响应按放行（校验是增强，不是硬门禁）

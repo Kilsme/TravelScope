@@ -82,7 +82,7 @@ public class CommuteMatrixBuilder {
     }
 
     /** 测试/定制注入：节流间隔可覆盖（mock 传输层时传 0，免无谓等待） */
-    CommuteMatrixBuilder(TransportTool transportTool, TaskResultCache taskResultCache,
+    public CommuteMatrixBuilder(TransportTool transportTool, TaskResultCache taskResultCache,
                          long callMinIntervalNanos) {
         this.transportTool = transportTool;
         this.taskResultCache = taskResultCache;

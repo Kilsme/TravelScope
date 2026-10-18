@@ -1,5 +1,6 @@
 /* oxlint-disable no-unused-expressions -- playwright-cli evaluates this function expression. */
 async page => {
+  const baseUrl = /^https?:/.test(page.url()) ? new URL(page.url()).origin : 'http://localhost:3000';
   const errors = [], calls = [], scopes = [];
   let created = false, status = 'RUNNING', batchReads = 0, createCalls = 0, scoreCalls = 0;
   let failOverview = false, failComponents = false, failCases = false, slowOnline = false, edge = false, traceEdge = false, expired = false, expireOnScore = false, noCommon = false;
@@ -44,7 +45,7 @@ async page => {
     else if (path.endsWith('/payload') && path.includes('span-model')) body = [{ id: 'error-1', kind: 'ERROR', body: JSON.stringify({ type: 'SyntheticTimeout', message: '模拟天气服务超时' }), created_at: time }, { id: 'payload-1', kind: 'INPUT', body: '[REDACTED] synthetic payload', created_at: time }];
     else if (path.endsWith('/payload')) body = [{ id: 'payload-1', kind: 'INPUT', body: '[REDACTED] synthetic payload', created_at: time }];
     else if (path.endsWith('/artifacts') && expired) body = [];
-    else if (path.endsWith('/artifacts')) body = [{ id: 'artifact-final', name: 'itinerary_draft.md', body: '# 最终行程\n北京与天津之间乘坐高铁', created_at: time }, { id: 'artifact-other', name: 'itinerary_draft.md', body: '# 不应选中的历史草稿', created_at: time }];
+    else if (path.endsWith('/artifacts')) body = [{ id: 'artifact-final', name: 'itinerary_draft.json', body: JSON.stringify({ schemaVersion: 4, days: [], markdownBody: '# 最终行程\n北京与天津之间乘坐高铁' }), created_at: time }, { id: 'artifact-other', name: 'itinerary_draft.md', body: '# 不应选中的历史草稿', created_at: time }];
     else if (path.endsWith('/evaluations')) {
       if (method === 'POST' && expireOnScore) return route.fulfill({ status: 410, json: {} });
       if (method === 'POST') { scoreCalls++; body = { status: 'QUEUED' }; }
@@ -78,9 +79,9 @@ async page => {
   const assert = (ok, message) => { if (!ok) throw new Error(message); };
   const visible = text => page.getByText(text, { exact: true }).first().waitFor();
   const nav = name => page.getByRole('navigation', { name: '评估中心导航' }).getByRole('button', { name, exact: true }).click();
-  await page.goto('http://localhost:3000/login');
+  await page.goto(baseUrl + '/login');
   await page.evaluate(() => { localStorage.setItem('travelscope_token', 'SYNTHETIC-UI-TEST-NOT-A-CREDENTIAL'); localStorage.setItem('travelscope_role', 'admin'); localStorage.setItem('travelscope_nickname', '界面验证'); });
-  await page.goto('http://localhost:3000/admin/assessment');
+  await page.goto(baseUrl + '/admin/assessment');
   await page.setViewportSize({ width: 1440, height: 1040 }); await visible('128');
   assert(!calls.some(x => ['/cases', '/batches', '/runs'].includes(x.path)), 'Overview fetched unrelated resources');
   await page.screenshot({ path: '../target/assessment-overview-1440.png', fullPage: true });
@@ -174,12 +175,12 @@ async page => {
   await page.getByText('评分输入 Token', { exact: true }).waitFor();
   await page.getByRole('heading', { name: '组件性能对比', exact: true }).waitFor();
   await page.screenshot({ path: '../target/assessment-comparison-1440.png', fullPage: true });
-  await page.goto('http://localhost:3000/admin/assessment?batchId=test-created'); await visible('任务已结束，自动更新已停止');
+  await page.goto(baseUrl + '/admin/assessment?batchId=test-created'); await visible('任务已结束，自动更新已停止');
   assert(await page.getByRole('navigation', { name: '评估中心导航' }).getByRole('button', { name: '测试任务', exact: true }).getAttribute('aria-current') === 'page', 'Legacy link failed');
   failCases = true; await page.getByRole('button', { name: '新建测试', exact: true }).click(); await page.getByRole('dialog').getByRole('alert').waitFor();
   await page.keyboard.press('Escape'); assert(await page.getByRole('button', { name: '查看测试 test-created', exact: true }).count() === 1, 'Cases failure broke list');
   failCases = false;
-  await page.goto('http://localhost:3000/admin/assessment?tab=runs&runId=run-online-00');
+  await page.goto(baseUrl + '/admin/assessment?tab=runs&runId=run-online-00');
   dialog = page.getByRole('dialog');
   await dialog.getByRole('heading', { name: '最终行程', exact: true }).waitFor();
   await dialog.getByRole('button', { name: '展开为全屏', exact: true }).focus();
@@ -195,7 +196,7 @@ async page => {
   assert(await dialog.getByRole('button', { name: '发起评分', exact: true }).isDisabled(), 'Expired artifact still eligible for scoring');
   await page.keyboard.press('Escape');
   traceEdge = true;
-  await page.goto('http://localhost:3000/admin/assessment?tab=runs&runId=run-online-00&detailTab=trace');
+  await page.goto(baseUrl + '/admin/assessment?tab=runs&runId=run-online-00&detailTab=trace');
   dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: '查看调用节点 deep-44', exact: true }).waitFor();
   assert(await dialog.getByRole('button', { name: '查看调用节点 ', exact: false }).count() === 48, 'Deep, cyclic or orphan nodes were lost');
@@ -207,9 +208,9 @@ async page => {
   await dialog.getByRole('button', { name: '查看调用节点 orphan', exact: true, pressed: true }).waitFor();
   await page.keyboard.press('Escape'); traceEdge = false;
   noCommon = true;
-  await page.goto('http://localhost:3000/admin/assessment?tab=compare&baselineId=test-original&candidateId=test-current');
+  await page.goto(baseUrl + '/admin/assessment?tab=compare&baselineId=test-original&candidateId=test-current');
   await visible('没有可以比较的共同场景');
-  edge = true; await page.goto('http://localhost:3000/admin/assessment');
+  edge = true; await page.goto(baseUrl + '/admin/assessment');
   await visible('此范围内暂无执行记录。可以切换统计来源，或新建测试。');
   await visible('暂无数据'); await visible('部分运行记录可能缺失，请结合记录完整情况判断结果。');
   await nav('运行记录'); await visible('未知状态');

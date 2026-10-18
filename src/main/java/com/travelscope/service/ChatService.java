@@ -231,7 +231,10 @@ public class ChatService {
         // ---------- step1：需求采集 workflow ----------
         com.travelscope.service.workflow.dto.CollectOutcome outcome;
         try {
-            outcome = observation == null
+            outcome = "FIXTURE".equals(toolMode)
+                    ? requirementWorkflowService.handle(userMessage, userIdStr, sessionId, observation,
+                            com.travelscope.assessment.FixtureServices.transport())
+                    : observation == null
                     ? requirementWorkflowService.handle(userMessage, userIdStr, sessionId)
                     : requirementWorkflowService.handle(userMessage, userIdStr, sessionId, observation);
         } catch (Exception e) {
@@ -847,21 +850,25 @@ public class ChatService {
             TurnUsageTracker usage = new TurnUsageTracker();
             var intent = resolveIntent(conversation, isolatedId, message, observation, false);
             Flux<ChatEvent> execution = null;
+            HarnessAgent planner = null;
             if (intent != null && intent.toIntentType() == IntentType.PLANNING
                     && appProperties.getRequirement().isFormEnabled()) {
+                planner = assessmentPlanners.getObject();
                 execution = planningOrchestration(conversation, isolatedId, message, reply, thinking,
-                        usage, observation, mode, failTools, fixtureCase, assessmentPlanners.getObject());
+                        usage, observation, mode, failTools, fixtureCase, planner);
             }
             if (execution == null) {
                 execution = runAgent(conversation, isolatedId, message, intent, reply, thinking,
                         usage, observation, mode, failTools, fixtureCase, isolatedAgent);
             }
+            HarnessAgent ownedPlanner = planner;
             return execution.doOnNext(event -> {
                         if (ChatEvent.TYPE_ERROR.equals(event.getType())) {
                             throw new IllegalStateException("Assessment execution failed");
                         }
                     })
-                    .then(Mono.fromSupplier(reply::toString));
+                    .then(Mono.fromSupplier(reply::toString))
+                    .doFinally(signal -> { if (ownedPlanner != null) ownedPlanner.close(); });
         });
     }
 

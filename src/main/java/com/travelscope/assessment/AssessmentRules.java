@@ -5,11 +5,14 @@ import java.util.*;
 public final class AssessmentRules {
     public record Result(String type,String status,String method,String evidence){}
     public static List<Result> check(EvalCase c,EvalRunArtifact artifact,List<Map<String,Object>> spans){
+        return check(c, artifact, spans, null);
+    }
+    public static List<Result> check(EvalCase c,EvalRunArtifact artifact,List<Map<String,Object>> spans,String executionStatus){
         List<Result> result=new ArrayList<>();
         for(var rule:c.expectations().rules()){
             if("WAITING_INPUT".equals(rule.params().get("expectedOutcome"))){
-                boolean clarified=spans.stream().anyMatch(span->"ask_user".equals(span.get("name"))&&Set.of("SUCCESS","SUCCEEDED").contains(span.get("status")));
-                result.add(new Result("EXPECTED_WAITING_INPUT",clarified&&artifact.itineraryText()==null?"PASS":"UNKNOWN","EVENT_EVIDENCE","检查实际 ask_user 事件及无完整产物"));
+                boolean clarified="WAITING_INPUT".equals(executionStatus)||spans.stream().anyMatch(span->"ask_user".equals(span.get("name"))&&Set.of("SUCCESS","SUCCEEDED").contains(span.get("status")));
+                result.add(new Result("EXPECTED_WAITING_INPUT",clarified&&artifact.itineraryText()==null?"PASS":"UNKNOWN","EVENT_EVIDENCE","检查本次执行 WAITING_INPUT 终态或实际 ask_user 事件，且无完整产物"));
             }else if(rule.type()==RuleType.TOOL_ORDER){
                 result.add(dependency(rule.params().get("before"),rule.params().get("after"),spans));
             }else{

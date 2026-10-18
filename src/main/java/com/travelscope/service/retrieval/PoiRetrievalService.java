@@ -42,6 +42,10 @@ import java.util.concurrent.Executors;
  */
 @Service
 public class PoiRetrievalService {
+    @FunctionalInterface
+    public interface PoiSearch {
+        String search(String destination, String keyword, int limit);
+    }
 
     private static final Logger log = LoggerFactory.getLogger(PoiRetrievalService.class);
 
@@ -75,6 +79,12 @@ public class PoiRetrievalService {
      * @return 候选池（检索条目按融合分降序，补全条目按变体顺序追加在后）+ 池统计
      */
     public PoiCandidatePool retrieve(String destination, List<String> preferences, int days) {
+        return retrieve(destination, preferences, days, this::queryFragments, attractionTool::searchPois);
+    }
+
+    /** 数据源可替换，检索变体、并行编排、去重和硬字段补全始终执行同一实现。 */
+    public PoiCandidatePool retrieve(String destination, List<String> preferences, int days,
+            java.util.function.Function<String, List<RetrievedFragment>> retrieval, PoiSearch search) {
         Objects.requireNonNull(destination, "destination");
         if (days < 1) {
             throw new IllegalArgumentException("days 必须 ≥1，实际: " + days);
@@ -86,7 +96,7 @@ public class PoiRetrievalService {
         List<VariantResult> results;
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             List<CompletableFuture<VariantResult>> futures = variants.stream()
-                    .map(v -> CompletableFuture.supplyAsync(() -> queryVariant(v), executor))
+                    .map(v -> CompletableFuture.supplyAsync(() -> queryVariant(v, retrieval), executor))
                     .toList();
             results = futures.stream().map(CompletableFuture::join).toList();
         }
@@ -113,7 +123,7 @@ public class PoiRetrievalService {
                 if (candidates.size() >= target) {
                     break;
                 }
-                List<PoiCandidatePool.Candidate> adds = hardComplete(destination, variant, target);
+                List<PoiCandidatePool.Candidate> adds = hardComplete(destination, variant, target, search);
                 completed += adds.size();
                 candidates.addAll(adds);
             }
@@ -134,14 +144,18 @@ public class PoiRetrievalService {
     private record VariantResult(String variant, List<RetrievedFragment> fragments) {
     }
 
-    private VariantResult queryVariant(String variant) {
+    private List<RetrievedFragment> queryFragments(String variant) {
+        RagServiceImpl.GatedResult gated = ragService.dualRetrieveGated(variant, PER_VARIANT_TOP_K);
+        if (gated.gateEmpty()) {
+            log.info("poi_retrieval 变体门控全灭: variant='{}', dropped={}", variant, gated.dropped());
+        }
+        return gated.fragments();
+    }
+
+    private VariantResult queryVariant(String variant,
+            java.util.function.Function<String, List<RetrievedFragment>> retrieval) {
         try {
-            RagServiceImpl.GatedResult gated = ragService.dualRetrieveGated(variant, PER_VARIANT_TOP_K);
-            if (gated.gateEmpty()) {
-                log.info("poi_retrieval 变体门控全灭: variant='{}', dropped={}",
-                        variant, gated.dropped());
-            }
-            return new VariantResult(variant, gated.fragments());
+            return new VariantResult(variant, retrieval.apply(variant));
         } catch (Exception e) {
             log.warn("poi_retrieval 变体检索异常（按空结果降级）: variant='{}': {}",
                     variant, e.getMessage());
@@ -170,9 +184,9 @@ public class PoiRetrievalService {
 
     /** 硬字段补全：searchPois 实时检索（v3 第③步平移），错误/异常按空结果降级 */
     private List<PoiCandidatePool.Candidate> hardComplete(String destination, String keyword,
-                                                          int pageSize) {
+                                                          int pageSize, PoiSearch search) {
         try {
-            String json = attractionTool.searchPois(destination, keyword, pageSize);
+            String json = search.search(destination, keyword, pageSize);
             JSONObject object = JSON.parseObject(json);
             if (object == null || object.containsKey("error")) {
                 log.warn("poi_retrieval 硬补全无结果或失败: keyword='{}': {}", keyword,

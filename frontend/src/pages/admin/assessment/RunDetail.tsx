@@ -50,8 +50,11 @@ function Summary({ run, revision, sample }: { run: Run; revision: number; sample
   const pollScores = useCallback((items: Evaluation[]) => items.some(item => item.status === 'RUNNING') || Boolean(ticket && (!items[0] || items[0].id === ticket.previousId)), [ticket])
   const evaluations = useResource<Evaluation[]>(`/runs/${encodeURIComponent(run.id)}/evaluations`, revision + scoreRevision, pollScores)
   const finalArtifact = artifacts.data?.find(item => item.id === run.planning_artifact_id)
+  const finalBody = finalArtifact?.name === 'itinerary_draft.json'
+    ? parse<{ markdownBody?: string }>(finalArtifact.body)?.markdownBody ?? ''
+    : finalArtifact?.body ?? ''
   const pending = submitting || Boolean(ticket && (!evaluations.data?.[0] || evaluations.data[0].id === ticket.previousId || evaluations.data[0].status === 'RUNNING')) || evaluations.data?.some(item => item.status === 'RUNNING')
-  const eligible = run.source === 'ONLINE' && run.status === 'PLANNING_COMPLETED' && Boolean(finalArtifact)
+  const eligible = run.source === 'ONLINE' && run.status === 'PLANNING_COMPLETED' && Boolean(finalArtifact && finalBody)
   async function evaluate() {
     if (lock.current || pending || !eligible) return
     lock.current = true; setSubmitting(true); setError('')
@@ -70,7 +73,7 @@ function Summary({ run, revision, sample }: { run: Run; revision: number; sample
       <ResourceState {...evaluations} hasData={Boolean(evaluations.data)} />
       {evaluations.data && (evaluations.data.length ? <>{evaluations.data.map((item, index) => <div key={item.id} className="as-score-entry">{index > 0 ? <details className="as-disclosure"><summary>历史评分 · {date(item.created_at)}</summary><Score status={item.status} value={item.result_json} /></details> : <><div className="as-score-meta">最近评分 · {date(item.created_at)}</div><Score status={item.status} value={item.result_json} /></>}</div>)}</> : sample ? <Score status={sample.score_status} value={sample.score_json} /> : <p className="as-muted">尚未评分。仅支持为已完成且正文仍可获取的日常规划发起评分。</p>)}
     </Panel>
-    <Panel title="生成的行程" subtitle="仅展示执行结束时明确保存的最终版本。"><ResourceState {...artifacts} hasData={Boolean(artifacts.data)} />{finalArtifact ? <article className="as-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{finalArtifact.body}</ReactMarkdown></article> : artifacts.data && <Empty title="暂无可确认的最终行程">可能尚未生成、未保存最终版本，或已超过 30 天保留期。</Empty>}</Panel>
+    <Panel title="生成的行程" subtitle="仅展示执行结束时明确保存的最终版本。"><ResourceState {...artifacts} hasData={Boolean(artifacts.data)} />{finalArtifact && finalBody ? <article className="as-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{finalBody}</ReactMarkdown></article> : artifacts.data && <Empty title="暂无可确认的最终行程">可能尚未生成、未保存最终版本，或已超过 30 天保留期。</Empty>}</Panel>
   </>
 }
 

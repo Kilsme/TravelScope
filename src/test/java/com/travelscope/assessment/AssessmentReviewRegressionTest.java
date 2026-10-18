@@ -8,6 +8,8 @@ import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.message.TextBlock;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.config.DependencyDescriptor;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,7 +56,7 @@ class AssessmentReviewRegressionTest {
 
     @Test void realReviewerFactoryResolvesLegacyRegressionDependencyWithoutApiCalls() throws Exception {
         var properties=new AppProperties();properties.getModelGateway().setBaseUrl("http://127.0.0.1:9/v1");properties.getModelGateway().setApiKey("SYNTHETIC-NOT-A-CREDENTIAL");
-        var config=new AgentConfig(properties,null,null,null,null,TracingHelper.NOOP);
+        var config=new AgentConfig(properties,null,null,null,null,null,null,TracingHelper.NOOP);
         ReflectionTestUtils.setField(config,"observationStore",mock(ObservationStore.class));
         try(var context=new AnnotationConfigApplicationContext()){
             context.registerBean("gatewayReviewerModel",Model.class,config::gatewayReviewerModel);context.refresh();
@@ -81,13 +83,17 @@ class AssessmentReviewRegressionTest {
         assertEquals(before,mockingDetails(jdbc).getInvocations().size());
     }
 
-    @Test void manualScoreUsesFinalSnapshotInsteadOfEarlierDrafts(){
+    @ParameterizedTest
+    @ValueSource(strings = {"itinerary_draft.md", "itinerary_draft.json"})
+    void manualScoreUsesFinalSnapshotInsteadOfEarlierDrafts(String name){
         UUID run=UUID.randomUUID();
         var queries=mock(AssessmentQueries.class);var scorer=mock(PosthocScorer.class);var jdbc=mock(JdbcTemplate.class);
         var properties=new AssessmentProperties();properties.setEnabled(true);
         when(queries.run(run)).thenReturn(Map.of("source","ONLINE","status","PLANNING_COMPLETED","turn_id",UUID.randomUUID()));
         when(queries.artifacts(run)).thenReturn(List.of(Map.of("name","itinerary_draft.md","body","rejected draft"),Map.of("name","itinerary_draft.md","body","final plan")));
-        when(queries.finalPlanningArtifact(run)).thenReturn(Optional.of(Map.of("body","final plan")));
+        String body="itinerary_draft.json".equals(name)
+                ? "{\"schemaVersion\":4,\"days\":[],\"markdownBody\":\"final plan\"}" : "final plan";
+        when(queries.finalPlanningArtifact(run)).thenReturn(Optional.of(Map.of("name",name,"body",body)));
         when(jdbc.queryForList(startsWith("SELECT p.body"),eq(run))).thenReturn(List.of(Map.of("body","requirements")));
         var actions=new AssessmentActions(queries,scorer,jdbc,properties);
         try{

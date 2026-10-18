@@ -58,17 +58,15 @@ import java.util.Map;
 /**
  * AgentScope 多智能体配置类
  * <p>
- * 组装架构（v3，6 Agent 编排）：
+ * 组装架构（v4，需求与路线编排收归代码）：
  * <pre>
  * 主 Agent（travel-master，HarnessAgent）
  *  ├── 工具：WeatherTool / HotelTool / AttractionTool / TransportTool
  *  │         + TaskTools / RequirementTools + MCP（12306 火车票 / 飞常准机票）
- *  ├── Middleware：IntentRouterMiddleware → PlanningGateMiddleware → ReviewerRetryMiddleware
- *  ├── subagent: intake-agent（需求收集，声明式叶子）
- *  └── subagentFactory: planning-agent（二级编排者，手工构建非叶子）
- *        ├── subagent: poi-research（景点检索筛选）
- *        ├── subagent: route-optimizer（分日路线调优）
+ *  ├── Middleware：ObservationMiddleware → IntentRouterMiddleware → ReviewerRetryMiddleware
+ *  └── subagentFactory: planning-agent（工具调用与行程组装）
  *        └── subagent: reviewer-agent（5 维质检）
+ * 在线及隔离评测共用构建逻辑；评测另建独立 Master/Planner 实例。
  * </pre>
  * </p>
  * <p>

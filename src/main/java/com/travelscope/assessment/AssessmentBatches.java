@@ -2,7 +2,7 @@ package com.travelscope.assessment;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.travelscope.eval.*;
 import com.travelscope.service.ChatService;
-import com.travelscope.config.AgentConfig.TaskWorkspaceService;
+import com.travelscope.collab.TaskWorkspace;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,14 +19,14 @@ import java.util.concurrent.*;
 @Service
 public class AssessmentBatches {
     private final JdbcTemplate jdbc; private final ObjectMapper mapper; private final AssessmentProperties properties;
-    private final ChatService chat; private final ObservationStore store; private final TaskWorkspaceService workspace;
+    private final ChatService chat; private final ObservationStore store; private final TaskWorkspace workspace;
     private final PosthocScorer scorer; private final AssessmentQueries queries;
     private final com.travelscope.config.AppProperties app;
     private final ExecutorService executor=Executors.newSingleThreadExecutor(r->{Thread t=new Thread(r,"assessment-batches");t.setDaemon(true);return t;});
     private final java.util.concurrent.atomic.AtomicBoolean workerActive=new java.util.concurrent.atomic.AtomicBoolean();
     private volatile io.agentscope.harness.agent.HarnessAgent activeAgent;
     private volatile Future<?> running; private volatile UUID runningId;
-    public AssessmentBatches(JdbcTemplate jdbc,ObjectMapper mapper,AssessmentProperties properties,ChatService chat,ObservationStore store,TaskWorkspaceService workspace,PosthocScorer scorer,AssessmentQueries queries,com.travelscope.config.AppProperties app){
+    public AssessmentBatches(JdbcTemplate jdbc,ObjectMapper mapper,AssessmentProperties properties,ChatService chat,ObservationStore store,TaskWorkspace workspace,PosthocScorer scorer,AssessmentQueries queries,com.travelscope.config.AppProperties app){
         this.jdbc=jdbc;this.mapper=mapper;this.properties=properties;this.chat=chat;this.store=store;this.workspace=workspace;this.scorer=scorer;this.queries=queries;this.app=app;
     }
     private String codeVersion(){
@@ -38,7 +38,7 @@ public class AssessmentBatches {
     }
     private String sha256(String text){try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(Exception e){return "UNKNOWN";}}
     private String codeFingerprint(){
-        try{var digest=java.security.MessageDigest.getInstance("SHA-256");for(Class<?> type:List.of(AssessmentBatches.class,ObservationMiddleware.class,ObservedModel.class,ChatService.class,AssessmentRules.class,PosthocScorer.class)){
+        try{var digest=java.security.MessageDigest.getInstance("SHA-256");for(Class<?> type:List.of(AssessmentBatches.class,ObservationMiddleware.class,ObservedModel.class,ChatService.class,AssessmentRules.class,PosthocScorer.class,PlanningArtifacts.class,FixtureServices.class,com.travelscope.service.workflow.RequirementWorkflowService.class,com.travelscope.service.retrieval.PoiRetrievalService.class,com.travelscope.service.route.RoutePlannerServiceImpl.class)){
             try(var in=type.getResourceAsStream("/"+type.getName().replace('.','/')+".class")){if(in==null)return "UNKNOWN";digest.update(in.readAllBytes());}}
             return java.util.HexFormat.of().formatHex(digest.digest());
         }catch(Exception e){return "UNKNOWN";}
@@ -69,7 +69,7 @@ public class AssessmentBatches {
         UUID id=UUID.randomUUID();LocalDate base=LocalDate.now(ZoneId.of("Asia/Shanghai"));
         Map<String,Object> versions=new LinkedHashMap<>();versions.put("dateBase",base.toString());versions.put("datePolicy",CaseFreezer.VERSION);versions.put("scorer",PosthocScorer.VERSION);versions.put("rules","rules-v1");versions.put("priceVersion",properties.getPriceVersion());
         versions.put("codeVersion",codeVersion());versions.put("codeFingerprint",codeFingerprint());versions.put("models",Map.of("primary",app.getModelGateway().getModel(),"fallback",app.getIntentCascade().getL2Model(),"reviewer",app.getModelGateway().getReviewerModel(),"thinkingEnabled",app.getModelGateway().isThinkingEnabled()));
-        versions.put("promptVersion",sha256(com.travelscope.agent.TravelMasterAgent.SYS_PROMPT+com.travelscope.agent.ItineraryAgent.SYS_PROMPT+com.travelscope.agent.ReviewerAgent.SYS_PROMPT+com.travelscope.agent.PoiResearchAgent.SYS_PROMPT+com.travelscope.agent.RouteOptimizerAgent.SYS_PROMPT));
+        versions.put("promptVersion",sha256(com.travelscope.agent.TravelMasterAgent.SYS_PROMPT+com.travelscope.agent.ItineraryAgent.SYS_PROMPT+com.travelscope.agent.ReviewerAgent.SYS_PROMPT));
         versions.put("skillVersion",skillVersion());versions.put("caseVersion",sha256(json(selected)));versions.put("cases",selected);versions.put("toolMode",request.toolMode());
         try { jdbc.update("INSERT INTO assessment_batches(id,request_key,status,tool_mode,repetitions,config_json) VALUES (?,?,'QUEUED',?,?,?)",id,request.requestKey(),request.toolMode(),count,json(versions)); } catch(org.springframework.dao.DataIntegrityViolationException e) { throw new ResponseStatusException(HttpStatus.CONFLICT,"已有活跃批次或重复请求",e); }
         for(var c:selected)for(int i=1;i<=count;i++){
@@ -141,14 +141,22 @@ public class AssessmentBatches {
                 try{
                     reply=chat.executeAssessment(identity,message,last,mode,"EC-018".equals(c.caseId()),c.caseId(),isolatedAgent).block(Duration.ofMinutes(12));
                     lastArtifacts=store.currentArtifacts(last);
-                    artifact=lastArtifacts.get("itinerary_draft.md");
+                    artifact=store.planningArtifact(last);
                     store.finish(last,artifact==null?(chat.assessmentWaiting(identity)?"WAITING_INPUT":"INCOMPLETE"):"PLANNING_COMPLETED",(System.nanoTime()-start)/1e6,artifact!=null);
                 }catch(Exception e){store.finish(last,Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",(System.nanoTime()-start)/1e6,false);throw e;}
             }
             var dir=workspace.getTaskDir(""+identity,"conv-"+identity);
-            var evidence=new EvalRunArtifact(reply,artifact,lastArtifacts.get("poi_shortlist.md"),lastArtifacts.get("route_plan.md"),dir);
+            var evidence=new EvalRunArtifact(reply,artifact,
+                    lastArtifacts.getOrDefault("poi_shortlist.json",lastArtifacts.get("poi_shortlist.md")),
+                    lastArtifacts.getOrDefault("route_plan.json",lastArtifacts.get("route_plan.md")),dir);
             store.flush();
-            var rules=AssessmentRules.check(c,evidence,jdbc.queryForList("SELECT s.* FROM assessment_spans s JOIN assessment_runs r ON r.id=s.run_id WHERE r.sample_id=?",sampleId));
+            String executionStatus=(String)queries.one("SELECT status FROM assessment_runs WHERE id=?",last.runId()).get("status");
+            if(Set.of("TIMED_OUT","FAILED","CANCELLED","INCOMPLETE").contains(executionStatus)) {
+                jdbc.update("UPDATE assessment_samples SET status=?,score_status='SKIPPED' WHERE id=?",
+                        "CANCELLED".equals(executionStatus)?"CANCELLED":"FAILED",sampleId);
+                return;
+            }
+            var rules=AssessmentRules.check(c,evidence,jdbc.queryForList("SELECT s.* FROM assessment_spans s JOIN assessment_runs r ON r.id=s.run_id WHERE r.sample_id=?",sampleId),executionStatus);
             jdbc.update("UPDATE assessment_samples SET rule_json=?,score_status='RUNNING' WHERE id=?",json(rules),sampleId);
             if(artifact!=null){
                 store.flush();
@@ -158,7 +166,7 @@ public class AssessmentBatches {
             }else jdbc.update("UPDATE assessment_samples SET score_status='SKIPPED' WHERE id=?",sampleId);
             jdbc.update("UPDATE assessment_samples SET status=? WHERE id=? AND status='RUNNING'",artifact==null&&!chat.assessmentWaiting(identity)?"FAILED":"SUCCEEDED",sampleId);
         }catch(Exception e){jdbc.update("UPDATE assessment_samples SET status=?,score_status=CASE WHEN score_status='RUNNING' THEN 'ERROR' ELSE score_status END WHERE id=? AND status='RUNNING'",Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",sampleId);}
-        finally{activeAgent=null;}
+        finally{var agent=activeAgent;activeAgent=null;if(agent!=null)agent.close();}
     }
     private String read(Path path){try{return Files.exists(path)?Files.readString(path):null;}catch(Exception e){return null;}}
     @PreDestroy public void close(){executor.shutdownNow();}

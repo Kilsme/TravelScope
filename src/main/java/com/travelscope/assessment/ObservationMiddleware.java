@@ -89,6 +89,14 @@ public class ObservationMiddleware implements MiddlewareBase {
             if("write_file".equals(call.getName())&&result.startsWith("Written to ")){
                 Object body=call.getInput().get("content");
                 if(body instanceof String text)store.recordArtifactMutation(association,operation,result.substring("Written to ".length()).strip(),text);
+            }else if("write_collab_file".equals(call.getName())&&result.startsWith("已写入 tasks/")){
+                String path=result.substring("已写入 ".length()).strip();
+                store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
+            }else if("plan_route".equals(call.getName())&&result.startsWith("{")){
+                String session=Objects.toString(call.getInput().get("sessionId"),"");
+                if(!session.equals(runtime.getSessionId()))return;
+                String path="tasks/"+session+"/route_plan.json";
+                store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
             }else if("edit_file".equals(call.getName())&&result.startsWith("Edited ")){
                 int suffix=result.lastIndexOf(" (");
                 if(suffix<0)return;

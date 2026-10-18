@@ -70,7 +70,7 @@ public class ObservationStore {
     public void finish(ObservationContext ctx, String status, double ms, boolean artifacts) {
         final boolean ambiguous=ambiguousArtifacts.remove(ctx.runId());
         ArtifactState artifactsForRun=artifactStates.remove(ctx.runId());
-        final ArtifactSnapshot plan=artifactsForRun==null?null:artifactsForRun.snapshots.get("itinerary_draft.md");
+        final ArtifactSnapshot plan=planningSnapshot(artifactsForRun);
         final boolean ownedPlan=plan!=null;
         final UUID finalArtifactId=artifacts&&ownedPlan&&!ambiguous?plan.id():null;
         String session=runSessions.remove(ctx.runId());
@@ -112,6 +112,14 @@ public class ObservationStore {
     }
     private final Map<UUID,ArtifactState> artifactStates=new ConcurrentHashMap<>();
 
+    private ArtifactSnapshot planningSnapshot(ArtifactState state) {
+        if (state == null) return null;
+        Map<String, String> bodies = new HashMap<>();
+        state.snapshots.forEach((name, snapshot) -> bodies.put(name, snapshot.body()));
+        String name = PlanningArtifacts.name(bodies);
+        return name == null ? null : state.snapshots.get(name);
+    }
+
     /** Called only after the actual filesystem tool reports a successful mutation, with its operation ID. */
     void recordArtifactMutation(ObservationContext ctx,UUID operation,String path,String body){
         ArtifactState state=artifactStates.get(ctx.runId());
@@ -138,7 +146,7 @@ public class ObservationStore {
         state.snapshots.forEach((name,snapshot)->bodies.put(name,snapshot.body()));
         return Map.copyOf(bodies);
     }
-    public String planningArtifact(ObservationContext ctx){return currentArtifacts(ctx).get("itinerary_draft.md");}
+    public String planningArtifact(ObservationContext ctx){return PlanningArtifacts.text(currentArtifacts(ctx));}
     void artifactCaptureFailed(ObservationContext ctx){
         ArtifactState state=artifactStates.get(ctx.runId());if(state!=null)state.snapshots.clear();
         markIncomplete(ctx.runId());

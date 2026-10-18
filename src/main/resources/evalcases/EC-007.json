@@ -25,8 +25,8 @@
         "type": "TOOL_ORDER",
         "desc": "先 POI 检索，后路线优化，再行程组装",
         "params": {
-          "before": "poi-research",
-          "after": "route-optimizer"
+          "before": "retrieve_poi_candidates",
+          "after": "plan_route"
         }
       }
     ],

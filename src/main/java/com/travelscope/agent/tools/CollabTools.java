@@ -90,7 +90,9 @@ public class CollabTools {
                         .map(String::trim).filter(s -> !s.isEmpty()).toList();
         log.info("retrieve_poi_candidates: 用户={}, 目的地={}, days={}, 偏好={}",
                 ctx.getUserId(), destination, days, prefs);
-        PoiCandidatePool pool = poiRetrievalService.retrieve(destination, prefs, days);
+        PoiCandidatePool pool = com.travelscope.assessment.FixtureServices.enabled(ctx)
+                ? com.travelscope.assessment.FixtureServices.retrieve(poiRetrievalService, destination, prefs, days, ctx)
+                : poiRetrievalService.retrieve(destination, prefs, days);
         return JSON.toJSONString(pool);
     }
 
@@ -153,7 +155,13 @@ public class CollabTools {
         log.info("plan_route: 用户={}, 会话={}, POI数={}, days={}, 城市={}",
                 userId, sessionId, pois.size(), days, destination);
         try {
-            RoutePlan plan = routePlannerService.planAndWrite(userId, sessionId, pois,
+            boolean fixture = com.travelscope.assessment.FixtureServices.enabled(ctx);
+            if (fixture && Boolean.TRUE.equals(ctx.get("assessment.toolFailure"))) {
+                return "ERROR: FIXTURE injected external tool failure";
+            }
+            RoutePlannerServiceImpl planner = fixture
+                    ? com.travelscope.assessment.FixtureServices.planner(taskWorkspace) : routePlannerService;
+            RoutePlan plan = planner.planAndWrite(userId, sessionId, pois,
                     constraints, destination);
             return JSON.toJSONString(plan);
         } catch (Exception e) {

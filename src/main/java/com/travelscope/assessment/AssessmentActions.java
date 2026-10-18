@@ -17,10 +17,12 @@ public class AssessmentActions {
         var run=queries.run(id);
         if(!"ONLINE".equals(run.get("source"))||!"PLANNING_COMPLETED".equals(run.get("status")))throw new ResponseStatusException(HttpStatus.CONFLICT,"仅可评分已完成的日常规划");
         var artifact=queries.finalPlanningArtifact(id).orElseThrow(()->new ResponseStatusException(HttpStatus.GONE,"最终产物未记录、已过留存期或不可获取"));
+        String plan=PlanningArtifacts.text((String)artifact.get("name"),(String)artifact.get("body"));
+        if(plan==null)throw new ResponseStatusException(HttpStatus.GONE,"最终产物正文不可获取或契约无效");
         var ctx=new ObservationContext(id,(UUID)run.get("turn_id"),(String)run.get("trace_id"),null,null);
         var inputs=jdbc.queryForList("SELECT p.body FROM assessment_payloads p JOIN assessment_spans s ON s.id=p.span_id WHERE p.run_id=? AND s.kind='AGENT' AND s.parent_id IS NULL AND p.kind='INPUT' AND p.created_at>=now()-interval '30 days' ORDER BY p.created_at LIMIT 1",id);
         if(inputs.isEmpty())throw new ResponseStatusException(HttpStatus.GONE,"需求正文不可获取");
-        try{worker.execute(()->scorer.score(ctx,(String)inputs.getFirst().get("body"),(String)artifact.get("body")));}
+        try{worker.execute(()->scorer.score(ctx,(String)inputs.getFirst().get("body"),plan));}
         catch(RejectedExecutionException e){throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS);}
         return Map.of("runId",id,"status","QUEUED");
     }
