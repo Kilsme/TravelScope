@@ -50,6 +50,9 @@ public class AppProperties {
     /** 意图三层级联配置（FR-S01） */
     private IntentCascadeConfig intentCascade = new IntentCascadeConfig();
 
+    /** 需求采集 workflow 配置（S2.1 清单卡片方案：抽取置信度门槛等） */
+    private RequirementConfig requirement = new RequirementConfig();
+
     /** LLM Gateway 配置（FR-S09） */
     private LlmGatewayConfig llmGateway = new LlmGatewayConfig();
 
@@ -76,6 +79,16 @@ public class AppProperties {
         private int maxCharsPerMessage = 400;
         /** 滚动记忆摘要（2026-09-29 失忆修复：窗口外历史折叠进 conversations.summary） */
         private SummaryConfig summary = new SummaryConfig();
+    }
+
+    /**
+     * 需求采集 workflow 配置（S2.1）：RequirementExtractor 的抽取置信度门槛。
+     * 低于此值的字段丢弃，交清单卡片/反问兜底——宁缺毋滥。
+     */
+    @Data
+    public static class RequirementConfig {
+        /** 抽取字段保留的最小置信度（0~1） */
+        private double extractionMinConfidence = 0.7;
     }
 
     /**

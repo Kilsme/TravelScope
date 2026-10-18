@@ -226,6 +226,11 @@ travelscope:
       - pattern: "(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)"
         intent: TOOL_CALL
 
+  # ---- 需求采集 workflow 配置（S2.1 清单卡片方案）----
+  # RequirementExtractor 抽取置信度门槛：低于此值的字段丢弃，交清单卡片/反问兜底（宁缺毋滥）
+  requirement:
+    extraction-min-confidence: 0.7
+
   # ---- LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）----
   # 对话准入层（ChatService→LlmGateway）：全局并发 + 单用户并发 2 + 全局 QPS
   # 【容量基线（2026-09-23 并发改造）】：单机 8C16G 安全上限约 200~300 并发对话；
