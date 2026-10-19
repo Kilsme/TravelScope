@@ -65,25 +65,25 @@ public class ItineraryAgent {
             三、执行流程
             ===================================================
 
-            第 1 步 直接调工具获取实时数据（相互独立的查询同一轮并行发起）。
-            【缓存优先】先调 get_cached_task_result 查 weather/hotel 缓存，
-            命中（返回缓存内容）则直接复用不再调工具，未命中（CACHE_MISS）才执行：
-            - 天气：getWeatherForecast(city, days)，天数与行程天数对齐；
-              完成后调 register_task_result(taskType=weather) 登记
-            - 酒店：searchHotels(city, keyword, pageSize)，结果中按用户预算做过滤；
-              完成后调 register_task_result(taskType=hotel) 登记
-            - 城际大交通（任务清单 T1 为城际任务时）：火车票 queryTrainTickets(origin, destination,
-              depDate)（飞猪源，主用）/ 机票 queryFlightTickets（飞猪源，主用）；
-              mcp__c12306 / mcp__variflight 作对照降级（用户说「明天」等相对日期时，
-              先调 mcp__c12306__get-current-date 或 mcp__variflight__getTodayDate 解析）
-            - 【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自
+            第 1 步（首轮·并行全量数据，强约束）：
+            读完 task_backlog.json 与 intake_result.json 后，你的【第一个行动响应】必须\
+            在同一 response 里一次性并行发出以下全部独立查询（多个 tool_calls 同行，框架并行执行），\
+            严禁拆成多轮串行、严禁先查一个再想下一个：
+            - 天气：getWeatherForecast(destination, days)，天数与行程天数对齐
+            - 酒店：searchHotels(destination, keyword, pageSize)，keyword 按预算/偏好取
+            - 城际大交通（T1 为城际任务时）：queryTrainTickets(fromCity, destination, startDate)；\
+              无直飞铁路或距离过远改 queryFlightTickets（fromCity 为空时跳过并记 pendingConfirm）
+            - 景点候选：retrieve_poi_candidates(destination, days, preferences)
+            缓存优先仍适用：发出前先各调一次 get_cached_task_result(weather/hotel/poi)，\
+            命中的项从并行清单中剔除、直接复用；未命中项必须全部进同一首轮。
+            完成后逐项 register_task_result 登记（weather/hotel/poi）。
+            【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自\
               飞猪或 12306/飞常准——组装草案时保留每条数据的来源标注（【飞猪】【高德】【12306】），
               供前端展示；两源不一致时以飞猪为准
 
-            第 2 步 景点筛选（候选池代码检索 + 你做筛选排序）：
-            1. 调 retrieve_poi_candidates(destination, days, preferences) 拿候选池 JSON——
-               destination/days/preferences 均取 intake_result.json（preferences 为偏好关键词，
-               逗号分隔，无偏好可空）
+            第 2 步 景点筛选（候选池首轮已随并行批量返回，本步只做筛选排序）：
+            1. 取第 1 步 retrieve_poi_candidates 返回的候选池 JSON（若首轮遗漏未发，\
+               此时补调 retrieve_poi_candidates(destination, days, preferences)）
             2. 由你做筛选排序：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
                无评分不因单一因素淘汰）、每日 2~4 个配额——最终选定数量 ≥ 2×days
             3. 每个入选 POI 必须写 reason（一句入选理由）；source 沿用候选池来源标记；
@@ -151,6 +151,10 @@ public class ItineraryAgent {
               无需另行记录执行流水）
             - 同一操作失败最多重试 1 次；仍失败则草案对应项标注「待确认」，严禁编造
             - 名称、时间、价格必须与工具返回完全一致，不得缩写、改名或四舍五入
+            - 【来源标记】草案中引用任何实时数据，在该条目后标注来源工具，供 reviewer 质检\
+              精准定位问题数据出自哪次调用：天气→【天气】、酒店→【酒店·飞猪/高德】、\
+              景点→【景点·飞猪/高德】、火车票→【火车票·飞猪】、机票→【机票·飞猪】、\
+              通勤时长→【通勤·高德】。标注与既有【飞猪】【高德】【12306】数据源标注并存，不冲突
             - 任务清单有不明确之处：选择最合理的解释继续执行，并在 notes 中注明假设
 
             ===================================================
