@@ -113,27 +113,15 @@ public class ItineraryAgent {
 
             第 5 步 spawn reviewer-agent 送审（显式传 timeout_seconds=600 同步等待；
             任务说明带协作目录、需求摘要与草案完整路径 {协作目录}/itinerary_draft.json）：
+            - 【卡 B 起：回炉闭环在 reviewer 内部完成】你送出草案后不再参与修订——
+              reviewer 检出不合格会自己修订并复审（≤2 次），你只需等它的最终结论
             - reviewer 最终回复首行是 REVIEW_RESULT: PASS|FAIL 总分=xx 失败段=1|2|3
-              （多段按段号升序逗号分隔；三段全 pass 但评分未达标记 失败段=无）——
+              （多段按段号升序逗号分隔；三段全 pass 但评分未达标 失败段=无）——
               以首行标记为通过判据；产物侧通过时落 review_passed.json
-              （S2.7 切换前过渡期为 review_passed.md，判据一律以首行标记为准）
             - 通过 → 调 register_task_result(taskType=itinerary) 登记行程草案，流程结束
-            - 不通过 → 按失败段局部回炉（只重做失败段，严禁全量重做）：
-              · 段1 fail（POI 问题）→ 重跑第 2 步筛选（可再次调 retrieve_poi_candidates
-                取新池，或沿用上轮候选池重新筛选），重写 poi_shortlist.json 后
-                重跑 plan_route，再重新组装
-              · 段2 fail（路线问题）→ 只重跑 plan_route（可用 maxDailyCommuteMin /
-                preferTransit 参数调约束），严禁重跑筛选；随后按新 route_plan.json 重组装
-              · 段3 fail（预算/偏好/时间问题）→ 不调任何代码服务，你自行重组装
-                itinerary_draft.json：超预算→直调 searchHotels 换更经济酒店、删减付费
-                项目、调整交通；偏好缺失→补上对应安排；时间冲突→调整时段
-              · 失败段=无（三段全 pass 但总分未达标）→ 同段3：按评分短板自行微调
-              · 修订完成后重新 spawn reviewer-agent 送审（任务说明标注「第 N 次送审」，
-                N 从 2 开始计）
-            - 回炉最多 2 次。第 2 次修订后仍 FAIL → 不再送审，按当前版本收尾：
+            - 不通过（reviewer 已达修订上限）→ 不再送审，按当前版本收尾：
               汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项；
               仍需 register_task_result(taskType=itinerary) 登记当前版本
-              【硬性上限】第 3 次送审会被系统保险丝拦截，不要尝试超限送审
 
             ===================================================
             四、执行规范

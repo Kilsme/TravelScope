@@ -28,43 +28,41 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Reviewer 回炉保险丝（FR-S08 / FR-U09：质检不通过回炉 ≤2 次，超限保护）
+ * Reviewer 回炉保险丝（卡 B：拦 reviewer 的修订轮次，上限 2 次）
  * <p>
- * <b>设计决策（2026-09-19，与原需求字面方案的取舍）</b>：原需求写「拦截 master 的
- * 返回用户回复替换为继续委派 Planner」——反编译确认框架没有改写文本回复的中间件钩子
- * （MiddlewareBase 无 onReply；onReasoning 只能透传/替换推理输入，无法终止已产出的文本）。
- * 因此采用项目已验证的「提示词驱动 + 代码层保险丝」模式（与 PlanningGate/四维校验/
- * 同步强制一致）：回炉循环由 planner 提示词驱动（读 review_report 改进建议→修订→重送
- * ≤2 次），本中间件只在代码层拦住「第 3+ 次送审」——把该次 agent_spawn(reviewer-agent)
- * 改写为 {@code review_retry_hint} 内部工具（同 PlanningGate 的 GATE 模式），返回
- * 「已达回炉上限，按当前最佳版本汇报」——从代码层杜绝无限循环，不依赖模型自觉。
+ * 卡 B 起回炉闭环移入 reviewer 内部（评审→修订→复审，不再经 planner 重送审）。
+ * planner 每轮规划只 spawn reviewer 一次，旧的「拦 planner 第 3+ 次 spawn」保险丝不再触发，
+ * 新的保险丝落在 reviewer 自己的工具链上：拦「reviewer 第 3+ 次写 itinerary_draft.json」。
  * </p>
  * <p>
- * 计数规则：每次 spawn reviewer-agent 计 1 次（含首次送审）；review_passed.md 出现
- * 即重置计数（通过后不再有送审）。检测标准 4 的日志锚点：{@code review_retry count=N}。
+ * 挂载方式：本中间件加在 buildPlannerAgent 的 plannerMiddlewares（挂在 planner 上）；
+ * 框架 buildDeclaredFactory 会把父 agent 的 middlewares 列表 copy 给 spawn 出的子 agent
+ * （reviewer），故本中间件自动生效于 reviewer 的 onActing——onActing 里用
+ * {@code agent.getName()} 过滤，只拦 reviewer-agent 的 write_collab_file(itinerary_draft)。
+ * 计次键同旧版 userId:sessionId（reviewer 与 planner 共享 RuntimeContext）。
  * </p>
  */
 public class ReviewerRetryMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewerRetryMiddleware.class);
 
-    /** 回炉上限（FR-S08 / FR-U09：首次送审 + 最多 2 次回炉重送 = 最多 3 次 spawn） */
+    /** 回炉（修订）上限（卡 B：reviewer 首次评审 + 最多 2 次修订重写草案） */
     public static final int MAX_REVIEW_RETRIES = 2;
-
-    /** 送审次数上限（首审 + 回炉上限） */
-    public static final int MAX_SPAWN_ATTEMPTS = 1 + MAX_REVIEW_RETRIES;
 
     /** 被拦截时替换执行的工具名（必须在 Toolkit 中真实注册，见 TaskTools.reviewRetryHint） */
     public static final String RETRY_HINT_TOOL = "review_retry_hint";
 
+    /** reviewer 修订草案的目标文件名（拦这个文件的写入即拦修订） */
+    private static final String DRAFT_FILE = "itinerary_draft.json";
+
     private final TaskWorkspace taskWorkspaceService;
-    /** 业务打点（review-attempt span，2026-10-02） */
+    /** 业务打点（review-attempt span） */
     private final TracingHelper tracing;
 
-    /** userId:sessionId → 送审计数（跨轮持久于进程内；会话粒度隔离） */
+    /** userId:sessionId → 修订计数（跨轮持久于进程内；会话粒度隔离） */
     private final Map<String, AtomicInteger> spawnCounts = new ConcurrentHashMap<>();
 
-    /** 评审产物中的总分行（review_passed.md / review_report.md 均含「总分: xx/100」） */
+    /** 评审产物中的总分行（旧 .md 兜底用；JSON 产物走 readLatestReviewOutcome typed 读取） */
     private static final Pattern SCORE_PATTERN = Pattern.compile("总分[:：]\\s*(\\d+)");
 
     public ReviewerRetryMiddleware(TaskWorkspace taskWorkspaceService) {
@@ -79,55 +77,46 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     @Override
     public Flux<AgentEvent> onActing(Agent agent, RuntimeContext ctx, ActingInput input,
                                      java.util.function.Function<ActingInput, Flux<AgentEvent>> next) {
-        // 只关心 spawn reviewer-agent 的调用
-        boolean hasReviewerSpawn = input.toolCalls().stream()
-                .anyMatch(t -> "agent_spawn".equals(t.getName())
-                        && ReviewerAgent.AGENT_NAME.equals(agentIdOf(t)));
-        if (!hasReviewerSpawn) {
+        // 只拦 reviewer-agent 写 itinerary_draft.json 的修订动作（其余透传）
+        boolean isReviewerDraftWrite = ReviewerAgent.AGENT_NAME.equals(agent.getName())
+                && input.toolCalls().stream().anyMatch(this::isDraftWrite);
+        if (!isReviewerDraftWrite) {
             return next.apply(input);
         }
 
         String userId = ctx.getUserId();
         String sessionId = ctx.getSessionId();
 
-        // 质检已通过 → 重置计数放行（防御：通过后不应再送审，若发生按首审处理）
+        // 已收敛通过 → 重置计数放行
         if (reviewPassedFileExists(userId, sessionId)) {
-            // 业务打点（review-attempt）：补记最近一次（已通过的）评审结论 result=PASS + score
-            AtomicInteger last = spawnCounts.get(containerKey(userId, sessionId));
-            recordReviewAttempt(userId, sessionId, last != null ? last.get() : 1);
             spawnCounts.remove(containerKey(userId, sessionId));
-            log.info("review_passed 已存在，回炉计数重置: 用户={}, 会话={}", userId, sessionId);
+            log.info("review_passed 已存在，修订计数重置: 用户={}, 会话={}", userId, sessionId);
             return next.apply(input);
         }
 
         int attempt = spawnCounts.computeIfAbsent(containerKey(userId, sessionId),
                 k -> new AtomicInteger(0)).incrementAndGet();
-        // 业务打点（review-attempt，2026-10-02）：与 review_retry 计数同锚点（放行/拦截共用）；
-        // 回炉送审时附带上一轮评审产物的 result/score（见 recordReviewAttempt 注释）
         recordReviewAttempt(userId, sessionId, attempt);
 
-        // 未超限（首审或前两次回炉）→ 放行并留痕
-        if (attempt <= MAX_SPAWN_ATTEMPTS) {
-            log.info("review_retry count={}（{}） 用户={}, 会话={}",
-                    attempt, attempt == 1 ? "首次送审" : "第 " + (attempt - 1) + " 次回炉重送",
-                    userId, sessionId);
+        // 未超限（≤ MAX_REVIEW_RETRIES 次修订）→ 放行
+        if (attempt <= MAX_REVIEW_RETRIES) {
+            log.info("review_retry 修订 count={}（第 {} 次修订） 用户={}, 会话={}",
+                    attempt, attempt, userId, sessionId);
             return next.apply(input);
         }
 
-        // 超限：第 4+ 次尝试送审 → 改写为 hint 工具，reviewer 不再执行
-        log.warn("review_retry 保险丝拦截: 送审尝试 {} 次超过上限 {}（回炉 {} 次），"
-                        + "本次 agent_spawn 已替换为 {}，用户={}, 会话={}",
-                attempt, MAX_SPAWN_ATTEMPTS, MAX_REVIEW_RETRIES, RETRY_HINT_TOOL, userId, sessionId);
-        String hint = "RETRY_LIMIT_REACHED: 质检送审已达上限（首审 + " + MAX_REVIEW_RETRIES
-                + " 次回炉），本次送审已被系统拦截未执行。"
-                + "请立即停止送审，按当前最佳版本的 itinerary_draft.json 汇报收尾："
-                + "汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」"
-                + "（x 取最近一次 review_report.json 的 total），列出未解决的扣分项，"
-                + "并调用 register_task_result(taskType=itinerary) 登记当前版本。";
+        // 超限：第 3+ 次修订 → 改写为 hint 工具，拦这次写草案
+        log.warn("review_retry 保险丝拦截: 修订尝试 {} 次超过上限 {}，"
+                        + "本次写 itinerary_draft 已替换为 {}，用户={}, 会话={}",
+                attempt, MAX_REVIEW_RETRIES, RETRY_HINT_TOOL, userId, sessionId);
+        String hint = "RETRY_LIMIT_REACHED: 修订已达上限（" + MAX_REVIEW_RETRIES
+                + " 次），本次修改 itinerary_draft.json 已被系统拦截未执行。"
+                + "请立即停止修订，按当前最佳版本收尾：写 review_report.json（若尚无）"
+                + "并输出 REVIEW_RESULT: FAIL 总分=xx 失败段=…，"
+                + "摘要标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项。";
         List<ToolUseBlock> rewritten = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
-            if ("agent_spawn".equals(call.getName())
-                    && ReviewerAgent.AGENT_NAME.equals(agentIdOf(call))) {
+            if (isDraftWrite(call)) {
                 rewritten.add(new ToolUseBlock(call.getId(), RETRY_HINT_TOOL,
                         Map.of("reason", hint)));
             } else {
@@ -135,6 +124,18 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
             }
         }
         return next.apply(new ActingInput(rewritten));
+    }
+
+    /** 是否为「reviewer 写 itinerary_draft.json」的工具调用 */
+    private boolean isDraftWrite(ToolUseBlock call) {
+        if (!"write_collab_file".equals(call.getName())) {
+            return false;
+        }
+        Object file = call.getInput() != null
+                ? (call.getInput().get("file") != null ? call.getInput().get("file")
+                        : call.getInput().get("fileName"))
+                : null;
+        return file != null && String.valueOf(file).contains(DRAFT_FILE);
     }
 
     private static String containerKey(String userId, String sessionId) {
@@ -205,12 +206,6 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
             log.debug("检查 review_passed 产物失败（按不存在处理）: {}", e.getMessage());
             return false;
         }
-    }
-
-    /** 读取 agent_spawn 调用参数中的目标 agent_id */
-    private String agentIdOf(ToolUseBlock call) {
-        Object agentId = call.getInput() != null ? call.getInput().get("agent_id") : null;
-        return agentId != null ? String.valueOf(agentId) : null;
     }
 
     // ==================== 其余阶段透传 ====================

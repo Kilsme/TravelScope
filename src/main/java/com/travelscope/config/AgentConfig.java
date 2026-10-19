@@ -525,9 +525,14 @@ public class AgentConfig {
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .workspaceMode(WorkspaceMode.SHARED)
                 .tools(List.of(
+                        // 评审/收尾：契约落盘 + 缓存
                         "write_collab_file",
                         "register_task_result",
-                        "get_cached_task_result"))
+                        "get_cached_task_result",
+                        // 卡 B 回炉修订工具（仅修订阶段用；评审阶段不调外部数据工具）
+                        "plan_route",
+                        "searchHotels",
+                        "retrieve_poi_candidates"))
                 .build();
 
         try {

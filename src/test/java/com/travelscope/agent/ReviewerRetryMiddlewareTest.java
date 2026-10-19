@@ -4,6 +4,7 @@ import com.travelscope.collab.CollabFileReader;
 import com.travelscope.collab.CollabFileWriter;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.common.TracingHelper;
+import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.middleware.ActingInput;
@@ -15,14 +16,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import reactor.core.publisher.Flux;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -33,10 +32,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * ReviewerRetryMiddleware 保险丝单元测试（FR-S08 检测标准 4 的逻辑层验证）
+ * ReviewerRetryMiddleware 保险丝单元测试（卡 B：拦 reviewer 修订轮次，上限 2 次）
  * <p>
- * Fake next 记录传入的 ActingInput（放行=原样 / 拦截=改写后），@TempDir 落盘
- * review_passed.md / review_report.md 模拟质检状态。
+ * 卡 B 起回炉闭环移入 reviewer 内部，保险丝从「拦 planner 第 3+ 次 spawn」改为
+ * 「拦 reviewer 第 3+ 次写 itinerary_draft.json」。用 mock Agent 名 + write_collab_file
+ * 调用模拟 reviewer 修订；Fake next 记录放行/拦截。
  * </p>
  */
 class ReviewerRetryMiddlewareTest {
@@ -46,13 +46,18 @@ class ReviewerRetryMiddlewareTest {
 
     private TaskWorkspace workspace;
     private ReviewerRetryMiddleware middleware;
+    private Agent reviewerAgent;
+    private Agent plannerAgent;
 
     @BeforeEach
     void setUp() {
-        // S0.5 迁移：TaskWorkspace 直接组合 writer/reader，workspace 根用 @TempDir
         workspace = new TaskWorkspace(
                 new CollabFileWriter(tempDir.toString()), new CollabFileReader());
         middleware = new ReviewerRetryMiddleware(workspace);
+        reviewerAgent = mock(Agent.class);
+        when(reviewerAgent.getName()).thenReturn(ReviewerAgent.AGENT_NAME);
+        plannerAgent = mock(Agent.class);
+        when(plannerAgent.getName()).thenReturn("planning-agent");
     }
 
     /** 记录 next 收到的输入（模拟中间件链放行） */
@@ -69,58 +74,37 @@ class ReviewerRetryMiddlewareTest {
         return RuntimeContext.builder().userId("u1").sessionId("conv-t").build();
     }
 
-    /** 构造 spawn reviewer 的 ActingInput */
-    private static ActingInput reviewerSpawn() {
-        return new ActingInput(List.of(new ToolUseBlock("id-1", "agent_spawn",
-                Map.of("agent_id", ReviewerAgent.AGENT_NAME, "task", "质检送审"))));
+    /** 构造 reviewer 写 itinerary_draft.json 的修订调用 */
+    private static ActingInput draftWrite() {
+        return new ActingInput(List.of(new ToolUseBlock("id-1", "write_collab_file",
+                Map.of("file", "itinerary_draft.json", "contentJson", Map.of()))));
     }
 
-    private void writeReviewPassed() throws Exception {
-        Path dir = workspace.getTaskDir("u1", "conv-t");
-        Files.createDirectories(dir);
-        Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD),
-                "# 质检通过\n- 总分: 88/100");
-    }
+    // ==================== 修订计次与拦截 ====================
 
     @Test
-    @DisplayName("S2.7 双读：仅 review_passed.json（无 .md）存在时送审放行且计数重置")
-    void testJsonPassedResetsRetryCount() {
-        // 先累计 3 次送审（首审+2 回炉，达上限）
-        for (int i = 0; i < 3; i++) {
-            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
-        }
-        // S2.7 起 reviewer 只写 JSON 产物（无双读时保险丝会误判未通过而把第 4 次拦成 hint）
-        workspace.writeReviewPassed("u1", "conv-t",
-                new com.travelscope.collab.ReviewPassed(88, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
-        Recorder r = new Recorder();
-        middleware.onActing(null, ctx(), reviewerSpawn(), r::pass);
-        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(),
-                "review_passed.json 存在时应放行（双读生效）");
-    }
-
-    @Test
-    @DisplayName("首审与第 2/3 次送审放行（首审+2 回炉=3 次上限内）")
-    void testFirstThreeAttemptsPassThrough() {
-        for (int i = 1; i <= 3; i++) {
+    @DisplayName("第 1/2 次修订放行（≤2 次上限内）")
+    void testFirstTwoRevisionsPassThrough() {
+        for (int i = 1; i <= 2; i++) {
             Recorder r = new Recorder();
-            middleware.onActing(null, ctx(), reviewerSpawn(), r::pass);
-            assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(),
-                    "第 " + i + " 次送审应放行");
+            middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
+            assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+                    "第 " + i + " 次修订应放行");
         }
     }
 
     @Test
-    @DisplayName("检测标准4：第 4 次送审被保险丝拦截，改写为 review_retry_hint")
-    void testFourthAttemptIntercepted() {
-        for (int i = 0; i < 3; i++) {
-            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+    @DisplayName("第 3 次修订被保险丝拦截，改写为 review_retry_hint")
+    void testThirdRevisionIntercepted() {
+        for (int i = 0; i < 2; i++) {
+            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
         }
         Recorder r = new Recorder();
-        middleware.onActing(null, ctx(), reviewerSpawn(), r::pass);
+        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
 
         ToolUseBlock rewritten = r.last.get().toolCalls().get(0);
         assertEquals(ReviewerRetryMiddleware.RETRY_HINT_TOOL, rewritten.getName(),
-                "第 4 次应被改写为 hint 工具");
+                "第 3 次应被改写为 hint 工具");
         assertEquals("id-1", rewritten.getId(), "保持 tool_use id 配对");
         String reason = String.valueOf(rewritten.getInput().get("reason"));
         assertTrue(reason.contains("RETRY_LIMIT_REACHED") && reason.contains("已尽力"),
@@ -128,91 +112,81 @@ class ReviewerRetryMiddlewareTest {
     }
 
     @Test
-    @DisplayName("非 reviewer 的 spawn 不受影响（poi/route 等正常放行且不计数）")
-    void testNonReviewerSpawnIgnored() {
-        ActingInput poiSpawn = new ActingInput(List.of(
-                new ToolUseBlock("id-2", "agent_spawn",
-                        Map.of("agent_id", "poi-research", "task", "检索"))));
+    @DisplayName("非 reviewer 的写草案不拦（planner 写 itinerary_draft 放行且不计数）")
+    void testPlannerWriteNotIntercepted() {
         Recorder r = new Recorder();
-        middleware.onActing(null, ctx(), poiSpawn, r::pass);
-        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName());
+        middleware.onActing(plannerAgent, ctx(), draftWrite(), r::pass);
+        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+                "planner 写草案应放行");
 
-        // reviewer 首审仍从 1 计（poi 没消耗计数）
+        // reviewer 首修仍从 1 计（planner 没消耗计数）
         Recorder r2 = new Recorder();
-        middleware.onActing(null, ctx(), reviewerSpawn(), r2::pass);
-        assertEquals("agent_spawn", r2.last.get().toolCalls().get(0).getName());
+        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r2::pass);
+        assertEquals("write_collab_file", r2.last.get().toolCalls().get(0).getName());
     }
 
     @Test
-    @DisplayName("review_passed.md 出现 → 计数重置（新一轮质检从首审开始）")
-    void testPassedResetsCounter() throws Exception {
-        // 用完 3 次额度
-        for (int i = 0; i < 3; i++) {
-            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
-        }
-        writeReviewPassed();
+    @DisplayName("reviewer 写非草案文件（review_passed/report）不拦")
+    void testReviewerNonDraftWriteNotIntercepted() {
+        ActingInput reportWrite = new ActingInput(List.of(new ToolUseBlock("id-2",
+                "write_collab_file", Map.of("file", "review_report.json", "contentJson", Map.of()))));
         Recorder r = new Recorder();
-        middleware.onActing(null, ctx(), reviewerSpawn(), r::pass);
-        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(),
-                "passed 后送审应放行（计数已重置）");
+        middleware.onActing(reviewerAgent, ctx(), reportWrite, r::pass);
+        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+                "写评审产物应放行");
     }
 
     @Test
-    @DisplayName("会话隔离：不同会话计数互不影响")
+    @DisplayName("review_passed.json 出现 → 计数重置（新一轮从第 1 次修订起）")
+    void testPassedResetsCounter() {
+        for (int i = 0; i < 2; i++) {
+            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+        }
+        // 收敛通过：写 review_passed.json
+        workspace.writeReviewPassed("u1", "conv-t",
+                new com.travelscope.collab.ReviewPassed(88, 15, List.of("核验一致"), "2026-10-19 12:00:00"));
+
+        Recorder r = new Recorder();
+        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
+        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+                "passed 后写草案应放行（计数已重置）");
+    }
+
+    @Test
+    @DisplayName("会话隔离：不同会话修订计数互不影响")
     void testSessionIsolation() {
-        for (int i = 0; i < 3; i++) {
-            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+        for (int i = 0; i < 2; i++) {
+            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
         }
         RuntimeContext otherCtx = RuntimeContext.builder()
                 .userId("u1").sessionId("conv-other").build();
         Recorder r = new Recorder();
-        middleware.onActing(null, otherCtx, reviewerSpawn(), r::pass);
-        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(),
+        middleware.onActing(reviewerAgent, otherCtx, draftWrite(), r::pass);
+        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
                 "另一会话应独立计数放行");
     }
 
-    @Test
-    @DisplayName("混合调用批次：同批含 poi spawn 与超限 reviewer spawn，只改写后者")
-    void testMixedBatchSelectiveRewrite() {
-        for (int i = 0; i < 3; i++) {
-            middleware.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
-        }
-        ActingInput mixed = new ActingInput(List.of(
-                new ToolUseBlock("id-p", "agent_spawn",
-                        Map.of("agent_id", "poi-research", "task", "检索")),
-                new ToolUseBlock("id-r", "agent_spawn",
-                        Map.of("agent_id", ReviewerAgent.AGENT_NAME, "task", "送审"))));
-        Recorder r = new Recorder();
-        middleware.onActing(null, ctx(), mixed, r::pass);
-
-        assertEquals("agent_spawn", r.last.get().toolCalls().get(0).getName(), "poi spawn 保留");
-        assertEquals(ReviewerRetryMiddleware.RETRY_HINT_TOOL,
-                r.last.get().toolCalls().get(1).getName(), "reviewer spawn 被改写");
-    }
-
-    // ==================== review-attempt 业务打点（2026-10-02，mock Tracer 直证 span 内容） ====================
+    // ==================== review-attempt 业务打点 ====================
 
     @Test
-    @DisplayName("review-attempt 打点：首审记录 span（仅 attempt，无产物时不打 result/score）")
-    void testReviewAttemptSpan_firstAttempt() {
+    @DisplayName("review-attempt 打点：修订记录 span（attempt=次数）")
+    void testReviewAttemptSpan_revision() {
         Tracer tracer = mock(Tracer.class);
         Span span = mock(Span.class);
         when(tracer.nextSpan()).thenReturn(span);
         when(span.name(anyString())).thenReturn(span);
         ReviewerRetryMiddleware traced = new ReviewerRetryMiddleware(workspace, new TracingHelper(tracer));
 
-        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+        traced.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
 
         verify(span).name("review-attempt");
         verify(span).tag("attempt", "1");
-        verify(span, never()).tag(eq("result"), anyString());
-        verify(span, never()).tag(eq("score"), anyString());
         verify(span).start();
         verify(span).end();
     }
 
     @Test
-    @DisplayName("review-attempt 打点：回炉送审带上上一轮 FAIL 的总分（result/score 解析自评审产物）")
+    @DisplayName("review-attempt 打点：带上上一轮 FAIL 的总分（result/score 解析自评审产物）")
     void testReviewAttemptSpan_retryWithScore() throws Exception {
         Tracer tracer = mock(Tracer.class);
         Span span = mock(Span.class);
@@ -220,21 +194,16 @@ class ReviewerRetryMiddlewareTest {
         when(span.name(anyString())).thenReturn(span);
         ReviewerRetryMiddleware traced = new ReviewerRetryMiddleware(workspace, new TracingHelper(tracer));
 
-        // 首审（放行）
-        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
-        // 首审产物：FAIL 总分 78（REVIEW_RESULT 首行的文件等价物）
-        Path dir = workspace.getTaskDir("u1", "conv-t");
-        Files.createDirectories(dir);
-        Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD),
-                "# 质检报告：不通过\n\n- 总分: 78/100（通过线 80）\n\n| 维度 | 得分 |\n|---|---|");
+        // 上一轮评审产物：FAIL 总分 78
+        workspace.writeReviewReport("u1", "conv-t",
+                new com.travelscope.collab.ReviewReport(
+                        List.of(new com.travelscope.collab.ReviewReport.ReviewSegment(3, false, List.of("超预算"))),
+                        new com.travelscope.collab.ReviewReport.ReviewScores(18, 16, 12, 17, 15),
+                        78, Map.of("3", List.of("换经济酒店")), "2026-10-19 12:00:00"));
 
-        // 回炉重送 → span 带 attempt=2 + 上一轮 result=FAIL + score=78
-        traced.onActing(null, ctx(), reviewerSpawn(), input -> Flux.empty());
+        traced.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
 
-        verify(span, times(2)).start();
-        verify(span, times(2)).end();
         verify(span).tag("attempt", "1");
-        verify(span).tag("attempt", "2");
         verify(span).tag("result", "FAIL");
         verify(span).tag("score", "78");
     }
