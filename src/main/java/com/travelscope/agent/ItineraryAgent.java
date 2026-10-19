@@ -76,7 +76,8 @@ public class ItineraryAgent {
             - 景点候选：retrieve_poi_candidates(destination, days, preferences)
             缓存优先仍适用：发出前先各调一次 get_cached_task_result(weather/hotel/poi)，\
             命中的项从并行清单中剔除、直接复用；未命中项必须全部进同一首轮。
-            完成后逐项 register_task_result 登记（weather/hotel/poi）。
+            完成后逐项 register_task_result 登记（weather/hotel/poi），\
+            车票/机票也必须登记（taskType=train 或 flight）——组装草案时由代码读取，不得只在对话里引用。
             【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自\
               飞猪或 12306/飞常准——组装草案时保留每条数据的来源标注（【飞猪】【高德】【12306】），
               供前端展示；两源不一致时以飞猪为准
@@ -86,6 +87,10 @@ public class ItineraryAgent {
                此时补调 retrieve_poi_candidates(destination, days, preferences)）
             2. 由你做筛选排序：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
                无评分不因单一因素淘汰）、每日 2~4 个配额——最终选定数量 ≥ 2×days
+               【偏好硬约束】intake.preference 的每个关键词（如「园林」「古镇」），
+               最终 days 时间线里必须至少有一个对应 POI 覆盖；若因距离/时间排不进，
+               必须在 pendingConfirm 显式写明「偏好X因{原因}未排入，建议{替代}」，
+               严禁静默丢弃偏好——assemble_itinerary 组装时会代码校验此约束，缺失会强制标注
             3. 每个入选 POI 必须写 reason（一句入选理由）；source 沿用候选池来源标记；
                openHours 格式「HH:mm-HH:mm」（未知留空，按全天开放处理）；
                durationMin 填建议游玩分钟数
@@ -99,17 +104,14 @@ public class ItineraryAgent {
             返回含 unplaced（未排入 POI 及原因）时评估是否接受：配额已满可接受并写入
             备选；通勤溢出等原因可在调整后重跑 plan_route（见第 5 步段2规则）。
 
-            第 4 步 收齐组装 itinerary_draft.json（write_collab_file 落盘）：
-            - 依据 route_plan.json 的分日顺序 + 你的天气/酒店/大交通数据，形成完整行程
-            - markdownBody 写草案正文（markdown）：每日时间线连续衔接（上一项结束 =
-              下一项开始），跨地点写明交通方式与耗时；每项格式：时间 | 活动/车次/航班 |
-              地点（与工具返回名称一致）| 费用；末尾汇总：每日预算与总预算、天气与穿衣建议、
-              注意事项与备选方案
-            - 结构字段填齐：days（[{"day":1,"date":"…","theme":"…","items":[{"time":"…",
-              "activity":"…","location":"…","cost":"…","note":"…"}]}]，date 由 intake 的
-              startDate 顺推）、budget（{"currency":"CNY","totalEstimate":"…",
-              "breakdown":[{"category":"…","amount":"…","note":"…"}]}）、notes（注意事项）、
-              pendingConfirm（待确认项——intake 中 confirmed=false 的默认值在此列出）
+            第 4 步 组装 itinerary_draft.json（卡 C：调 assemble_itinerary，你只决策代码拼装）：
+            - 【禁止手写整篇 markdown】调 assemble_itinerary(sessionId) 一次——
+              它会用 LLM 产出结构字段（days/budget/notes），再由代码按 route_plan.json
+              铺时间线、插入来源标注、渲染 markdownBody 并直接落盘 itinerary_draft.json
+            - 前置已就绪：poi_shortlist.json（第 2 步）+ route_plan.json（第 3 步）+
+              天气/酒店/车票已 register_task_result（第 1 步，车票必须登记 taskType=train/flight）
+            - 组装返回摘要即落盘完成，你只需核对天数与结构无误，直接进入第 5 步送审；
+              严禁再用 write_collab_file 手写 itinerary_draft.json 的全文
 
             第 5 步 spawn reviewer-agent 送审（显式传 timeout_seconds=600 同步等待；
             任务说明带协作目录、需求摘要与草案完整路径 {协作目录}/itinerary_draft.json）：

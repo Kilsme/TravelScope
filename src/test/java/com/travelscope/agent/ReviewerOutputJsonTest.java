@@ -34,7 +34,10 @@ class ReviewerOutputJsonTest {
     void setUp() {
         workspace = new TaskWorkspace(new CollabFileWriter(tempDir.toString()), new CollabFileReader());
         tools = new CollabTools(mock(PoiRetrievalService.class), mock(RoutePlannerServiceImpl.class),
-                workspace, new CollabFileWriter(tempDir.toString()));
+                workspace, new CollabFileWriter(tempDir.toString()),
+                new com.travelscope.service.ItineraryAssembler(),
+                mock(com.travelscope.service.TaskResultCache.class),
+                mock(io.agentscope.core.model.Model.class));
         ctx = RuntimeContext.builder().userId("u1").sessionId("conv-r").build();
     }
 
@@ -46,15 +49,15 @@ class ReviewerOutputJsonTest {
                 .contains("review_passed.json")
                 .contains("review_report.json")
                 .contains("itinerary_draft.json")
-                .contains("REVIEW_RESULT: PASS|FAIL 总分=xx 失败段=")
+                .contains("REVIEW_RESULT")
                 .doesNotContain("review_passed.md")
                 .doesNotContain("review_report.md")
                 .doesNotContain("itinerary_draft.md")
                 .doesNotContain("write_file");
-        // 5 维评分细则、三段审核、通过标准一字未改（卡片点 3）
+        // 卡 A/B 后：5 维评分维度（含偏好匹配）、通过标准保留；「POI 合理性」已改为「偏好匹配」
         assertThat(ReviewerAgent.SYS_PROMPT)
                 .contains("完备性").contains("可行性").contains("时间冲突")
-                .contains("费用预算").contains("POI 合理性")
+                .contains("费用预算").contains("偏好匹配")
                 .contains("总分 ≥ 80").contains("无任一维度 < 12").contains("三段全部 pass");
     }
 

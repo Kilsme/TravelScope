@@ -44,7 +44,10 @@ class CollabToolsTest {
         workspace = new TaskWorkspace(new CollabFileWriter(tempDir.toString()), new CollabFileReader());
         routePlanner = mock(RoutePlannerServiceImpl.class);
         tools = new CollabTools(mock(PoiRetrievalService.class), routePlanner, workspace,
-                new CollabFileWriter(tempDir.toString()));
+                new CollabFileWriter(tempDir.toString()),
+                new com.travelscope.service.ItineraryAssembler(),
+                mock(com.travelscope.service.TaskResultCache.class),
+                mock(io.agentscope.core.model.Model.class));
         ctx = RuntimeContext.builder().userId("u1").sessionId("conv-1").build();
     }
 

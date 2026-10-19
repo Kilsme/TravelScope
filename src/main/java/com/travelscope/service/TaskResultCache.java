@@ -45,7 +45,9 @@ public class TaskResultCache {
         WEATHER(Duration.ofMinutes(10)),
         ITINERARY(Duration.ofMinutes(30)),
         MATRIX(Duration.ofMinutes(30)),
-        GEO(Duration.ofHours(24));
+        GEO(Duration.ofHours(24)),
+        TRAIN(Duration.ofMinutes(30)),
+        FLIGHT(Duration.ofMinutes(30));
 
         public final Duration ttl;
 
@@ -66,6 +68,8 @@ public class TaskResultCache {
                 case "itinerary", "itinerary_draft" -> ITINERARY;
                 case "matrix", "routematrix" -> MATRIX;
                 case "geo", "geocode" -> GEO;
+                case "train", "train_ticket", "trainticket" -> TRAIN;
+                case "flight", "flight_ticket", "flightticket" -> FLIGHT;
                 default -> null;
             };
         }

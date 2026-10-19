@@ -113,7 +113,10 @@ class ReviewerSegmentedReviewRealApiTest {
         toolkit.registerTool(new com.travelscope.agent.tools.CollabTools(
                 org.mockito.Mockito.mock(com.travelscope.service.retrieval.PoiRetrievalService.class),
                 org.mockito.Mockito.mock(com.travelscope.service.route.RoutePlannerServiceImpl.class),
-                workspace, writer));
+                workspace, writer,
+                new com.travelscope.service.ItineraryAssembler(),
+                org.mockito.Mockito.mock(com.travelscope.service.TaskResultCache.class),
+                org.mockito.Mockito.mock(io.agentscope.core.model.Model.class)));
 
         HarnessAgent reviewer = HarnessAgent.builder()
                 .name(ReviewerAgent.AGENT_NAME)

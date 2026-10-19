@@ -56,15 +56,25 @@ public class CollabTools {
     private final RoutePlannerServiceImpl routePlannerService;
     private final TaskWorkspace taskWorkspace;
     private final CollabFileWriter collabFileWriter;
+    private final com.travelscope.service.ItineraryAssembler itineraryAssembler;
+    private final com.travelscope.service.TaskResultCache taskResultCache;
+    private final io.agentscope.core.model.Model chatModel;
 
     public CollabTools(PoiRetrievalService poiRetrievalService,
                        RoutePlannerServiceImpl routePlannerService,
                        TaskWorkspace taskWorkspace,
-                       CollabFileWriter collabFileWriter) {
+                       CollabFileWriter collabFileWriter,
+                       com.travelscope.service.ItineraryAssembler itineraryAssembler,
+                       com.travelscope.service.TaskResultCache taskResultCache,
+                       @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
+                       io.agentscope.core.model.Model chatModel) {
         this.poiRetrievalService = poiRetrievalService;
         this.routePlannerService = routePlannerService;
         this.taskWorkspace = taskWorkspace;
         this.collabFileWriter = collabFileWriter;
+        this.itineraryAssembler = itineraryAssembler;
+        this.taskResultCache = taskResultCache;
+        this.chatModel = chatModel;
     }
 
     /**
@@ -168,6 +178,130 @@ public class CollabTools {
             log.warn("plan_route 求解失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: 路线求解失败: " + e.getMessage();
         }
+    }
+
+    /**
+     * 行程草案组装（卡 C：LLM 产结构字段 + 代码渲染 markdownBody + 直接落盘，零 LLM 手写全文）。
+     * 读 route_plan/poi_shortlist，LLM 一次产 ItineraryDraft 结构字段（days/budget/notes），
+     * ItineraryAssembler 读缓存（天气/酒店/车票）渲染 markdownBody 后落盘 itinerary_draft.json。
+     */
+    @Tool(description = "行程草案组装（卡 C：你只决策，代码拼装全文）。内部：①LLM 产结构字段"
+            + "（days/items 的 time/activity/location、主题、预算、注意事项）②代码按 route_plan "
+            + "铺时间线、插入来源标注、渲染 markdownBody ③直接落盘 itinerary_draft.json。"
+            + "前置：已写 poi_shortlist.json 且跑过 plan_route；天气/酒店/车票已 register_task_result。"
+            + "你只需调一次拿到摘要，严禁自己手写整篇 itinerary_draft.json 的 markdownBody")
+    public String assemble_itinerary(
+            @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
+            String sessionId,
+            RuntimeContext ctx) {
+        String userId = ctx.getUserId();
+        try {
+            // 前置：路线与 POI 契约必须已就绪
+            var routePlan = taskWorkspace.readRoutePlan(userId, sessionId);
+            if (routePlan.isEmpty()) {
+                return "ERROR: 会话目录缺 route_plan.json——先调 plan_route 完成分日路线求解";
+            }
+            var intake = taskWorkspace.readIntakeResult(userId, sessionId);
+            if (intake.isEmpty()) {
+                return "ERROR: 会话目录缺 intake_result.json";
+            }
+
+            // ① LLM 产结构字段（不含 markdownBody）
+            com.travelscope.collab.ItineraryDraft skeleton = produceDraftSkeleton(
+                    userId, sessionId, routePlan.get(), intake.get());
+            if (skeleton == null) {
+                return "ERROR: 草案结构字段生成失败（模型未返回有效结构），请重试一次";
+            }
+
+            // ② 读缓存（天气/酒店/车票）+ poi_shortlist 已核验 POI 集合 + intake 偏好，代码渲染
+            String weather = taskResultCache.get(userId, sessionId,
+                    com.travelscope.service.TaskResultCache.TaskType.WEATHER);
+            String hotel = taskResultCache.get(userId, sessionId,
+                    com.travelscope.service.TaskResultCache.TaskType.HOTEL);
+            String train = taskResultCache.get(userId, sessionId,
+                    com.travelscope.service.TaskResultCache.TaskType.TRAIN);
+            if (train == null) {
+                train = taskResultCache.get(userId, sessionId,
+                        com.travelscope.service.TaskResultCache.TaskType.FLIGHT);
+            }
+            // 防幻觉与偏好硬约束的校验输入
+            com.travelscope.collab.PoiShortlist shortlist =
+                    taskWorkspace.readPoiShortlist(userId, sessionId).orElse(null);
+            List<String> preferences = extractPreferences(intake.get());
+            com.travelscope.collab.ItineraryDraft draft = itineraryAssembler.assemble(
+                    skeleton, routePlan.get(), weather, hotel, train, shortlist, preferences);
+
+            // ③ 直接落盘
+            taskWorkspace.writeItineraryDraft(userId, sessionId, draft);
+            log.info("assemble_itinerary 已组装落盘: 用户={}, 会话={}, {} 天, markdownBody={} 字符",
+                    userId, sessionId, draft.days().size(), draft.markdownBody().length());
+            return "已组装并写入 itinerary_draft.json（" + draft.days().size()
+                    + " 天，markdownBody " + draft.markdownBody().length()
+                    + " 字符，代码渲染）。请直接进入第 5 步送审。";
+        } catch (Exception e) {
+            log.warn("assemble_itinerary 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
+            return "ERROR: 草案组装失败: " + e.getMessage();
+        }
+    }
+
+    /** 从 intake_result.json 抽取 preference 偏好关键词（逗号/顿号/空格分隔，去空） */
+    private List<String> extractPreferences(com.travelscope.collab.IntakeResult intake) {
+        try {
+            var fv = intake.fields().preference();
+            if (fv == null || fv.value() == null || fv.value().isBlank()) {
+                return List.of();
+            }
+            return java.util.Arrays.stream(fv.value().split("[,，、\\s]+"))
+                    .map(String::trim).filter(s -> !s.isEmpty()).toList();
+        } catch (Exception e) {
+            return List.of();
+        }
+    }
+
+    /** LLM 一次产 ItineraryDraft 结构字段（复刻 RequirementExtractor 合成工具路径，markdownBody 用占位待代码渲染） */
+    private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(
+            String userId, String sessionId,
+            com.travelscope.collab.RoutePlan routePlan,
+            com.travelscope.collab.IntakeResult intake) {
+        String prompt = "基于以下分日路线生成行程草案的结构字段（days/items 的 time/activity/location、"
+                + "每日主题 theme、预算 budget、注意事项 notes、待确认 pendingConfirm）。"
+                + "不要写 markdown 正文，只产结构字段。\n\n分日路线：\n"
+                + com.alibaba.fastjson2.JSON.toJSONString(routePlan)
+                + "\n\n用户需求：\n" + com.alibaba.fastjson2.JSON.toJSONString(intake);
+        RuntimeContext callCtx = RuntimeContext.builder()
+                .userId("itinerary-assembler").sessionId("itinerary-assemble-" + sessionId).build();
+        var agent = io.agentscope.core.ReActAgent.builder()
+                .name("itinerary-assembler")
+                .sysPrompt("你是行程结构整理器。根据分日路线输出 ItineraryDraft 的结构字段："
+                        + "days（每项 time 形如 09:00-11:30、activity、location）、"
+                        + "budget（currency=CNY、totalEstimate、breakdown）、notes、pendingConfirm。"
+                        + "名称/时间/价格必须与输入一致，不编造。markdownBody 填占位「组装中」。")
+                .model(chatModel)
+                .maxIters(2)
+                .build();
+        try {
+            var reply = agent.call(prompt, com.travelscope.collab.ItineraryDraft.class, callCtx)
+                    .block(java.time.Duration.ofSeconds(60));
+            if (reply == null) {
+                return null;
+            }
+            try {
+                return reply.getStructuredData(com.travelscope.collab.ItineraryDraft.class);
+            } catch (Exception ignored) {
+                // 结构化元数据缺失 → 纯文本兜底解析
+                String text = reply.getTextContent();
+                if (text != null && text.contains("\"days\"")) {
+                    com.alibaba.fastjson2.JSONObject json = com.alibaba.fastjson2.JSON.parseObject(
+                            text.replaceAll("(?s).*?(\\{.*\\}).*", "$1"));
+                    json.putIfAbsent("markdownBody", "组装中");
+                    json.putIfAbsent("schemaVersion", 4);
+                    return json.toJavaObject(com.travelscope.collab.ItineraryDraft.class);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("草案结构字段生成异常: {}", e.getMessage());
+        }
+        return null;
     }
 
     /**

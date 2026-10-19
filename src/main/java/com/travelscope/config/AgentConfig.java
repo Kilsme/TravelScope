@@ -618,6 +618,7 @@ public class AgentConfig {
             "getDrivingRoute", "getTransitRoute", "geocode",
             "queryTrainTickets", "queryFlightTickets",
             "retrieve_poi_candidates", "plan_route", "write_collab_file",
+            "assemble_itinerary",
             "register_task_result", "get_cached_task_result",
             "update_task_status", "get_task_progress",
             "review_retry_hint");

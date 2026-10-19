@@ -26,7 +26,10 @@ class AssessmentFixtureServicesTest {
         var retrieval = new PoiRetrievalService(rag, attractions);
         var writer = new CollabFileWriter(directory.toString());
         var workspace = new TaskWorkspace(writer, new CollabFileReader());
-        var tools = new CollabTools(retrieval, livePlanner, workspace, writer);
+        var tools = new CollabTools(retrieval, livePlanner, workspace, writer,
+                new com.travelscope.service.ItineraryAssembler(),
+                org.mockito.Mockito.mock(com.travelscope.service.TaskResultCache.class),
+                org.mockito.Mockito.mock(io.agentscope.core.model.Model.class));
         var runtime = RuntimeContext.builder().userId("fixture-user").sessionId("fixture-session")
                 .put("assessment.toolMode", "FIXTURE").build();
         var pool = JSON.parseObject(tools.retrieve_poi_candidates("杭州", 2, "自然风景", runtime));
