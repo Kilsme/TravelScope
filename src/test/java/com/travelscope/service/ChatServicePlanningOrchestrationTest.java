@@ -157,7 +157,11 @@ class ChatServicePlanningOrchestrationTest {
         // step5：渲染 itinerary_draft.md + 代码生成质检标注
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
                 .contains("✅ 已通过质量审阅（评分 91/100）");
-        assertThat(payloadOf(items, "review_report")).contains("总分: 91/100");
+        // S3.1：review_report 事件载荷为 JSON（passed/total 契约字段）
+        com.alibaba.fastjson2.JSONObject report = com.alibaba.fastjson2.JSON
+                .parseObject(payloadOf(items, "review_report"));
+        assertThat(report.getBooleanValue("passed")).isTrue();
+        assertThat(report.getIntValue("total")).isEqualTo(91);
     }
 
     // ---------- 用例 3：无 review_passed（回炉超限）→ 方案带「⚠️ 当前最佳版本（已尽力）」标注 ----------
@@ -177,8 +181,17 @@ class ChatServicePlanningOrchestrationTest {
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
                 .contains("⚠️ 当前最佳版本（已尽力，评分 72/100）");
-        assertThat(payloadOf(items, "review_report")).contains("总分: 72/100")
-                .contains("第二天时间过密");
+        // S3.1：回炉超限场景载荷 passed=false，分段明细带 pass 标志
+        com.alibaba.fastjson2.JSONObject report = com.alibaba.fastjson2.JSON
+                .parseObject(payloadOf(items, "review_report"));
+        assertThat(report.getBooleanValue("passed")).isFalse();
+        assertThat(report.getIntValue("total")).isEqualTo(72);
+        assertThat(report.getJSONArray("segments")).hasSize(3)
+                .anySatisfy(s -> {
+                    com.alibaba.fastjson2.JSONObject seg = (com.alibaba.fastjson2.JSONObject) s;
+                    assertThat(seg.getIntValue("segment")).isEqualTo(2);
+                    assertThat(seg.getBooleanValue("pass")).isFalse();
+                });
         verifyNoInteractions(travelMasterAgent);
     }
 
@@ -220,14 +233,13 @@ class ChatServicePlanningOrchestrationTest {
         verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
     }
 
-    // ---------- 用例 6：评审产物 JSON（S2.7 双读）→ ✅ 标注照常；review_report 事件窗口期静默 ----------
+    // ---------- 用例 6：评审产物 JSON → ✅ 标注照常；S3.1 起 review_report 事件同源于 JSON ----------
     @Test
     void jsonReviewPassedDrivesAnnotation() throws Exception {
         workspace.writeIntakeResult("1", "conv-13", intakeResult());
         Path dir = workspace.getTaskDir("1", "conv-13");
         Files.writeString(dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
                 "# 杭州两日游完整方案\nDay1 西湖环湖。");
-        // S2.7 起 reviewer 只写 JSON 产物（无双读时标注会丢失）
         workspace.writeReviewPassed("1", "conv-13",
                 new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
         when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
@@ -243,8 +255,12 @@ class ChatServicePlanningOrchestrationTest {
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
                 .contains("✅ 已通过质量审阅（评分 91/100）");
-        // 窗口期行为锁档：review_report SSE 事件只读 .md（S3.1 切 JSON 时翻转本断言）
-        assertThat(eventNames(items)).doesNotContain("review_report");
+        // S3.1：review_report SSE 事件已切 JSON 读取，与标注同源
+        assertThat(eventNames(items)).contains("review_report");
+        com.alibaba.fastjson2.JSONObject report = com.alibaba.fastjson2.JSON
+                .parseObject(payloadOf(items, "review_report"));
+        assertThat(report.getBooleanValue("passed")).isTrue();
+        assertThat(report.getIntValue("total")).isEqualTo(91);
     }
 
     // ==================== 测试数据与 SSE 捕获 ====================
@@ -355,18 +371,24 @@ class ChatServicePlanningOrchestrationTest {
         return c;
     }
 
-    /** 预置协作产物：intake_result.json + itinerary_draft.md + 评审产物（passed ? passed.md : report.md） */
+    /** 预置协作产物：intake_result.json + itinerary_draft.md + 评审产物（passed ? passed.json : report.json） */
     private void seedIntakeAndArtifacts(boolean passed) throws Exception {
         workspace.writeIntakeResult("1", "conv-13", intakeResult());
         Path dir = workspace.getTaskDir("1", "conv-13");
         Files.writeString(dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
                 "# 杭州两日游完整方案\nDay1 西湖环湖，Day2 灵隐寺。");
         if (passed) {
-            Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD),
-                    "# 质检通过\n总分: 91/100\n五维均达标。");
+            workspace.writeReviewPassed("1", "conv-13",
+                    new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
         } else {
-            Files.writeString(dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD),
-                    "# 质检报告\n总分: 72/100\n- 第二天时间过密\n");
+            workspace.writeReviewReport("1", "conv-13",
+                    new com.travelscope.collab.ReviewReport(
+                            List.of(
+                                    new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
+                                    new com.travelscope.collab.ReviewReport.ReviewSegment(2, false, List.of("第二天时间过密")),
+                                    new com.travelscope.collab.ReviewReport.ReviewSegment(3, true, List.of())),
+                            new com.travelscope.collab.ReviewReport.ReviewScores(15, 14, 13, 15, 15),
+                            72, java.util.Map.of(), "2026-10-18 12:00:00"));
         }
     }
 

@@ -1139,17 +1139,17 @@ public class ChatService {
         persistReply(conversation, userId, replyBuf, usageTracker);
         // 记忆摘要到期检查（每满 10 轮后台折叠一次，fire-and-forget 不阻塞 done 事件）
         conversationSummaryService.maybeSummarizeAsync(conversation.getId(), userId, observation);
-        // FR-S08：质检报告事件——本轮回复含质检标注时，读协作目录的 review 文件推给前端
-        // （review_passed.md 优先，回炉超限场景退化为最近一次 review_report.md）
-        try {
-            String reviewMarkdown = readReviewMarkdown(String.valueOf(userId),
-                    SESSION_PREFIX + conversation.getId(), replyBuf.toString());
-            if (reviewMarkdown != null) {
+        // FR-S08：质检报告事件——done 前把本轮评审结论推给前端（S3.1 起数据源切 JSON 产物）：
+        // review_passed.json 优先（passed=true），回炉超限场景退化为最近一次 review_report.json
+        String reviewPayload = readReviewPayload(String.valueOf(userId),
+                SESSION_PREFIX + conversation.getId());
+        if (reviewPayload != null) {
+            try {
                 emitter.send(SseEmitter.event().name(ChatEvent.TYPE_REVIEW_REPORT)
-                        .data(reviewMarkdown));
+                        .data(reviewPayload));
+            } catch (Exception ignored) {
+                // 报告事件失败不影响 done
             }
-        } catch (Exception ignored) {
-            // 报告事件失败不影响 done
         }
         try {
             emitter.send(SseEmitter.event().name(ChatEvent.TYPE_DONE)
@@ -1202,38 +1202,42 @@ public class ChatService {
     }
 
     /**
-     * 读取本轮质检报告 markdown（检测标准 2 的数据源）：
-     * 回复含「已通过质量审阅」→ review_passed.md；含「已尽力」→ 最近一次 review_report.md。
-     * 回复无质检标注（纯查询/闲聊/未走到质检）返回 null 不推事件。
+     * 读取本轮质检结论并组装 review_report 事件载荷（JSON 字符串）。
      * <p>
-     * 窗口说明（S2.7→S3.1）：reviewer 产物已切 JSON，但本事件仍只读 .md——窗口期内
-     * review_report 事件静默缺失（done 的 ✅/⚠️ 标注经 reviewAnnotation 双读不受影响），
-     * S3.1 正式把本事件切到 JSON 读取。
+     * S3.1 起数据源为 JSON 产物（reviewer 经 write_collab_file 写入）：review_passed.json
+     * 优先（passed=true，无分段明细，segments 为空）；缺失时退化 review_report.json
+     * （passed=false，携带各分段 pass 标志）。前端契约：passed/total 语义不变，segments 新增。
      * </p>
+     * 两产物都不存在（未走到质检/产物异常）返回 null 不发事件，log.warn 留痕。
      */
-    private String readReviewMarkdown(String userId, String agentSessionId, String reply) {
-        boolean passed = reply.contains("已通过质量审阅");
-        boolean bestEffort = reply.contains("已尽力");
-        if (!passed && !bestEffort) {
-            return null;
+    private String readReviewPayload(String userId, String agentSessionId) {
+        java.util.Optional<com.travelscope.collab.ReviewPassed> passed =
+                taskWorkspaceService.readReviewPassed(userId, agentSessionId);
+        if (passed.isPresent()) {
+            JSONObject payload = new JSONObject();
+            payload.put("passed", true);
+            payload.put("total", passed.get().total());
+            payload.put("segments", java.util.List.of());
+            return payload.toJSONString();
         }
-        try {
-            java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
-            // 过渡（S0.5）：reviewer 产物 JSON 化（S2.7）前仍读 .md
-            java.nio.file.Path target = passed
-                    ? dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD)
-                    : dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
-            if (java.nio.file.Files.exists(target)) {
-                return java.nio.file.Files.readString(target, java.nio.charset.StandardCharsets.UTF_8);
-            }
-            // 通过标注但 passed 文件缺失（防御）：退化读 report
-            java.nio.file.Path fallback = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
-            if (passed && java.nio.file.Files.exists(fallback)) {
-                return java.nio.file.Files.readString(fallback, java.nio.charset.StandardCharsets.UTF_8);
-            }
-        } catch (Exception e) {
-            log.warn("读取质检报告失败（不推 review_report 事件）: {}", e.getMessage());
+        java.util.Optional<com.travelscope.collab.ReviewReport> report =
+                taskWorkspaceService.readReviewReport(userId, agentSessionId);
+        if (report.isPresent()) {
+            JSONObject payload = new JSONObject();
+            payload.put("passed", false);
+            payload.put("total", report.get().total());
+            payload.put("segments", report.get().segments().stream()
+                    .map(s -> {
+                        JSONObject seg = new JSONObject();
+                        seg.put("segment", s.segment());
+                        seg.put("pass", s.pass());
+                        return seg;
+                    })
+                    .toList());
+            return payload.toJSONString();
         }
+        log.warn("review 产物缺失（review_passed.json / review_report.json 均不存在），"
+                + "不推 review_report 事件: userId={}, session={}", userId, agentSessionId);
         return null;
     }
 
