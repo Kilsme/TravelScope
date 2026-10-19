@@ -73,24 +73,25 @@ public class WeatherTool {
         String cleanHost = apiHost.replaceFirst("^https?://", "");
 
         // 第一步：查询城市 LocationID
-        String locationId = resolveLocationId(city, apiKey, cleanHost);
-        if (locationId == null) {
-            return errorResult("未找到城市: " + city);
+        GeoResult geo = resolveLocationId(city, apiKey, cleanHost);
+        if (geo.locationId() == null) {
+            return errorResult(geo.error());
         }
 
         // 第二步：查询实时天气
         HttpUrl url = HttpUrl.parse("https://" + cleanHost + "/v7/weather/now").newBuilder()
-                .addQueryParameter("location", locationId)
+                .addQueryParameter("location", geo.locationId())
                 .addQueryParameter("key", apiKey)
                 .build();
 
         Request request = new Request.Builder().url(url).get().build();
 
         try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                return errorResult("和风天气 API 请求失败，HTTP " + response.code());
-            }
             String body = response.body() != null ? response.body().string() : "{}";
+            if (!response.isSuccessful()) {
+                log.error("和风天气 API 请求失败: HTTP {}, body={}", response.code(), abbreviate(body));
+                return errorResult("和风天气 API 请求失败，HTTP " + response.code() + "，" + abbreviate(body));
+            }
             return parseWeatherNow(body, city);
         } catch (IOException e) {
             log.error("查询天气异常: city={}", city, e);
@@ -128,9 +129,9 @@ public class WeatherTool {
         String cleanHost = apiHost.replaceFirst("^https?://", "");
 
         // 第一步：查询城市 LocationID
-        String locationId = resolveLocationId(city, apiKey, cleanHost);
-        if (locationId == null) {
-            return errorResult("未找到城市: " + city);
+        GeoResult geo = resolveLocationId(city, apiKey, cleanHost);
+        if (geo.locationId() == null) {
+            return errorResult(geo.error());
         }
 
         // 第二步：查询天气预报
@@ -143,17 +144,18 @@ public class WeatherTool {
         };
 
         HttpUrl url = HttpUrl.parse("https://" + cleanHost + "/v7/weather/" + validDays + "d").newBuilder()
-                .addQueryParameter("location", locationId)
+                .addQueryParameter("location", geo.locationId())
                 .addQueryParameter("key", apiKey)
                 .build();
 
         Request request = new Request.Builder().url(url).get().build();
 
         try (Response response = httpClient.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                return errorResult("和风天气 API 请求失败，HTTP " + response.code());
-            }
             String body = response.body() != null ? response.body().string() : "{}";
+            if (!response.isSuccessful()) {
+                log.error("和风天气预报 API 请求失败: HTTP {}, body={}", response.code(), abbreviate(body));
+                return errorResult("和风天气 API 请求失败，HTTP " + response.code() + "，" + abbreviate(body));
+            }
             return parseWeatherForecast(body, city, validDays);
         } catch (IOException e) {
             log.error("查询天气预报异常: city={}", city, e);
@@ -161,23 +163,25 @@ public class WeatherTool {
         }
     }
 
-    /** 查询城市 LocationID */
-    private String resolveLocationId(String city, String apiKey, String apiHost) {
-        // 和风天气 GeoAPI 使用专用域名，如果 apiHost 是 devapi/非专用域名则用 geoapi.qweather.com
-        // 如果 apiHost 是用户专属域名（如 xxx.re.qweatherapi.com），则替换为对应的 geoapi 域名
-        String geoHost;
-        if (apiHost.contains(".re.qweatherapi.com")) {
-            // 用户专属 API 域名，GeoAPI 对应替换
-            geoHost = apiHost.replace(".re.qweatherapi.com", ".re.qweatherapi.com").replaceFirst("^[^.]+", "geoapi");
-        } else if (apiHost.startsWith("devapi.")) {
-            geoHost = "geoapi.qweather.com";
-        } else if (apiHost.startsWith("api.")) {
-            geoHost = "geoapi.qweather.com";
-        } else {
-            geoHost = "geoapi.qweather.com";
-        }
+    /** 城市查询结果：locationId 与 error 必有一者为 null */
+    private record GeoResult(String locationId, String error) {
+    }
 
-        HttpUrl url = HttpUrl.parse("https://" + geoHost + "/v2/city/lookup").newBuilder()
+    /**
+     * 推导 GeoAPI 的 base URL。
+     * 和风新版专属域名（xxx.re.qweatherapi.com）下 GeoAPI 与天气 API 同域名，
+     * 路径需加 /geo 前缀（/geo/v2/city/lookup）；遗留公共域名则走独立的 geoapi.qweather.com。
+     */
+    static String resolveGeoApiBase(String apiHost) {
+        if (apiHost.endsWith(".re.qweatherapi.com")) {
+            return "https://" + apiHost + "/geo";
+        }
+        return "https://geoapi.qweather.com";
+    }
+
+    /** 查询城市 LocationID */
+    private GeoResult resolveLocationId(String city, String apiKey, String apiHost) {
+        HttpUrl url = HttpUrl.parse(resolveGeoApiBase(apiHost) + "/v2/city/lookup").newBuilder()
                 .addQueryParameter("location", city)
                 .addQueryParameter("key", apiKey)
                 .build();
@@ -185,20 +189,32 @@ public class WeatherTool {
         Request request = new Request.Builder().url(url).get().build();
 
         try (Response response = httpClient.newCall(request).execute()) {
+            String body = response.body() != null ? response.body().string() : "";
             if (!response.isSuccessful()) {
-                log.error("城市查询失败: HTTP {}", response.code());
-                return null;
+                // 和风错误体里有具体错误码（401=key 无效、403=无权限、404=路径/域名错误），必须透出
+                log.error("城市查询失败: HTTP {}, body={}", response.code(), abbreviate(body));
+                return new GeoResult(null, "城市查询失败，和风 API 返回 HTTP " + response.code() + "，" + abbreviate(body));
             }
-            String body = response.body() != null ? response.body().string() : "{}";
             JSONObject json = JSON.parseObject(body);
             JSONArray locations = json.getJSONArray("location");
             if (locations != null && !locations.isEmpty()) {
-                return locations.getJSONObject(0).getString("id");
+                return new GeoResult(locations.getJSONObject(0).getString("id"), null);
             }
+            String code = json.getString("code");
+            String detail = code != null && !"200".equals(code) ? "（和风 code=" + code + "）" : "";
+            return new GeoResult(null, "未找到城市: " + city + detail);
         } catch (IOException e) {
             log.error("城市查询异常: city={}", city, e);
+            return new GeoResult(null, "城市查询失败: " + e.getMessage());
         }
-        return null;
+    }
+
+    /** 截断外部响应体，避免过长的 HTML 错误页进入日志和 LLM 上下文 */
+    private static String abbreviate(String body) {
+        if (body == null || body.isBlank()) {
+            return "无响应体";
+        }
+        return body.length() > 200 ? body.substring(0, 200) + "..." : body;
     }
 
     /** 解析实时天气结果 */

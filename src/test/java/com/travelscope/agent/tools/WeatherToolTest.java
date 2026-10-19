@@ -77,6 +77,29 @@ class WeatherToolTest {
         assertDoesNotThrow(() -> JSON.parseObject(result));
     }
 
+    // ==================== GeoAPI 域名推导 ====================
+
+    @Test
+    @DisplayName("专属域名下 GeoAPI 使用同域名 + /geo 前缀")
+    void testResolveGeoApiBase_dedicatedHost() {
+        assertEquals("https://abc123.re.qweatherapi.com/geo",
+                WeatherTool.resolveGeoApiBase("abc123.re.qweatherapi.com"));
+    }
+
+    @Test
+    @DisplayName("遗留 devapi 公共域名映射到 geoapi.qweather.com")
+    void testResolveGeoApiBase_devapi() {
+        assertEquals("https://geoapi.qweather.com",
+                WeatherTool.resolveGeoApiBase("devapi.qweather.com"));
+    }
+
+    @Test
+    @DisplayName("遗留 api 公共域名映射到 geoapi.qweather.com")
+    void testResolveGeoApiBase_api() {
+        assertEquals("https://geoapi.qweather.com",
+                WeatherTool.resolveGeoApiBase("api.qweather.com"));
+    }
+
     // ==================== 集成测试（需要真实 API Key 和网络） ====================
 
     @Test
