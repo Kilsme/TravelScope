@@ -414,9 +414,11 @@ public class AgentConfig {
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
                                           @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model gatewayReviewerModel,
                                           TaskWorkspace taskWorkspaceService,
-                                          io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
+                                          io.agentscope.core.state.AgentStateStore travelAgentStateStore,
+                                          TaskRegistry taskRegistry,
+                                          com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
         return buildMasterAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
-                taskWorkspaceService, travelAgentStateStore);
+                taskWorkspaceService, travelAgentStateStore, taskRegistry, taskResultCache);
     }
 
     @Bean
@@ -424,14 +426,18 @@ public class AgentConfig {
     public HarnessAgent assessmentMasterAgent(Toolkit toolkit,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model reviewerModel,
-            TaskWorkspace workspace) throws IOException {
+            TaskWorkspace workspace,
+            TaskRegistry taskRegistry,
+            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
         return buildMasterAgent(toolkit.copy(), mainModel, reviewerModel,
-                workspace, new InMemoryAgentStateStore());
+                workspace, new InMemoryAgentStateStore(), taskRegistry, taskResultCache);
     }
 
     private HarnessAgent buildMasterAgent(Toolkit toolkit,Model gatewayChatModel,Model gatewayReviewerModel,
             TaskWorkspace taskWorkspaceService,
-            io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
+            io.agentscope.core.state.AgentStateStore travelAgentStateStore,
+            TaskRegistry taskRegistry,
+            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
                 .sysPrompt(TravelMasterAgent.SYS_PROMPT)
@@ -472,7 +478,7 @@ public class AgentConfig {
                                 + "经 retrieve_poi_candidates / plan_route 代码服务取候选池与分日路线，"
                                 + "组装行程草案并经 reviewer-agent 质检闭环",
                         name -> buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
-                                List.of()))
+                                List.of(), taskRegistry, taskResultCache, taskWorkspaceService))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={}, 子 Agent: {} 工厂式[内含 {}])",
@@ -503,7 +509,14 @@ public class AgentConfig {
      */
     private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model gatewayChatModel,
                                            Model gatewayReviewerModel,
-                                           List<io.agentscope.core.middleware.MiddlewareBase> middlewares) {
+                                           List<io.agentscope.core.middleware.MiddlewareBase> middlewares,
+                                           TaskRegistry taskRegistry,
+                                           com.travelscope.service.TaskResultCache taskResultCache,
+                                           com.travelscope.collab.TaskWorkspace taskWorkspace) {
+        // 记账代码化（延迟优化①）：update_task_status/register_task_result 不再经 LLM 调用
+        // ——planner 工具事件 → 任务状态机/缓存登记副作用（非 Bean，避免与 TaskRegistry 循环依赖）
+        io.agentscope.core.middleware.MiddlewareBase bookkeeping = new com.travelscope.agent.BookkeepingMiddleware(
+                taskRegistry, taskResultCache, taskWorkspace);
         // 质检子 Agent（FR-S08 v3.2 分段审核）：三段顺序审 + 5 维评分量化，
         // S2.7 起产物经 write_collab_file 写 review_passed.json / review_report.json。
         // 模型经 modelResolver 按 name 分流到质检评分模型（glm-5-3-260814，独立配置）；
@@ -532,12 +545,16 @@ public class AgentConfig {
                         // 卡 B 回炉修订工具（仅修订阶段用；评审阶段不调外部数据工具）
                         "plan_route",
                         "searchHotels",
-                        "retrieve_poi_candidates"))
+                        "retrieve_poi_candidates",
+                        // 卡 E POI 重选决策代码化（reviewer 只给加/删名，代码补字段+重排+重组装）
+                        "revise_poi_selection",
+                        "assemble_itinerary"))
                 .build();
 
         try {
             var plannerMiddlewares = new java.util.ArrayList<io.agentscope.core.middleware.MiddlewareBase>();
             plannerMiddlewares.add(observationMiddleware);
+            plannerMiddlewares.add(bookkeeping);
             plannerMiddlewares.addAll(middlewares);
             HarnessAgent.Builder builder = HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
@@ -581,9 +598,12 @@ public class AgentConfig {
     @Bean
     public HarnessAgent itineraryPlanningAgent(Toolkit toolkit, Model gatewayChatModel,
                                                @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model gatewayReviewerModel,
-                                               TaskWorkspace taskWorkspaceService) {
+                                               TaskWorkspace taskWorkspaceService,
+                                               TaskRegistry taskRegistry,
+                                               com.travelscope.service.TaskResultCache taskResultCache) {
         HarnessAgent agent = buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
-                List.of(new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)));
+                List.of(new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)),
+                taskRegistry, taskResultCache, taskWorkspaceService);
         log.info("Agent 拓扑终态（v4 P2 收口）：{} → {} → {}（spawn 深度 3 层内）；"
                         + "planning 工具面 = 白名单 {} 项 + MCP(mcp__*) 放行 + agent_spawn/task_* 内置",
                 TravelMasterAgent.AGENT_NAME, ItineraryAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME,
@@ -597,9 +617,12 @@ public class AgentConfig {
     public HarnessAgent assessmentPlanningAgent(Toolkit toolkit,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model reviewerModel,
-            TaskWorkspace workspace) {
+            TaskWorkspace workspace,
+            TaskRegistry taskRegistry,
+            com.travelscope.service.TaskResultCache taskResultCache) {
         return buildPlannerAgent(toolkit.copy(), mainModel, reviewerModel,
-                List.of(new ReviewerRetryMiddleware(workspace, tracingHelper)));
+                List.of(new ReviewerRetryMiddleware(workspace, tracingHelper)),
+                taskRegistry, taskResultCache, workspace);
     }
 
     /**
@@ -619,8 +642,10 @@ public class AgentConfig {
             "queryTrainTickets", "queryFlightTickets",
             "retrieve_poi_candidates", "plan_route", "write_collab_file",
             "assemble_itinerary",
+            // register_task_result 保留：reviewer 回炉修订自登记仍走工具；
+            // update_task_status 已移除——planner 的任务状态由 BookkeepingMiddleware 代码副作用维护
             "register_task_result", "get_cached_task_result",
-            "update_task_status", "get_task_progress",
+            "get_task_progress",
             "review_retry_hint");
 
     /** 共享 toolkit 的 planner 视图：copy 后按白名单剪枝（mcp__* 前缀放行；agent_spawn/task_*

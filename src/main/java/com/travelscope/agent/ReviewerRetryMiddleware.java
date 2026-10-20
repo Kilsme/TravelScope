@@ -52,9 +52,6 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     /** 被拦截时替换执行的工具名（必须在 Toolkit 中真实注册，见 TaskTools.reviewRetryHint） */
     public static final String RETRY_HINT_TOOL = "review_retry_hint";
 
-    /** reviewer 修订草案的目标文件名（拦这个文件的写入即拦修订） */
-    private static final String DRAFT_FILE = "itinerary_draft.json";
-
     private final TaskWorkspace taskWorkspaceService;
     /** 业务打点（review-attempt span） */
     private final TracingHelper tracing;
@@ -77,10 +74,10 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     @Override
     public Flux<AgentEvent> onActing(Agent agent, RuntimeContext ctx, ActingInput input,
                                      java.util.function.Function<ActingInput, Flux<AgentEvent>> next) {
-        // 只拦 reviewer-agent 写 itinerary_draft.json 的修订动作（其余透传）
-        boolean isReviewerDraftWrite = ReviewerAgent.AGENT_NAME.equals(agent.getName())
-                && input.toolCalls().stream().anyMatch(this::isDraftWrite);
-        if (!isReviewerDraftWrite) {
+        // 只拦 reviewer-agent 的 POI 重选修订动作（其余透传）
+        boolean isReviewerRevise = ReviewerAgent.AGENT_NAME.equals(agent.getName())
+                && input.toolCalls().stream().anyMatch(this::isReviseCall);
+        if (!isReviewerRevise) {
             return next.apply(input);
         }
 
@@ -105,18 +102,18 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
-        // 超限：第 3+ 次修订 → 改写为 hint 工具，拦这次写草案
+        // 超限：第 3+ 次修订 → 改写为 hint 工具，拦这次 POI 重选
         log.warn("review_retry 保险丝拦截: 修订尝试 {} 次超过上限 {}，"
-                        + "本次写 itinerary_draft 已替换为 {}，用户={}, 会话={}",
+                        + "本次 revise_poi_selection 已替换为 {}，用户={}, 会话={}",
                 attempt, MAX_REVIEW_RETRIES, RETRY_HINT_TOOL, userId, sessionId);
         String hint = "RETRY_LIMIT_REACHED: 修订已达上限（" + MAX_REVIEW_RETRIES
-                + " 次），本次修改 itinerary_draft.json 已被系统拦截未执行。"
+                + " 次），本次 POI 修订已被系统拦截未执行。"
                 + "请立即停止修订，按当前最佳版本收尾：写 review_report.json（若尚无）"
                 + "并输出 REVIEW_RESULT: FAIL 总分=xx 失败段=…，"
                 + "摘要标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项。";
         List<ToolUseBlock> rewritten = new ArrayList<>();
         for (ToolUseBlock call : input.toolCalls()) {
-            if (isDraftWrite(call)) {
+            if (isReviseCall(call)) {
                 rewritten.add(new ToolUseBlock(call.getId(), RETRY_HINT_TOOL,
                         Map.of("reason", hint)));
             } else {
@@ -126,16 +123,9 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
         return next.apply(new ActingInput(rewritten));
     }
 
-    /** 是否为「reviewer 写 itinerary_draft.json」的工具调用 */
-    private boolean isDraftWrite(ToolUseBlock call) {
-        if (!"write_collab_file".equals(call.getName())) {
-            return false;
-        }
-        Object file = call.getInput() != null
-                ? (call.getInput().get("file") != null ? call.getInput().get("file")
-                        : call.getInput().get("fileName"))
-                : null;
-        return file != null && String.valueOf(file).contains(DRAFT_FILE);
+    /** 是否为「reviewer 的 POI 重选修订」调用（卡 E：拦 revise_poi_selection） */
+    private boolean isReviseCall(ToolUseBlock call) {
+        return "revise_poi_selection".equals(call.getName());
     }
 
     private static String containerKey(String userId, String sessionId) {

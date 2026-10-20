@@ -49,3 +49,5 @@ ALTER TABLE evaluation_records ADD COLUMN IF NOT EXISTS assessment_run_id UUID;
 ALTER TABLE evaluation_records ADD COLUMN IF NOT EXISTS assessment_sample_id UUID;
 
 ALTER TABLE assessment_spans ADD COLUMN IF NOT EXISTS phase VARCHAR(30) NOT NULL DEFAULT 'PLANNING';
+-- TTFT (time to first token), for MODEL spans; null when the stream produced no element or predates the metric.
+ALTER TABLE assessment_spans ADD COLUMN IF NOT EXISTS ttft_ms DOUBLE PRECISION;

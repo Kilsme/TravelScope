@@ -47,7 +47,8 @@ class CollabToolsTest {
                 new CollabFileWriter(tempDir.toString()),
                 new com.travelscope.service.ItineraryAssembler(),
                 mock(com.travelscope.service.TaskResultCache.class),
-                mock(io.agentscope.core.model.Model.class));
+                mock(io.agentscope.core.model.Model.class),
+                mock(com.travelscope.agent.tools.AttractionTool.class));
         ctx = RuntimeContext.builder().userId("u1").sessionId("conv-1").build();
     }
 

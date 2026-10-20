@@ -158,8 +158,14 @@ public class ObservationStore {
         private final Instant started=Instant.now();
         private final long tick=System.nanoTime();
         private final AtomicBoolean ended=new AtomicBoolean();
+        private final AtomicBoolean ttftWritten=new AtomicBoolean();
         private Handle(ObservationContext ctx,String kind,String name,String callId) { context=ctx; }
         public ObservationContext child() { return context.child(id); }
+        /** First-token latency for MODEL spans; idempotent, only the first invocation persists. */
+        public void ttft(double ms) {
+            if (!ttftWritten.compareAndSet(false,true)) return;
+            write(context.runId(),()->jdbc.update("UPDATE assessment_spans SET ttft_ms=? WHERE id=?",ms,id));
+        }
         public void end(String status,Object output,Throwable error) {
             if (!ended.compareAndSet(false,true)) return;
             double ms=(System.nanoTime()-tick)/1_000_000d;

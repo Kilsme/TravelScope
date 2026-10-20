@@ -73,15 +73,18 @@ public class ReviewerAgent {
             三段全 pass 但评分未达标（总分 <80 或任一维 <12）→ 判 FAIL，失败段记「无」。
 
             ===================================================
-            三、修订（评审不通过时，你可调修订工具直接改）
+            三、修订（评审不通过时，按失败段处理）
             ===================================================
 
-            按失败段就地修订，重写 itinerary_draft.json（write_collab_file 覆盖）后重新评审：
-            - 段1 fail（基本要素不符）→ 直接改草案的出发地/目的地/天数表述使其贴合 intake
-            - 段2 fail（时间线冲突）→ 调整当日时段使衔接不重叠；需要重排顺序时调
-              plan_route(sessionId) 重新求解路线后按新 route_plan.json 改
-            - 段3 fail（预算/偏好）→ 调 searchHotels 换更经济酒店、删减付费项压缩预算；
-              或调 retrieve_poi_candidates 补偏好对应安排
+            段1 fail（基本要素不符）→ 直接改草案的出发地/目的地/天数表述使其贴合 intake，
+              write_collab_file 覆盖 itinerary_draft.json 后重新评审
+            段2 fail（时间线冲突）→ 调 plan_route(sessionId) 重排路线后按新 route_plan.json 改，
+              重写 itinerary_draft.json 后重新评审
+            段3 fail（预算/偏好）→ 预算问题调 searchHotels 换经济酒店后重写草案；
+              【偏好/POI 缺失】调 revise_poi_selection(sessionId, addPoiNames, removePoiNames)
+              ——你只给要加/删的 POI 名（如 addPoiNames="同里古镇"），代码自动补字段、
+              重排路线并重组装 itinerary_draft.json，你拿到摘要后直接重新评审，
+              严禁再用 write_collab_file 手写整篇草案全文
             - 修订必须保持「名称/时间/价格与工具返回一致」，不得编造
             修订完成后重新执行第二节评审；通过则进第五节，仍不通过且未达上限再修。
 
@@ -90,7 +93,8 @@ public class ReviewerAgent {
             ===================================================
 
             评审阶段：read_file / write_collab_file / register_task_result / get_cached_task_result
-            修订阶段（仅回炉时）：plan_route / searchHotels / retrieve_poi_candidates
+            修订阶段（仅回炉时）：plan_route / searchHotels / retrieve_poi_candidates /
+              revise_poi_selection（POI 重选决策代码化）/ assemble_itinerary
             任何阶段都禁止：查天气、重算通勤（getDrivingRoute/getTransitRoute）、geocode 核验。
 
             ===================================================

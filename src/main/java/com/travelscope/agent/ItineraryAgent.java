@@ -54,8 +54,8 @@ public class ItineraryAgent {
 
             委派说明会给出协作目录（形如 tasks/{会话ID}）与 sessionId。用 read_file 读取：
             1. {协作目录}/task_backlog.json —— 任务清单（tasks 数组），按 T1→T5 顺序、
-               P0→P1 优先级逐条执行；每开始执行一项任务前调 update_task_status 置 IN_PROGRESS，
-               完成/失败后立即更新 DONE / FAILED（sessionId 用委派说明给出的值）
+               P0→P1 优先级逐条执行；任务状态与结果缓存由编排层自动登记，
+               无需（也不允许）调用 update_task_status / register_task_result
             2. {协作目录}/intake_result.json —— 需求收集结果（fields 下各字段的 value 为值；
                confirmed=false 表示默认值/待确认，草案中对应安排保留「待确认」标注）
             若读不到 task_backlog.json：立即结束，把「任务清单缺失，请编排层先登记后重新委派」
@@ -76,8 +76,8 @@ public class ItineraryAgent {
             - 景点候选：retrieve_poi_candidates(destination, days, preferences)
             缓存优先仍适用：发出前先各调一次 get_cached_task_result(weather/hotel/poi)，\
             命中的项从并行清单中剔除、直接复用；未命中项必须全部进同一首轮。
-            完成后逐项 register_task_result 登记（weather/hotel/poi），\
-            车票/机票也必须登记（taskType=train 或 flight）——组装草案时由代码读取，不得只在对话里引用。
+            工具成功后由编排层自动登记结果缓存（天气/酒店/车票/机票/POI），\
+            组装草案时由代码读取——你只要保证工具成功返回即可，数据不得只在对话里引用。
             【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自\
               飞猪或 12306/飞常准——组装草案时保留每条数据的来源标注（【飞猪】【高德】【12306】），
               供前端展示；两源不一致时以飞猪为准
@@ -109,7 +109,7 @@ public class ItineraryAgent {
               它会用 LLM 产出结构字段（days/budget/notes），再由代码按 route_plan.json
               铺时间线、插入来源标注、渲染 markdownBody 并直接落盘 itinerary_draft.json
             - 前置已就绪：poi_shortlist.json（第 2 步）+ route_plan.json（第 3 步）+
-              天气/酒店/车票已 register_task_result（第 1 步，车票必须登记 taskType=train/flight）
+              天气/酒店/车票工具已成功返回（第 1 步，编排层已自动登记进缓存）
             - 组装返回摘要即落盘完成，你只需核对天数与结构无误，直接进入第 5 步送审；
               严禁再用 write_collab_file 手写 itinerary_draft.json 的全文
 
@@ -120,10 +120,9 @@ public class ItineraryAgent {
             - reviewer 最终回复首行是 REVIEW_RESULT: PASS|FAIL 总分=xx 失败段=1|2|3
               （多段按段号升序逗号分隔；三段全 pass 但评分未达标 失败段=无）——
               以首行标记为通过判据；产物侧通过时落 review_passed.json
-            - 通过 → 调 register_task_result(taskType=itinerary) 登记行程草案，流程结束
+            - 通过 → 流程结束（行程草案已由编排层自动登记进缓存）
             - 不通过（reviewer 已达修订上限）→ 不再送审，按当前版本收尾：
-              汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项；
-              仍需 register_task_result(taskType=itinerary) 登记当前版本
+              汇报首行标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项
 
             ===================================================
             四、执行规范
@@ -137,8 +136,8 @@ public class ItineraryAgent {
               也必须完成第 4 步组装核验与第 5 步质检送审（不通过则按失败段局部回炉），
               拿到质检结论（通过，或已尽力收尾）后才能给最终汇报；汇报内容必须来自本会话
               真实工具返回与协作文件，禁止照抄系统提示词中的示例文案
-            - 每开始/完成一项任务调 update_task_status 回报（任务容器即执行轨迹，
-              无需另行记录执行流水）
+            - 任务状态与工具结果缓存由编排层自动登记（任务容器即执行轨迹），
+              你无需调用 update_task_status / register_task_result
             - 同一操作失败最多重试 1 次；仍失败则草案对应项标注「待确认」，严禁编造
             - 名称、时间、价格必须与工具返回完全一致，不得缩写、改名或四舍五入
             - 【来源标记】草案中引用任何实时数据，在该条目后标注来源工具，供 reviewer 质检\

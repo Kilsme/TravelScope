@@ -20,13 +20,13 @@ public final class ObservedModel implements Model {
             AtomicReference<String> request=new AtomicReference<>();
             java.util.List<ChatResponse> output=new java.util.ArrayList<>();
             AtomicReference<Throwable> error=new AtomicReference<>();
-            return Flux.defer(()->delegate.stream(messages,tools,options))
-                .doOnNext(r->{ usage.accept(r.getUsage());
+            return Flux.defer(()->{ long t0=System.nanoTime(); return delegate.stream(messages,tools,options)
+                .doOnNext(r->{ span.ttft((System.nanoTime()-t0)/1_000_000d); usage.accept(r.getUsage());
                     if(r.getMetadata()!=null && r.getMetadata().get("request_id")!=null) request.set(String.valueOf(r.getMetadata().get("request_id")));
                     output.add(r); })
                 .doOnComplete(()->{span.usage(actualModel,usage.value(),request.get());span.end("SUCCEEDED",output,null);})
                 .doOnError(e->{error.set(e);span.usage(actualModel,usage.value(),request.get());span.end("FAILED",output,e);})
-                .doFinally(signal->{ if(signal==reactor.core.publisher.SignalType.CANCEL){span.usage(actualModel,usage.value(),request.get());span.end("CANCELLED",output,error.get());} });
+                .doFinally(signal->{ if(signal==reactor.core.publisher.SignalType.CANCEL){span.usage(actualModel,usage.value(),request.get());span.end("CANCELLED",output,error.get());} }); });
         });
     }
     public String getModelName(){return delegate.getModelName();}

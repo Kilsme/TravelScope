@@ -43,7 +43,8 @@ class AssessmentArtifactOwnershipTest {
                     mock(com.travelscope.service.route.RoutePlannerServiceImpl.class), taskWorkspace, writer,
                     new com.travelscope.service.ItineraryAssembler(),
                     mock(com.travelscope.service.TaskResultCache.class),
-                    mock(io.agentscope.core.model.Model.class)));
+                    mock(io.agentscope.core.model.Model.class),
+                    mock(com.travelscope.agent.tools.AttractionTool.class)));
         }
         return HarnessAgent.builder().name("planning-agent").model(model).toolkit(toolkit).workspace(workspace.toString())
             .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())

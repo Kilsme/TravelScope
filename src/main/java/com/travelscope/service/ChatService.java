@@ -288,7 +288,7 @@ public class ChatService {
         String userContext = isFormSubmission(userMessage) ? "" : "\n\n【本轮用户消息】" + userMessage;
         String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
                 + "用 read_file 读取 " + collabDir + "/task_backlog.json 与 " + collabDir + "/intake_result.json 执行"
-                + "（任务按 T1→T5 顺序、P0→P1 优先级执行；每完成一项调用 update_task_status 回报状态）；"
+                + "（任务按 T1→T5 顺序、P0→P1 优先级执行）；"
                 + "产出 " + collabDir + "/itinerary_draft.json 后按流程送审。"
                 + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext;
         UserMessage msg = new UserMessage(task);

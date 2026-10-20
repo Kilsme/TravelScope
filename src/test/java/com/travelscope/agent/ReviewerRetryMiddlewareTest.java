@@ -74,10 +74,10 @@ class ReviewerRetryMiddlewareTest {
         return RuntimeContext.builder().userId("u1").sessionId("conv-t").build();
     }
 
-    /** 构造 reviewer 写 itinerary_draft.json 的修订调用 */
-    private static ActingInput draftWrite() {
-        return new ActingInput(List.of(new ToolUseBlock("id-1", "write_collab_file",
-                Map.of("file", "itinerary_draft.json", "contentJson", Map.of()))));
+    /** 构造 reviewer 的 POI 重选修订调用（卡 E：拦 revise_poi_selection） */
+    private static ActingInput reviseCall() {
+        return new ActingInput(List.of(new ToolUseBlock("id-1", "revise_poi_selection",
+                Map.of("sessionId", "conv-t", "addPoiNames", "同里古镇"))));
     }
 
     // ==================== 修订计次与拦截 ====================
@@ -87,8 +87,8 @@ class ReviewerRetryMiddlewareTest {
     void testFirstTwoRevisionsPassThrough() {
         for (int i = 1; i <= 2; i++) {
             Recorder r = new Recorder();
-            middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
-            assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+            middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
+            assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
                     "第 " + i + " 次修订应放行");
         }
     }
@@ -97,10 +97,10 @@ class ReviewerRetryMiddlewareTest {
     @DisplayName("第 3 次修订被保险丝拦截，改写为 review_retry_hint")
     void testThirdRevisionIntercepted() {
         for (int i = 0; i < 2; i++) {
-            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+            middleware.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
         }
         Recorder r = new Recorder();
-        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
+        middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
 
         ToolUseBlock rewritten = r.last.get().toolCalls().get(0);
         assertEquals(ReviewerRetryMiddleware.RETRY_HINT_TOOL, rewritten.getName(),
@@ -112,21 +112,21 @@ class ReviewerRetryMiddlewareTest {
     }
 
     @Test
-    @DisplayName("非 reviewer 的写草案不拦（planner 写 itinerary_draft 放行且不计数）")
+    @DisplayName("非 reviewer 的 revise 不拦（planner 调用放行且不计数）")
     void testPlannerWriteNotIntercepted() {
         Recorder r = new Recorder();
-        middleware.onActing(plannerAgent, ctx(), draftWrite(), r::pass);
-        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
-                "planner 写草案应放行");
+        middleware.onActing(plannerAgent, ctx(), reviseCall(), r::pass);
+        assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
+                "planner 调 revise 应放行");
 
         // reviewer 首修仍从 1 计（planner 没消耗计数）
         Recorder r2 = new Recorder();
-        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r2::pass);
-        assertEquals("write_collab_file", r2.last.get().toolCalls().get(0).getName());
+        middleware.onActing(reviewerAgent, ctx(), reviseCall(), r2::pass);
+        assertEquals("revise_poi_selection", r2.last.get().toolCalls().get(0).getName());
     }
 
     @Test
-    @DisplayName("reviewer 写非草案文件（review_passed/report）不拦")
+    @DisplayName("reviewer 写非修订工具（write_collab_file/review_report）不拦")
     void testReviewerNonDraftWriteNotIntercepted() {
         ActingInput reportWrite = new ActingInput(List.of(new ToolUseBlock("id-2",
                 "write_collab_file", Map.of("file", "review_report.json", "contentJson", Map.of()))));
@@ -140,29 +140,29 @@ class ReviewerRetryMiddlewareTest {
     @DisplayName("review_passed.json 出现 → 计数重置（新一轮从第 1 次修订起）")
     void testPassedResetsCounter() {
         for (int i = 0; i < 2; i++) {
-            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+            middleware.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
         }
         // 收敛通过：写 review_passed.json
         workspace.writeReviewPassed("u1", "conv-t",
                 new com.travelscope.collab.ReviewPassed(88, 15, List.of("核验一致"), "2026-10-19 12:00:00"));
 
         Recorder r = new Recorder();
-        middleware.onActing(reviewerAgent, ctx(), draftWrite(), r::pass);
-        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
-                "passed 后写草案应放行（计数已重置）");
+        middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
+        assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
+                "passed 后修订应放行（计数已重置）");
     }
 
     @Test
     @DisplayName("会话隔离：不同会话修订计数互不影响")
     void testSessionIsolation() {
         for (int i = 0; i < 2; i++) {
-            middleware.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+            middleware.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
         }
         RuntimeContext otherCtx = RuntimeContext.builder()
                 .userId("u1").sessionId("conv-other").build();
         Recorder r = new Recorder();
-        middleware.onActing(reviewerAgent, otherCtx, draftWrite(), r::pass);
-        assertEquals("write_collab_file", r.last.get().toolCalls().get(0).getName(),
+        middleware.onActing(reviewerAgent, otherCtx, reviseCall(), r::pass);
+        assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
                 "另一会话应独立计数放行");
     }
 
@@ -177,7 +177,7 @@ class ReviewerRetryMiddlewareTest {
         when(span.name(anyString())).thenReturn(span);
         ReviewerRetryMiddleware traced = new ReviewerRetryMiddleware(workspace, new TracingHelper(tracer));
 
-        traced.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+        traced.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
 
         verify(span).name("review-attempt");
         verify(span).tag("attempt", "1");
@@ -201,7 +201,7 @@ class ReviewerRetryMiddlewareTest {
                         new com.travelscope.collab.ReviewReport.ReviewScores(18, 16, 12, 17, 15),
                         78, Map.of("3", List.of("换经济酒店")), "2026-10-19 12:00:00"));
 
-        traced.onActing(reviewerAgent, ctx(), draftWrite(), input -> Flux.empty());
+        traced.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
 
         verify(span).tag("attempt", "1");
         verify(span).tag("result", "FAIL");

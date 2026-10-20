@@ -59,6 +59,7 @@ public class CollabTools {
     private final com.travelscope.service.ItineraryAssembler itineraryAssembler;
     private final com.travelscope.service.TaskResultCache taskResultCache;
     private final io.agentscope.core.model.Model chatModel;
+    private final AttractionTool attractionTool;
 
     public CollabTools(PoiRetrievalService poiRetrievalService,
                        RoutePlannerServiceImpl routePlannerService,
@@ -67,7 +68,8 @@ public class CollabTools {
                        com.travelscope.service.ItineraryAssembler itineraryAssembler,
                        com.travelscope.service.TaskResultCache taskResultCache,
                        @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
-                       io.agentscope.core.model.Model chatModel) {
+                       io.agentscope.core.model.Model chatModel,
+                       AttractionTool attractionTool) {
         this.poiRetrievalService = poiRetrievalService;
         this.routePlannerService = routePlannerService;
         this.taskWorkspace = taskWorkspace;
@@ -75,6 +77,7 @@ public class CollabTools {
         this.itineraryAssembler = itineraryAssembler;
         this.taskResultCache = taskResultCache;
         this.chatModel = chatModel;
+        this.attractionTool = attractionTool;
     }
 
     /**
@@ -188,12 +191,17 @@ public class CollabTools {
     @Tool(description = "行程草案组装（卡 C：你只决策，代码拼装全文）。内部：①LLM 产结构字段"
             + "（days/items 的 time/activity/location、主题、预算、注意事项）②代码按 route_plan "
             + "铺时间线、插入来源标注、渲染 markdownBody ③直接落盘 itinerary_draft.json。"
-            + "前置：已写 poi_shortlist.json 且跑过 plan_route；天气/酒店/车票已 register_task_result。"
+            + "前置：已写 poi_shortlist.json 且跑过 plan_route；天气/酒店/车票工具已成功返回（缓存由编排层自动登记）。"
             + "你只需调一次拿到摘要，严禁自己手写整篇 itinerary_draft.json 的 markdownBody")
     public String assemble_itinerary(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
             String sessionId,
             RuntimeContext ctx) {
+        return doAssembleItinerary(sessionId, ctx);
+    }
+
+    /** assemble_itinerary 主体（供 revise_poi_selection 复用，重跑重组装） */
+    private String doAssembleItinerary(String sessionId, RuntimeContext ctx) {
         String userId = ctx.getUserId();
         try {
             // 前置：路线与 POI 契约必须已就绪
@@ -241,6 +249,146 @@ public class CollabTools {
         } catch (Exception e) {
             log.warn("assemble_itinerary 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: 草案组装失败: " + e.getMessage();
+        }
+    }
+
+    /**
+     * POI 重选决策代码化（卡 E：reviewer 只传加/删 POI 名，代码补字段+重排+重组装）。
+     * ① 按名删 removePoiNames；② 对每个 addPoiNames 名调 searchPois 补硬字段
+     * （lng/lat/openHours/source）构造 PoiItem 加入；③ 写回 poi_shortlist.json；
+     * ④ 重跑 plan_route → 复用 assemble_itinerary 重组装 itinerary_draft.json。
+     */
+    @Tool(description = "POI 重选（卡 E：你只给加/删的 POI 名，代码补字段并重排重组装，零手写）。"
+            + "检出偏好/POI 缺失时调用：addPoiNames 传要补的 POI 名（如「同里古镇」），"
+            + "removePoiNames 传要删的 POI 名（可空）。内部自动补坐标/开放时段、写回清单、"
+            + "重跑 plan_route 并重组装 itinerary_draft.json。严禁自己 write_collab_file 重写草案")
+    public String revise_poi_selection(
+            @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
+            String sessionId,
+            @ToolParam(name = "addPoiNames", description = "要新增的 POI 名，逗号分隔（如「同里古镇」），可空",
+                    required = false)
+            String addPoiNames,
+            @ToolParam(name = "removePoiNames", description = "要删除的 POI 名，逗号分隔，可空",
+                    required = false)
+            String removePoiNames,
+            RuntimeContext ctx) {
+        String userId = ctx.getUserId();
+        try {
+            var shortlistOpt = taskWorkspace.readPoiShortlist(userId, sessionId);
+            if (shortlistOpt.isEmpty()) {
+                return "ERROR: 会话目录缺 poi_shortlist.json——规划阶段未产出 POI 清单";
+            }
+            var intake = taskWorkspace.readIntakeResult(userId, sessionId);
+            String destination = intake.map(i -> i.fields().destination() == null
+                    ? null : i.fields().destination().value()).orElse(null);
+            if (destination == null || destination.isBlank()) {
+                return "ERROR: intake_result.json 中目的地缺失，无法补 POI 字段";
+            }
+
+            List<com.travelscope.collab.PoiShortlist.PoiItem> pois =
+                    new java.util.ArrayList<>(shortlistOpt.get().pois());
+
+            // ① 删除
+            List<String> removed = new java.util.ArrayList<>();
+            for (String name : splitNames(removePoiNames)) {
+                boolean hit = pois.removeIf(p -> p.name() != null && p.name().contains(name));
+                if (hit) {
+                    removed.add(name);
+                }
+            }
+
+            // ② 新增（硬字段补全）
+            List<String> added = new java.util.ArrayList<>();
+            List<String> failed = new java.util.ArrayList<>();
+            for (String name : splitNames(addPoiNames)) {
+                com.travelscope.collab.PoiShortlist.PoiItem item = resolvePoiItem(destination, name);
+                if (item == null) {
+                    failed.add(name);
+                } else if (pois.stream().noneMatch(p -> p.name().equals(item.name()))) {
+                    pois.add(item);
+                    added.add(item.name());
+                }
+            }
+
+            if (removed.isEmpty() && added.isEmpty()) {
+                return "ERROR: 未做任何变更" + (failed.isEmpty() ? "" : "（补字段失败: " + failed + "）")
+                        + "——请检查 POI 名是否正确";
+            }
+
+            // ③ 写回 poi_shortlist.json
+            com.travelscope.collab.PoiShortlist updated = new com.travelscope.collab.PoiShortlist(
+                    shortlistOpt.get().destination(),
+                    shortlistOpt.get().retrievalNote() + "｜reviewer 修订 +" + added.size() + " -" + removed.size(),
+                    pois);
+            taskWorkspace.writePoiShortlist(userId, sessionId, updated);
+
+            // ④ 重跑 plan_route → 重组装
+            String routeResult = plan_route(sessionId, null, null, ctx);
+            if (routeResult.startsWith("ERROR")) {
+                return "ERROR: POI 已更新但路线重排失败: " + routeResult;
+            }
+            String assembleResult = doAssembleItinerary(sessionId, ctx);
+            if (assembleResult.startsWith("ERROR")) {
+                return "ERROR: POI 已更新并重排路线，但重组装失败: " + assembleResult;
+            }
+            log.info("revise_poi_selection: 用户={}, 会话={}, +{} -{}, 失败={}",
+                    userId, sessionId, added, removed, failed);
+            return "POI 修订完成：新增 " + added + "，删除 " + removed
+                    + (failed.isEmpty() ? "" : "，补字段失败 " + failed)
+                    + "；已重排路线并重组装 itinerary_draft.json，请重新评审。";
+        } catch (Exception e) {
+            log.warn("revise_poi_selection 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
+            return "ERROR: POI 修订失败: " + e.getMessage();
+        }
+    }
+
+    /** 逗号/顿号分隔的 POI 名列表拆分（去空） */
+    private List<String> splitNames(String names) {
+        if (names == null || names.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(names.split("[,，、]"))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+    }
+
+    /** 硬字段补全：按目的地+POI 名调 searchPois，取第一条构造 PoiItem；查不到返回 null */
+    private com.travelscope.collab.PoiShortlist.PoiItem resolvePoiItem(String destination, String poiName) {
+        try {
+            String json = attractionTool.searchPois(destination, poiName, 5);
+            com.alibaba.fastjson2.JSONObject result = com.alibaba.fastjson2.JSON.parseObject(json);
+            com.alibaba.fastjson2.JSONArray attractions = result.getJSONArray("attractions");
+            if (attractions == null || attractions.isEmpty()) {
+                return null;
+            }
+            // 优先名字最匹配的一条
+            com.alibaba.fastjson2.JSONObject best = null;
+            for (int i = 0; i < attractions.size(); i++) {
+                var a = attractions.getJSONObject(i);
+                if (a.getString("name") != null && a.getString("name").contains(poiName)) {
+                    best = a;
+                    break;
+                }
+            }
+            if (best == null) {
+                best = attractions.getJSONObject(0);
+            }
+            String name = best.getString("name");
+            String location = best.getString("location"); // "lng,lat"
+            Double lng = null, lat = null;
+            if (location != null && location.contains(",")) {
+                String[] parts = location.split(",");
+                lng = Double.parseDouble(parts[0].trim());
+                lat = Double.parseDouble(parts[1].trim());
+            }
+            String source = best.getString("source") == null ? "高德" : best.getString("source");
+            return new com.travelscope.collab.PoiShortlist.PoiItem(
+                    name, lng, lat, best.getDouble("rating"),
+                    best.getString("openHours"), best.getInteger("durationMin") == null
+                            ? 120 : best.getInteger("durationMin"),
+                    source, "reviewer 修订补入");
+        } catch (Exception e) {
+            log.warn("POI 硬字段补全失败: {}/{}, 原因={}", destination, poiName, e.getMessage());
+            return null;
         }
     }
 
