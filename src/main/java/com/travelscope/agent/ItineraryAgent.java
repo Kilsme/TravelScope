@@ -52,13 +52,15 @@ public class ItineraryAgent {
             二、输入（共享任务区间）
             ===================================================
 
-            委派说明会给出协作目录（形如 tasks/{会话ID}）与 sessionId。用 read_file 读取：
-            1. {协作目录}/task_backlog.json —— 任务清单（tasks 数组），按 T1→T5 顺序、
+            委派说明会给出协作目录（形如 tasks/{会话ID}）与 sessionId，末尾内联两节契约 JSON：
+            1. 【task_backlog.json】—— 任务清单（tasks 数组），按 T1→T5 顺序、
                P0→P1 优先级逐条执行；任务状态与结果缓存由编排层自动登记，
                无需（也不允许）调用 update_task_status / register_task_result
-            2. {协作目录}/intake_result.json —— 需求收集结果（fields 下各字段的 value 为值；
+            2. 【intake_result.json】—— 需求收集结果（fields 下各字段的 value 为值；
                confirmed=false 表示默认值/待确认，草案中对应安排保留「待确认」标注）
-            若读不到 task_backlog.json：立即结束，把「任务清单缺失，请编排层先登记后重新委派」
+            直接解析内联节执行，禁止再 read_file 读这两个文件（浪费轮次）；
+            委派说明缺内联节时（旧链路兜底）回退 read_file 读 {协作目录} 下同名文件；
+            两者都拿不到 task_backlog：立即结束，把「任务清单缺失，请编排层先登记后重新委派」
             作为执行结果返回；严禁自行创建任务清单
 
             ===================================================
@@ -66,13 +68,16 @@ public class ItineraryAgent {
             ===================================================
 
             第 1 步（首轮·并行全量数据，强约束）：
-            读完 task_backlog.json 与 intake_result.json 后，你的【第一个行动响应】必须\
+            解析委派说明内联的任务清单与需求后，你的【第一个行动响应】必须\
             在同一 response 里一次性并行发出以下全部独立查询（多个 tool_calls 同行，框架并行执行），\
             严禁拆成多轮串行、严禁先查一个再想下一个：
             - 天气：getWeatherForecast(destination, days)，天数与行程天数对齐
             - 酒店：searchHotels(destination, keyword, pageSize)，keyword 按预算/偏好取
-            - 城际大交通（T1 为城际任务时）：queryTrainTickets(fromCity, destination, startDate)；\
-              无直飞铁路或距离过远改 queryFlightTickets（fromCity 为空时跳过并记 pendingConfirm）
+            - 城际大交通（T1 为城际任务时）：往返【同一 response 并行双查】——
+              去程 queryTrainTickets(fromCity, destination, startDate) 与
+              返程 queryTrainTickets(destination, fromCity, startDate+days-1) 两个 tool_calls 同行
+              （一日游返程同日）；无直飞铁路或距离过远改 queryFlightTickets 同样往返双查；
+              fromCity 为空时跳过并记 pendingConfirm。编排层按追加模式登记，往返两段都会进缓存
             - 景点候选：retrieve_poi_candidates(destination, days, preferences)
             缓存优先仍适用：发出前先各调一次 get_cached_task_result(weather/hotel/poi)，\
             命中的项从并行清单中剔除、直接复用；未命中项必须全部进同一首轮。
@@ -110,15 +115,18 @@ public class ItineraryAgent {
               铺时间线、插入来源标注、渲染 markdownBody 并直接落盘 itinerary_draft.json
             - 前置已就绪：poi_shortlist.json（第 2 步）+ route_plan.json（第 3 步）+
               天气/酒店/车票工具已成功返回（第 1 步，编排层已自动登记进缓存）
-            - 组装返回摘要即落盘完成，你只需核对天数与结构无误，直接进入第 5 步收尾；
+            - 组装返回摘要即落盘完成，你只需【依据返回摘要】核对天数与结构无误
+              （严禁再 read_file 复查草案文件——产物可信，复查是浪费轮次），直接进入第 5 步收尾；
               严禁再用 write_collab_file 手写 itinerary_draft.json 的全文
 
             第 5 步 收尾（质检已规则化，你不再送审）：
-            - 组装落盘 itinerary_draft.json 后流程即结束——质检由编排层规则校验自动执行，
+            - 组装落盘 itinerary_draft.json 后流程即结束——质检由编排层规则校验自动执行
+              （通过落 review_passed.json、不通过落 review_report.json），
               你【无需也不允许】 spawn reviewer-agent
             - 行程草案会由编排层自动登记进缓存，你也无需任何登记动作
-            - 收尾只剩一件事：给最终汇报（如实说明产出与结构）；
-              若质检发现问题，由编排层另行处理，与你无关
+            - 【一行终止】收尾只回一行短确认（≤30 字，如「行程草案已生成，N 天 N 景」）——
+              你的最终回复由编排层从产物文件重新渲染，长汇报无人阅读、纯属浪费；
+              严禁按多段式写长汇报。若质检发现问题，由编排层另行处理，与你无关
 
             ===================================================
             四、执行规范
@@ -138,20 +146,11 @@ public class ItineraryAgent {
             - 任务清单有不明确之处：选择最合理的解释继续执行，并在 notes 中注明假设
 
             ===================================================
-            五、汇报格式（返回给编排层的最终回复）
+            五、收尾格式（返回给编排层的终止回复）
             ===================================================
 
-            1. 完成情况：各任务状态一览（任务ID + 状态）
-            2. 关键结论：3-5 条要点（如推荐酒店及理由、大交通选择、每日主题）
-            3. 一句话总结：可直接转述给用户的结论
-            （质检结果无需汇报——质检由编排层规则校验执行，结论以 review 产物为准）
-
-            排版要求（草案正文 markdownBody）：不用 ** 加粗（靠标题层级/表格表达重点），
-            不堆砌 emoji（仅功能性 ✅ ⚠️），句式自然。
-
-            好的总结示例（只示意格式与信息密度——数字、地名、交通均为占位，禁止照抄，
-            一律替换为本会话真实结果）：「已完成 N 项任务。
-            推荐住 XX 附近（一句理由），去程 xx、返程 xx，总预算约 xxxx 元/人。」
-            坏的总结示例：「我查询了天气、酒店、景点和火车票。」
+            一行短确认（≤30 字）：说明产物与结构，如「行程草案已生成并落盘：N 天 N 景，预算约 x 元」。
+            排版要求（草案正文 markdownBody 由 assemble_itinerary 内部渲染，与本文无关）：
+            你在对话中不用 ** 加粗，不堆砌 emoji（仅功能性 ✅ ⚠️），句式自然。
             """;
 }

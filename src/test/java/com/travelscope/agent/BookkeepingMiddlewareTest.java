@@ -166,6 +166,31 @@ class BookkeepingMiddlewareTest {
         assertNull(cache.get(USER, SESSION, TaskResultCache.TaskType.WEATHER));
     }
 
+    @Test
+    @DisplayName("往返双查：两段车票都保留（append 不覆盖）；同内容重复登记被去重")
+    void roundTripTrainAppendsNotOverwrites() {
+        drive(List.of("call-1"),
+                new ToolResultStartEvent("r", "call-1", "queryTrainTickets"),
+                new ToolResultTextDeltaEvent("r", "call-1", "queryTrainTickets", "去程: 上海→苏州 G8302 ¥41"),
+                new ToolResultEndEvent("r", "call-1", "queryTrainTickets", ToolResultState.SUCCESS));
+        drive(List.of("call-2"),
+                new ToolResultStartEvent("r", "call-2", "queryTrainTickets"),
+                new ToolResultTextDeltaEvent("r", "call-2", "queryTrainTickets", "返程: 苏州→上海 D351 ¥31"),
+                new ToolResultEndEvent("r", "call-2", "queryTrainTickets", ToolResultState.SUCCESS));
+
+        String cached = cache.get(USER, SESSION, TaskResultCache.TaskType.TRAIN);
+        assertTrue(cached.contains("G8302") && cached.contains("D351"),
+                "往返两段都应保留: " + cached);
+
+        // 同内容重复登记（缓存命中后又查/重试）→ 去重不叠加
+        drive(List.of("call-3"),
+                new ToolResultStartEvent("r", "call-3", "queryTrainTickets"),
+                new ToolResultTextDeltaEvent("r", "call-3", "queryTrainTickets", "去程: 上海→苏州 G8302 ¥41"),
+                new ToolResultEndEvent("r", "call-3", "queryTrainTickets", ToolResultState.SUCCESS));
+        String after = cache.get(USER, SESSION, TaskResultCache.TaskType.TRAIN);
+        assertEquals(cached, after, "重复内容不应追加: " + after);
+    }
+
     /** 驱动一条事件流（callIds 仅用于构造 ActingInput 占位） */
     private void drive(List<String> callIds, io.agentscope.core.event.AgentEvent... events) {
         List<ToolUseBlock> calls = callIds.stream()

@@ -146,7 +146,13 @@ public class BookkeepingMiddleware implements MiddlewareBase {
                         mark(userId, sessionId, m.taskId(), TaskRegistry.STATUS_DONE);
                     }
                     if (!result.isBlank()) {
-                        taskResultCache.register(userId, sessionId, m.taskType(), m.taskId(), result);
+                        // 车票/机票同类型多段（往返双查）：append 防返程覆盖去程（conv-46 实证互覆）
+                        if (m.taskType() == TaskResultCache.TaskType.TRAIN
+                                || m.taskType() == TaskResultCache.TaskType.FLIGHT) {
+                            taskResultCache.append(userId, sessionId, m.taskType(), m.taskId(), result);
+                        } else {
+                            taskResultCache.register(userId, sessionId, m.taskType(), m.taskId(), result);
+                        }
                     }
                 }
             } catch (Exception ex) {

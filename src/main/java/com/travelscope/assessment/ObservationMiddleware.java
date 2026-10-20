@@ -97,6 +97,10 @@ public class ObservationMiddleware implements MiddlewareBase {
                 if(!session.equals(runtime.getSessionId()))return;
                 String path="tasks/"+session+"/route_plan.json";
                 store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
+            }else if("assemble_itinerary".equals(call.getName())&&result.startsWith("已组装并写入 itinerary_draft.json")){
+                captureDraft(runtime,association,operation,call);
+            }else if("revise_poi_selection".equals(call.getName())&&result.startsWith("POI 修订完成")){
+                captureDraft(runtime,association,operation,call);
             }else if("edit_file".equals(call.getName())&&result.startsWith("Edited ")){
                 int suffix=result.lastIndexOf(" (");
                 if(suffix<0)return;
@@ -104,6 +108,15 @@ public class ObservationMiddleware implements MiddlewareBase {
                 store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
             }
         }catch(Exception e){store.artifactCaptureFailed(association);}
+    }
+
+    /** 组装/POI 重选由代码就地落盘 itinerary_draft.json（不经 write_collab_file），按 plan_route 同款补捕获 */
+    private void captureDraft(RuntimeContext runtime,ObservationContext association,UUID operation,
+            io.agentscope.core.message.ToolUseBlock call){
+        String session=Objects.toString(call.getInput().get("sessionId"),"");
+        if(!session.equals(runtime.getSessionId()))return;
+        String path="tasks/"+session+"/itinerary_draft.json";
+        store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
     }
 
 }

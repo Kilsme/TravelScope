@@ -235,4 +235,21 @@ class RuleReviewServiceTest {
         assertThat(workspace.readReviewPassed("u1", "conv-r")).isEmpty();
         assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
     }
+
+    @Test
+    @DisplayName("规则失败：revisionTaskText 内联 intake 与草案正文（reviewer 首轮免 read_file）")
+    void revisionTaskInlinesContracts() {
+        workspace.writeIntakeResult("u1", "conv-r", intake("3", "苏州", "上海", "1200", "园林"));
+        workspace.writeItineraryDraft("u1", "conv-r", draft(List.of(
+                new DraftItem("09:00-11:30", "游览拙政园", "拙政园", "¥80", null)),
+                "约 1100 元", List.of(), List.of())); // 1 天 vs 要求 3 天 → fail
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.passed()).isFalse();
+        assertThat(outcome.revisionTaskText())
+                .contains("【intake_result.json】").contains("【itinerary_draft.json】")
+                .contains("苏州").contains("拙政园").contains("天数不符")
+                .contains("内联草案即过期");
+    }
 }

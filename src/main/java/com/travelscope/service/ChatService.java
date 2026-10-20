@@ -77,6 +77,9 @@ public class ChatService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     @org.springframework.beans.factory.annotation.Qualifier("standaloneReviewerAgent")
     private org.springframework.beans.factory.ObjectProvider<HarnessAgent> standaloneReviewers;
+    /** 结果缓存（同对话二次规划时按需求关键字段变化失效；字段注入同 ruleReviewService 模式） */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.travelscope.service.TaskResultCache taskResultCache;
     public HarnessAgent newAssessmentAgent(){return assessmentAgents.getObject();}
     public boolean assessmentWaiting(long identity){
         var state=tripRequirementStore.get(""+identity,SESSION_PREFIX+identity);
@@ -235,6 +238,18 @@ public class ChatService {
         }
         String userIdStr = String.valueOf(userId);
         String sessionId = SESSION_PREFIX + conversation.getId();
+        // 同对话新一轮规划：需求已 DONE/DEGRADED 时重开为 COLLECTING（保留旧字段），
+        // 由 workflow 的 handleText 把本轮消息增量合并——否则 DONE 幂等直通会拿旧 intake
+        // 规划新旅程（conv-52 第二轮实测：西安请求被按旧苏州需求规划）。表单控制报文不重开。
+        com.travelscope.dto.TripRequirementState reqState = tripRequirementStore.get(userIdStr, sessionId);
+        if (reqState != null && reqState.status != com.travelscope.dto.TripRequirementState.Status.COLLECTING
+                && !isFormSubmission(userMessage)) {
+            reqState.status = com.travelscope.dto.TripRequirementState.Status.COLLECTING;
+            tripRequirementStore.save(userIdStr, sessionId, reqState);
+            log.info("同对话新一轮规划：需求状态机重开为 COLLECTING（保留旧字段待合并）: 会话={}", sessionId);
+        }
+        // 同对话二次规划：step1（workflow 会覆盖写 intake）之前暂存旧 intake 作对比基准
+        IntakeResult prevIntake = taskWorkspaceService.readIntakeResult(userIdStr, sessionId).orElse(null);
         // ---------- step1：需求采集 workflow ----------
         com.travelscope.service.workflow.dto.CollectOutcome outcome;
         try {
@@ -274,6 +289,15 @@ public class ChatService {
         IntakeResult intake = taskWorkspaceService.readIntakeResult(userIdStr, sessionId)
                 .orElseThrow(() -> new IllegalStateException(
                         "COLLECTED 后 intake_result.json 缺失（workflow 契约破裂）: " + sessionId));
+        // 同对话二次规划正确性：目的地/出发日期变化 → 清会话结果缓存（防命中上一轮异地/异期数据）；
+        // 每轮无条件清旧 review 产物（review_passed 粘滞语义会跨轮顶包新一轮规则质检）
+        if (prevIntake != null && planningKeysChanged(prevIntake, intake)) {
+            if (taskResultCache != null) {
+                taskResultCache.invalidate(userIdStr, sessionId, null);
+            }
+            log.info("同对话二次规划（需求关键字段变化）: 会话={}, 结果缓存已全清", sessionId);
+        }
+        taskWorkspaceService.deleteReviewArtifacts(userIdStr, sessionId);
         TaskBacklog backlog = taskBacklogPlanner.plan(userIdStr, intake);
         log.info("PLANNING 编排: 会话={}, 任务清单已登记 {} 项，开始委派 planning-agent",
                 sessionId, backlog.tasks().size());
@@ -293,11 +317,14 @@ public class ChatService {
         ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
         // 清单卡片结构化提交的原文是 JSON 控制报文，不带入任务说明（intake_result.json 已承载事实）
         String userContext = isFormSubmission(userMessage) ? "" : "\n\n【本轮用户消息】" + userMessage;
-        String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
-                + "用 read_file 读取 " + collabDir + "/task_backlog.json 与 " + collabDir + "/intake_result.json 执行"
-                + "（任务按 T1→T5 顺序、P0→P1 优先级执行）；"
+        String task = "【系统指令】需求与任务清单已就绪（内容见本说明末尾【task_backlog.json】"
+                + "【intake_result.json】内联节，与协作目录文件内容一致；已由系统登记进任务容器，"
+                + "禁止重新拆分或自行创建清单，禁止再 read_file 读这两个文件）。"
+                + "任务按 T1→T5 顺序、P0→P1 优先级执行；"
                 + "产出 " + collabDir + "/itinerary_draft.json 后即完成（质检由系统规则校验执行，无需送审）。"
-                + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext;
+                + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext
+                + "\n\n【task_backlog.json】\n" + com.alibaba.fastjson2.JSON.toJSONString(backlog)
+                + "\n\n【intake_result.json】\n" + com.alibaba.fastjson2.JSON.toJSONString(intake);
         UserMessage msg = new UserMessage(task);
         Duration laneTimeout = llmGateway.laneTimeout(true);
 
@@ -315,10 +342,20 @@ public class ChatService {
                 plannerFlow,
                 // ---------- step5：规则质检（零 LLM）→ 渲染收尾 ----------
                 Flux.defer(() -> {
-                    runRuleReview(userIdStr, sessionId);
+                    runRuleReview(userIdStr, sessionId, observation);
                     renderPlanningResult(userIdStr, sessionId, replyBuf);
                     return Flux.empty();
                 }));
+    }
+
+    /** 同对话二次规划判定：目的地或出发日期任一变化即视为新行程（数据类缓存需全清） */
+    private static boolean planningKeysChanged(IntakeResult prev, IntakeResult cur) {
+        return !java.util.Objects.equals(fieldVal(prev.fields().destination()), fieldVal(cur.fields().destination()))
+                || !java.util.Objects.equals(fieldVal(prev.fields().startDate()), fieldVal(cur.fields().startDate()));
+    }
+
+    private static String fieldVal(IntakeResult.FieldValue f) {
+        return f == null ? null : f.value();
     }
 
     /**
@@ -327,7 +364,8 @@ public class ChatService {
      * 做定向修订（修订后重跑规则校验收敛）。无草案产物（规划中途失败）则跳过。
      * 任何异常只记日志，绝不影响 step5 渲染。
      */
-    private void runRuleReview(String userId, String sessionId) {
+    private void runRuleReview(String userId, String sessionId,
+                               com.travelscope.assessment.ObservationContext observation) {
         if (ruleReviewService == null) {
             return;
         }
@@ -349,7 +387,15 @@ public class ChatService {
             HarnessAgent reviewer = standaloneReviewers.getObject();
             RuntimeContext ctx = RuntimeContext.builder().userId(userId).sessionId(sessionId).build();
             ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
-            reviewer.streamEvents(new UserMessage(outcome.revisionTask(collabDir, sessionId)), ctx)
+            // 观测归属本轮规划 run（否则 ObservationMiddleware 会给 reviewer 另起 run，
+            // 同会话双 run 的产物归属歧义会把本轮顶成 INCOMPLETE——conv-52 实证）
+            if (observation != null) {
+                ctx.put(com.travelscope.assessment.ObservationContext.KEY, observation);
+                ctx.put(com.travelscope.assessment.ArtifactSnapshotReader.FILESYSTEM_KEY,
+                        reviewer.getWorkspaceManager().getFilesystem());
+            }
+            // 修订任务文本已在规则质检失败分支内联生成（含 intake/草案正文）
+            reviewer.streamEvents(new UserMessage(outcome.revisionTaskText()), ctx)
                     .blockLast(llmGateway.laneTimeout(true));
             // 修订后重跑规则校验收敛（产物以最后一次规则校验为准）
             ruleReviewService.check(userId, sessionId);

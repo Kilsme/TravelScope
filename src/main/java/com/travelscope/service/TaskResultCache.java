@@ -106,6 +106,45 @@ public class TaskResultCache {
     }
 
     /**
+     * 追加登记（往返车票/机票等「同类型多段」结果专用，记账中间件用）：
+     * 缓存键按类型单键（containerKey），overwrite 会让第二次同类型调用（如返程票）
+     * 覆盖第一次（去程）——append 把各段按元信息头行分隔拼接，两端都保留。
+     * 幂等去重：内容已被既有值包含则跳过（同参数重试/缓存命中后再查不产生重复段）。
+     * 消费方经 get() 读取：stripMetaHeader 只剥首行头，后续段的头行留在正文当分隔，
+     * 语义不变。
+     */
+    public void append(String userId, String sessionId, TaskType type, String taskId, String content) {
+        String key = containerKey(userId, sessionId, type);
+        String header = "# task_id=" + (taskId != null ? taskId : "-")
+                + " # registered_at=" + LocalDateTime.now().format(FMT);
+        try {
+            String existing = redisTemplate.opsForValue().get(key);
+            if (existing == null) {
+                // Redis 没存到但此前可能降级进了内存——append 以 Redis 为准，内存有值时一并并入
+                existing = memoryFallback.get(key);
+            }
+            if (existing != null && existing.contains(content)) {
+                log.info("task_result_append_skipped(内容重复) type={} taskId={} 用户={}, 会话={}",
+                        type, taskId, userId, sessionId);
+                return;
+            }
+            String value = existing == null ? header + "\n" + content
+                    : existing + "\n" + header + "\n" + content;
+            redisTemplate.opsForValue().set(key, value, type.ttl);
+        } catch (Exception e) {
+            logRedisFailure("append", e);
+            String existing = memoryFallback.get(key);
+            if (existing != null && existing.contains(content)) {
+                return;
+            }
+            memoryFallback.put(key, existing == null ? header + "\n" + content
+                    : existing + "\n" + header + "\n" + content);
+        }
+        log.info("task_result_registered(append) type={} taskId={} 用户={}, 会话={}",
+                type, taskId, userId, sessionId);
+    }
+
+    /**
      * 查询缓存（二次规划/回炉前调用）：命中打 cache_hit 日志并返回内容（剥离元信息头）；
      * 未命中返回 null
      */

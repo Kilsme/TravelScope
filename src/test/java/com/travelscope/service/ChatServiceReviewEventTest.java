@@ -106,8 +106,15 @@ class ChatServiceReviewEventTest {
     @DisplayName("passed 产物存在 → review_report 事件载荷 total=85")
     void passedArtifactEmitsPayload() throws Exception {
         seedPlanningChain();
-        workspace.writeReviewPassed("1", "conv-13",
-                new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-19 12:00:00"));
+        // 规则质检打桩：step5 编排调用时写实 review_passed（对齐真实链路：规则服务写产物、渲染层读产物；
+        // 预置静态文件会被编排起点的跨轮清理删掉）
+        RuleReviewService stub = mock(RuleReviewService.class);
+        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
+            workspace.writeReviewPassed(inv.getArgument(0), inv.getArgument(1),
+                    new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-19 12:00:00"));
+            return new RuleReviewService.Outcome(true, List.of(), null);
+        });
+        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
 
         SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -141,9 +148,12 @@ class ChatServiceReviewEventTest {
     /** PLANNING 编排链打桩 + 预置 intake_result.json / itinerary_draft.md（不含 review 产物） */
     private void seedPlanningChain() throws Exception {
         workspace.writeIntakeResult("1", "conv-13", intakeResult());
-        Files.writeString(workspace.getTaskDir("1", "conv-13")
-                        .resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
-                "# 杭州两日游完整方案\nDay1 西湖环湖。");
+        // JSON 草案（规则质检只读 JSON 契约；旧 MD 仅渲染层兜底）
+        workspace.writeItineraryDraft("1", "conv-13", new com.travelscope.collab.ItineraryDraft(
+                List.of(new com.travelscope.collab.ItineraryDraft.DraftDay(1, "2026-10-24", "西湖环线",
+                        List.of(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                                "09:00-11:30", "西湖环湖", "西湖", "免费", null)))),
+                null, List.of(), List.of(), "# 杭州两日游完整方案\nDay1 西湖环湖。"));
         when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))

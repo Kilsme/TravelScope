@@ -61,6 +61,24 @@ class TaskResultCacheTest {
     }
 
     @Test
+    @DisplayName("append：同类型多段拼接保留 + 重复内容去重（内存降级路径）")
+    void testAppendRoundTripAndDedup() {
+        TaskResultCache cache = new TaskResultCache(new ThrowingRedisTemplate());
+        cache.append("u1", "conv-1", TaskType.TRAIN, "T1", "去程: 上海→苏州 G8302 ¥41");
+        cache.append("u1", "conv-1", TaskType.TRAIN, "T1", "返程: 苏州→上海 D351 ¥31");
+
+        String cached = cache.get("u1", "conv-1", TaskType.TRAIN);
+        assertNotNull(cached);
+        assertTrue(cached.contains("G8302") && cached.contains("D351"),
+                "往返两段都应保留: " + cached);
+        assertTrue(cached.indexOf("G8302") < cached.indexOf("D351"), "应保持追加顺序");
+
+        // 重复内容（同参数重查/重试）→ 跳过去重
+        cache.append("u1", "conv-1", TaskType.TRAIN, "T1", "去程: 上海→苏州 G8302 ¥41");
+        assertEquals(cached, cache.get("u1", "conv-1", TaskType.TRAIN), "重复内容不应叠加");
+    }
+
+    @Test
     @DisplayName("TaskType 宽容解析：poi/poi_shortlist/route/weather 等别名")
     void testTaskTypeParsing() {
         assertEquals(TaskType.POI, TaskType.of("poi"));

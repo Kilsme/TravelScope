@@ -99,6 +99,22 @@ public class CollabFileWriter {
     }
 
     /**
+     * 删除契约文件（不存在静默跳过）。用途：新一轮规划编排启动时清除上一轮 review 产物——
+     * review_passed.json 有「已存在不被覆盖」的粘滞语义，跨轮残留会把新一轮规则质检顶包放行。
+     */
+    public boolean delete(Path dir, String fileName) {
+        try {
+            boolean removed = Files.deleteIfExists(dir.resolve(fileName));
+            if (removed) {
+                log.info("契约文件已删除: file={}", dir.resolve(fileName));
+            }
+            return removed;
+        } catch (IOException e) {
+            throw new UncheckedIOException("删除契约文件失败: " + dir.resolve(fileName), e);
+        }
+    }
+
+    /**
      * 会话协作目录解析：{@code {workspaceRoot}/{userId}/tasks/{sessionId}}
      * （与 harness 用户目录约定对齐；S0.5 迁移后改由 TaskWorkspace 统一提供）
      */

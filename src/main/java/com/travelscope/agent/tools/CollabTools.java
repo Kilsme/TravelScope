@@ -214,11 +214,16 @@ public class CollabTools {
                 return "ERROR: 会话目录缺 intake_result.json";
             }
 
-            // ① LLM 产结构字段（不含 markdownBody）
+            // ① LLM 产结构字段（不含 markdownBody）；失败代码内自动重试 1 次——
+            // 惊动 planner 层重试要烧一整个 agent 轮次（conv-46 实测 ~20s），代码内重试只付模型时延
             com.travelscope.collab.ItineraryDraft skeleton = produceDraftSkeleton(
                     userId, sessionId, routePlan.get(), intake.get());
             if (skeleton == null) {
-                return "ERROR: 草案结构字段生成失败（模型未返回有效结构），请重试一次";
+                log.info("assemble_itinerary 结构字段首次生成失败，代码内重试: 用户={}, 会话={}", userId, sessionId);
+                skeleton = produceDraftSkeleton(userId, sessionId, routePlan.get(), intake.get());
+            }
+            if (skeleton == null) {
+                return "ERROR: 草案结构字段生成失败（模型未返回有效结构，已自动重试 1 次），请重试一次";
             }
 
             // ② 读缓存（天气/酒店/车票）+ poi_shortlist 已核验 POI 集合 + intake 偏好，代码渲染
@@ -245,7 +250,7 @@ public class CollabTools {
                     userId, sessionId, draft.days().size(), draft.markdownBody().length());
             return "已组装并写入 itinerary_draft.json（" + draft.days().size()
                     + " 天，markdownBody " + draft.markdownBody().length()
-                    + " 字符，代码渲染）。请直接进入第 5 步送审。";
+                    + " 字符，代码渲染）。核对本摘要无误后直接进入第 5 步一行收尾，严禁 read_file 复查草案文件。";
         } catch (Exception e) {
             log.warn("assemble_itinerary 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: 草案组装失败: " + e.getMessage();

@@ -57,22 +57,12 @@ public class RuleReviewService {
         this.taskWorkspace = taskWorkspace;
     }
 
-    /** 质检结论：passed + 各段问题 + 修订任务说明（给 reviewer 的输入） */
-    public record Outcome(boolean passed, List<String> issues) {
-        /** 规则失败时给 reviewer 的定向修订任务说明 */
-        public String revisionTask(String collabDir, String sessionId) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("协作目录: ").append(collabDir).append("；sessionId: ").append(sessionId).append('\n');
-            sb.append("【系统规则质检发现以下问题，请定向修订】\n");
-            for (String issue : issues) {
-                sb.append("- ").append(issue).append('\n');
-            }
-            sb.append("请读 ").append(collabDir).append("/intake_result.json 与 ")
-                    .append(collabDir).append("/itinerary_draft.json，按你的修订流程就地修复")
-                    .append("（POI/偏好问题调 revise_poi_selection，路线问题调 plan_route，预算问题调 searchHotels），")
-                    .append("修订收敛后照常写 review_passed.json 或 review_report.json。");
-            return sb.toString();
-        }
+    /**
+     * 质检结论：passed + 各段问题 + 给 reviewer 的定向修订任务文本。
+     * revisionTaskText 仅规则失败时非空（在 check() 失败分支一次性生成，
+     * 内联 intake/草案 JSON 正文——reviewer 首轮免 read_file；修订后重读由提示词约束）。
+     */
+    public record Outcome(boolean passed, List<String> issues, String revisionTaskText) {
     }
 
     /**
@@ -83,7 +73,7 @@ public class RuleReviewService {
         Optional<ItineraryDraft> draftOpt = taskWorkspace.readItineraryDraft(userId, sessionId);
         if (draftOpt.isEmpty()) {
             log.info("规则质检跳过（无行程草案产物）: 用户={}, 会话={}", userId, sessionId);
-            return new Outcome(true, List.of());
+            return new Outcome(true, List.of(), null);
         }
         ItineraryDraft draft = draftOpt.get();
         Optional<IntakeResult> intakeOpt = taskWorkspace.readIntakeResult(userId, sessionId);
@@ -240,7 +230,7 @@ public class RuleReviewService {
             // review_passed.json 粘滞：已被通过的产物不被规则失败覆盖
             if (taskWorkspace.readReviewPassed(userId, sessionId).isPresent()) {
                 log.info("规则质检未通过但 review_passed.json 已存在（粘滞保留）: 用户={}, 会话={}", userId, sessionId);
-                return new Outcome(true, List.of());
+                return new Outcome(true, List.of(), null);
             }
             ReviewReport.ReviewScores scores = new ReviewReport.ReviewScores(
                     completeness, feasibility, timeConflict, costBudget, poiReasonableness);
@@ -255,7 +245,29 @@ public class RuleReviewService {
                     scores, total, suggestions, now));
             log.info("规则质检未通过: 用户={}, 会话={}, 总分={}, 问题数={}", userId, sessionId, total, issues.size());
         }
-        return new Outcome(passed, issues);
+        return new Outcome(passed, issues,
+                passed ? null : buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft));
+    }
+
+    /** 规则失败时给 reviewer 的定向修订任务文本（内联 intake/草案正文，首轮免 read_file） */
+    private String buildRevisionTask(String userId, String sessionId, List<String> issues,
+                                     IntakeResult intake, ItineraryDraft draft) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("sessionId: ").append(sessionId).append('\n');
+        sb.append("【系统规则质检发现以下问题，请定向修订】\n");
+        for (String issue : issues) {
+            sb.append("- ").append(issue).append('\n');
+        }
+        sb.append("评审输入已内联在本说明末尾两节（与协作目录文件一致），直接解析，禁止首轮 read_file；")
+                .append("按你的修订流程就地修复（POI/偏好问题调 revise_poi_selection，路线问题调 plan_route，")
+                .append("预算问题调 searchHotels）；注意：任何修订动作后内联草案即过期，")
+                .append("复审前必须 read_file 重读 tasks/").append(sessionId)
+                .append("/itinerary_draft.json。修订收敛后照常写 review_passed.json 或 review_report.json。");
+        sb.append("\n\n【intake_result.json】\n")
+                .append(intake == null ? "（缺失）" : com.alibaba.fastjson2.JSON.toJSONString(intake));
+        sb.append("\n\n【itinerary_draft.json】\n")
+                .append(com.alibaba.fastjson2.JSON.toJSONString(draft));
+        return sb.toString();
     }
 
     // ==================== 内部 ====================

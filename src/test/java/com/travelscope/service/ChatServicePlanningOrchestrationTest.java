@@ -236,12 +236,7 @@ class ChatServicePlanningOrchestrationTest {
     // ---------- 用例 6：评审产物 JSON → ✅ 标注照常；S3.1 起 review_report 事件同源于 JSON ----------
     @Test
     void jsonReviewPassedDrivesAnnotation() throws Exception {
-        workspace.writeIntakeResult("1", "conv-13", intakeResult());
-        Path dir = workspace.getTaskDir("1", "conv-13");
-        Files.writeString(dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
-                "# 杭州两日游完整方案\nDay1 西湖环湖。");
-        workspace.writeReviewPassed("1", "conv-13",
-                new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
+        seedIntakeAndArtifacts(true);
         when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
                 .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
@@ -261,6 +256,88 @@ class ChatServicePlanningOrchestrationTest {
                 .parseObject(payloadOf(items, "review_report"));
         assertThat(report.getBooleanValue("passed")).isTrue();
         assertThat(report.getIntValue("total")).isEqualTo(91);
+    }
+
+    // ==================== 契约内联与二次规划（2026-10-20 晚） ====================
+
+    // ---------- DONE 会话上的新 PLANNING：需求状态机重开为 COLLECTING 交给 workflow 增量合并 ----------
+    @Test
+    void planningOnDoneConversationReopensRequirementForMerge() throws Exception {
+        TripRequirementState doneState = new TripRequirementState();
+        doneState.status = TripRequirementState.Status.DONE;
+        doneState.destination = "苏州";
+        when(tripRequirementStore.get("1", "conv-13")).thenReturn(doneState);
+        seedIntakeAndArtifacts(true);
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划西安四日游"), "done");
+
+        // 状态机被重开为 COLLECTING 并保存（旧字段保留待 workflow 增量合并）
+        ArgumentCaptor<TripRequirementState> saved = ArgumentCaptor.forClass(TripRequirementState.class);
+        verify(tripRequirementStore).save(eq("1"), eq("conv-13"), saved.capture());
+        assertThat(saved.getValue().status).isEqualTo(TripRequirementState.Status.COLLECTING);
+        assertThat(saved.getValue().destination).isEqualTo("苏州");
+    }
+
+    // ---------- 委派说明内联契约：planner 首轮免 read_file ----------
+    @Test
+    void delegationMessageInlinesContracts() throws Exception {
+        seedIntakeAndArtifacts(true);
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+
+        ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
+        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        String text = delegated.getValue().getTextContent();
+        assertThat(text).contains("【task_backlog.json】").contains("【intake_result.json】")
+                .contains("杭州").contains("T1");
+        assertThat(text).doesNotContain("用 read_file 读取");
+    }
+
+    // ---------- 同对话二次规划：需求关键字段变化 → 清缓存；旧 review 产物无条件清除（粘滞不跨轮） ----------
+    @Test
+    void secondPlanningClearsReviewArtifactsAndInvalidatesCache() throws Exception {
+        // 上一轮残留：异地 intake（苏州/10-20）+ 旧 review_passed（粘滞顶包源）
+        workspace.writeIntakeResult("1", "conv-13", intakeResult("苏州", "2026-10-20"));
+        workspace.writeReviewPassed("1", "conv-13",
+                new com.travelscope.collab.ReviewPassed(88, 14, List.of("旧轮通过"), "2026-10-18 09:00:00"));
+        TaskResultCache cache = mock(TaskResultCache.class);
+        ReflectionTestUtils.setField(chatService, "taskResultCache", cache);
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
+        // 本轮 workflow 落定新 intake（杭州/10-24）
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString())).thenAnswer(inv -> {
+            workspace.writeIntakeResult("1", "conv-13", intakeResult());
+            return CollectOutcome.collected();
+        });
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+        workspace.writeItineraryDraft("1", "conv-13", draftForTest());
+
+        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+
+        // 结果缓存按关键字段变化全清
+        verify(cache).invalidate("1", "conv-13", null);
+        // 旧 review_passed 在编排起点被清除（ruleReviewService 未注入 → 本轮不重写，文件应不存在）
+        assertThat(workspace.readReviewPassed("1", "conv-13")).isEmpty();
+        // 委派文本内联的是新 intake（含杭州、不含苏州）
+        ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
+        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        assertThat(delegated.getValue().getTextContent()).contains("杭州").doesNotContain("苏州");
     }
 
     // ==================== 测试数据与 SSE 捕获 ====================
@@ -371,31 +448,55 @@ class ChatServicePlanningOrchestrationTest {
         return c;
     }
 
-    /** 预置协作产物：intake_result.json + itinerary_draft.md + 评审产物（passed ? passed.json : report.json） */
+    /** 预置协作产物：intake_result.json + itinerary_draft.json；评审产物由 stubRuleReview 在编排中写实 */
     private void seedIntakeAndArtifacts(boolean passed) throws Exception {
         workspace.writeIntakeResult("1", "conv-13", intakeResult());
-        Path dir = workspace.getTaskDir("1", "conv-13");
-        Files.writeString(dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
-                "# 杭州两日游完整方案\nDay1 西湖环湖，Day2 灵隐寺。");
-        if (passed) {
-            workspace.writeReviewPassed("1", "conv-13",
-                    new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
-        } else {
-            workspace.writeReviewReport("1", "conv-13",
-                    new com.travelscope.collab.ReviewReport(
-                            List.of(
-                                    new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
-                                    new com.travelscope.collab.ReviewReport.ReviewSegment(2, false, List.of("第二天时间过密")),
-                                    new com.travelscope.collab.ReviewReport.ReviewSegment(3, true, List.of())),
-                            new com.travelscope.collab.ReviewReport.ReviewScores(15, 14, 13, 15, 15),
-                            72, java.util.Map.of(), "2026-10-18 12:00:00"));
-        }
+        workspace.writeItineraryDraft("1", "conv-13", draftForTest());
+        stubRuleReview(passed);
+    }
+
+    /** 规则质检打桩：step5 编排调用时把评审产物写实（对齐真实链路：规则服务写产物、渲染层读产物） */
+    private void stubRuleReview(boolean passed) {
+        RuleReviewService stub = mock(RuleReviewService.class);
+        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
+            String u = inv.getArgument(0);
+            String s = inv.getArgument(1);
+            if (passed) {
+                workspace.writeReviewPassed(u, s,
+                        new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
+                return new RuleReviewService.Outcome(true, List.of(), null);
+            }
+            workspace.writeReviewReport(u, s, new com.travelscope.collab.ReviewReport(
+                    List.of(
+                            new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
+                            new com.travelscope.collab.ReviewReport.ReviewSegment(2, false, List.of("第二天时间过密")),
+                            new com.travelscope.collab.ReviewReport.ReviewSegment(3, true, List.of())),
+                    new com.travelscope.collab.ReviewReport.ReviewScores(15, 14, 13, 15, 15),
+                    72, java.util.Map.of(), "2026-10-18 12:00:00"));
+            return new RuleReviewService.Outcome(false, List.of("第二天时间过密"), null);
+        });
+        ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+    }
+
+    private static com.travelscope.collab.ItineraryDraft draftForTest() {
+        return new com.travelscope.collab.ItineraryDraft(List.of(
+                new com.travelscope.collab.ItineraryDraft.DraftDay(1, "2026-10-24", "西湖环线",
+                        List.of(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                                "09:00-11:30", "西湖环湖", "西湖", "免费", null))),
+                new com.travelscope.collab.ItineraryDraft.DraftDay(2, "2026-10-25", "灵隐禅行",
+                        List.of(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                                "09:00-12:00", "灵隐寺", "灵隐寺", "¥30", null)))),
+                null, List.of(), List.of(), "# 杭州两日游完整方案\nDay1 西湖环湖，Day2 灵隐寺。");
     }
 
     private static IntakeResult intakeResult() {
+        return intakeResult("杭州", "2026-10-24");
+    }
+
+    private static IntakeResult intakeResult(String destination, String startDate) {
         return new IntakeResult("conv-13", IntakeResult.Status.DONE, 0,
                 new IntakeResult.RequirementFields(
-                        fv("杭州"), fv("2"), fv("2026-10-24"), fv("上海"),
+                        fv(destination), fv("2"), fv(startDate), fv("上海"),
                         fv(null), fv(null), fv(null), fv(null)),
                 false, "2026-10-18 10:00:00");
     }

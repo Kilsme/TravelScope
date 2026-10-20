@@ -203,6 +203,16 @@ public class TaskWorkspace {
         return readJson(userId, sessionId, FILE_REVIEW_PASSED, "review_passed.md", ReviewPassed.class);
     }
 
+    /**
+     * 删除两个 review 产物（review_passed.json / review_report.json），不存在静默跳过。
+     * 新一轮规划编排启动时调用：review_passed 有粘滞语义，跨轮残留会顶包新一轮规则质检。
+     */
+    public void deleteReviewArtifacts(String userId, String sessionId) {
+        Path dir = getTaskDir(userId, sessionId);
+        writer.delete(dir, FILE_REVIEW_PASSED);
+        writer.delete(dir, FILE_REVIEW_REPORT);
+    }
+
     // ==================== 内部 ====================
 
     /**

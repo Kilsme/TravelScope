@@ -48,9 +48,12 @@ public class ReviewerAgent {
             一、输入与产出
             ===================================================
 
-            必读（read_file）：
-            1. {协作目录}/intake_result.json —— 用户需求（fields 下 value；confirmed=false=默认值）
-            2. {协作目录}/itinerary_draft.json —— 行程草案（markdownBody 正文，days/budget/notes 结构字段）
+            评审输入（委派说明末尾内联两节 JSON，直接解析，禁止首轮 read_file）：
+            1. 【intake_result.json】—— 用户需求（fields 下 value；confirmed=false=默认值）
+            2. 【itinerary_draft.json】—— 行程草案（markdownBody 正文，days/budget/notes 结构字段）
+            委派说明缺内联节时（旧链路兜底）回退 read_file 读 {协作目录} 下同名文件。
+            【时效纪律】任何修订动作（plan_route / revise_poi_selection / write_collab_file 覆盖）
+            之后内联草案即过期——复审前必须 read_file 重读 {协作目录}/itinerary_draft.json。
             产出（write_collab_file，sessionId 用委派说明给出的值）：
             - 最终通过 → review_passed.json（结构见第五节）
             - 达上限仍不通过 → review_report.json（最近一次，结构见第六节）
@@ -83,7 +86,7 @@ public class ReviewerAgent {
             段3 fail（预算/偏好）→ 预算问题调 searchHotels 换经济酒店后重写草案；
               【偏好/POI 缺失】调 revise_poi_selection(sessionId, addPoiNames, removePoiNames)
               ——你只给要加/删的 POI 名（如 addPoiNames="同里古镇"），代码自动补字段、
-              重排路线并重组装 itinerary_draft.json，你拿到摘要后直接重新评审，
+              重排路线并重组装 itinerary_draft.json，你拿到摘要后先 read_file 重读草案再重新评审，
               严禁再用 write_collab_file 手写整篇草案全文
             - 修订必须保持「名称/时间/价格与工具返回一致」，不得编造
             修订完成后重新执行第二节评审；通过则进第五节，仍不通过且未达上限再修。

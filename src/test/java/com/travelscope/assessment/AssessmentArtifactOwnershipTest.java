@@ -46,6 +46,9 @@ class AssessmentArtifactOwnershipTest {
                     mock(io.agentscope.core.model.Model.class),
                     mock(com.travelscope.agent.tools.AttractionTool.class)));
         }
+        if (Set.of("assemble_itinerary", "revise_poi_selection").contains(Objects.toString(tool, ""))) {
+            toolkit.registerTool(new FakeAssemblyTools());
+        }
         return HarnessAgent.builder().name("planning-agent").model(model).toolkit(toolkit).workspace(workspace.toString())
             .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
             .disableDefaultWorkspaceSkills().disableShellTool().middlewares(List.of(new ObservationMiddleware(store))).maxIters(3).build();
@@ -200,6 +203,68 @@ class AssessmentArtifactOwnershipTest {
             assertFalse(lastToolOutput.contains("ERROR"), lastToolOutput);
             assertTrue(store.currentArtifacts(next).isEmpty());
             store.finish(next, "INCOMPLETE", 10, false);
+        } finally { store.close(); }
+    }
+
+    // ---------- 组装/重选工具的草案捕获（代码落盘不经 write_collab_file 的盲区修复） ----------
+
+    private static final String DRAFT_JSON = "tasks/" + SESSION + "/itinerary_draft.json";
+    private static final String DRAFT_MARKDOWN = "# 西安一日\n正文";
+    private static final String DRAFT_BODY = "{\"schemaVersion\":4,\"days\":[{\"day\":1,\"date\":\"2026-10-24\","
+            + "\"theme\":\"古城\",\"items\":[{\"time\":\"09:00-10:00\",\"activity\":\"游览\",\"location\":\"钟楼\","
+            + "\"cost\":\"¥30\",\"note\":\"\"}]}],\"budget\":{\"currency\":\"CNY\",\"totalEstimate\":\"100\","
+            + "\"breakdown\":[]},\"notes\":[],\"pendingConfirm\":[],\"markdownBody\":\"# 西安一日\\n正文\"}";
+
+    /** 假组装/重选工具：捕获分支只认工具名+返回前缀，草案文件由测试预写进工作区 */
+    public static class FakeAssemblyTools {
+        @io.agentscope.core.tool.Tool(description = "fake assemble_itinerary")
+        public String assemble_itinerary(
+                @io.agentscope.core.tool.ToolParam(name = "sessionId", description = "s") String sessionId) {
+            return "已组装并写入 itinerary_draft.json（1 天，markdownBody 100 字符，代码渲染）。"
+                    + "核对本摘要无误后直接进入第 5 步一行收尾。";
+        }
+
+        @io.agentscope.core.tool.Tool(description = "fake revise_poi_selection")
+        public String revise_poi_selection(
+                @io.agentscope.core.tool.ToolParam(name = "sessionId", description = "s") String sessionId) {
+            return "POI 修订完成：新增 [网师园]，删除 []；已重排路线并重组装 itinerary_draft.json，请重新评审。";
+        }
+    }
+
+    @Test void assembleItineraryCapturesDraftWrittenByCode() throws Exception {
+        var jdbc = mock(JdbcTemplate.class); var store = store(jdbc);
+        try {
+            var observation = store.begin(SESSION, null);
+            var agent = agent(store, "assemble_itinerary", Map.of("sessionId", SESSION));
+            assertTrue(agent.getWorkspaceManager().getFilesystem()
+                    .write(runtime(observation), DRAFT_JSON, DRAFT_BODY).isSuccess());
+            run(agent, observation);
+            assertEquals(DRAFT_MARKDOWN, store.planningArtifact(observation), lastToolOutput);
+            store.finish(observation, "PLANNING_COMPLETED", 10, true);
+        } finally { store.close(); }
+    }
+
+    @Test void revisePoiSelectionCapturesReassembledDraft() throws Exception {
+        var jdbc = mock(JdbcTemplate.class); var store = store(jdbc);
+        try {
+            var observation = store.begin(SESSION, null);
+            var agent = agent(store, "revise_poi_selection", Map.of("sessionId", SESSION));
+            assertTrue(agent.getWorkspaceManager().getFilesystem()
+                    .write(runtime(observation), DRAFT_JSON, DRAFT_BODY).isSuccess());
+            run(agent, observation);
+            assertEquals(DRAFT_MARKDOWN, store.planningArtifact(observation), lastToolOutput);
+            store.finish(observation, "PLANNING_COMPLETED", 10, true);
+        } finally { store.close(); }
+    }
+
+    @Test void assembleForAnotherSessionDoesNotCapture() throws Exception {
+        var jdbc = mock(JdbcTemplate.class); var store = store(jdbc);
+        try {
+            var observation = store.begin(SESSION, null);
+            var agent = agent(store, "assemble_itinerary", Map.of("sessionId", "another-session"));
+            run(agent, observation);
+            assertNull(store.planningArtifact(observation));
+            store.finish(observation, "INCOMPLETE", 10, false);
         } finally { store.close(); }
     }
 
