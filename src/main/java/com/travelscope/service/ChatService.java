@@ -80,6 +80,9 @@ public class ChatService {
     /** 结果缓存（同对话二次规划时按需求关键字段变化失效；字段注入同 ruleReviewService 模式） */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.travelscope.service.TaskResultCache taskResultCache;
+    /** 任务状态容器（缓存预检命中项顺手标 DONE；字段注入避免撑大构造器） */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.travelscope.service.TaskRegistry taskRegistry;
     public HarnessAgent newAssessmentAgent(){return assessmentAgents.getObject();}
     public boolean assessmentWaiting(long identity){
         var state=tripRequirementStore.get(""+identity,SESSION_PREFIX+identity);
@@ -323,6 +326,7 @@ public class ChatService {
                 + "任务按 T1→T5 顺序、P0→P1 优先级执行；"
                 + "产出 " + collabDir + "/itinerary_draft.json 后即完成（质检由系统规则校验执行，无需送审）。"
                 + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext
+                + cacheHitSection(userIdStr, sessionId)
                 + "\n\n【task_backlog.json】\n" + com.alibaba.fastjson2.JSON.toJSONString(backlog)
                 + "\n\n【intake_result.json】\n" + com.alibaba.fastjson2.JSON.toJSONString(intake);
         UserMessage msg = new UserMessage(task);
@@ -356,6 +360,46 @@ public class ChatService {
 
     private static String fieldVal(IntakeResult.FieldValue f) {
         return f == null ? null : f.value();
+    }
+
+    /**
+     * 缓存预检上提（委派前代码查缓存）：命中项内容内联进任务说明（planner 首轮只查未命中项，
+     * 省掉「3×get_cached_task_result 全 miss」的空转轮）；天气/酒店命中顺手把对应任务标 DONE
+     * （数据已就绪=任务语义完成）；POI 命中只提供候选池——T3 的 DONE 语义=shortlist 落盘，不动。
+     */
+    private String cacheHitSection(String userId, String sessionId) {
+        if (taskResultCache == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String weather = taskResultCache.get(userId, sessionId, com.travelscope.service.TaskResultCache.TaskType.WEATHER);
+        String hotel = taskResultCache.get(userId, sessionId, com.travelscope.service.TaskResultCache.TaskType.HOTEL);
+        String poi = taskResultCache.get(userId, sessionId, com.travelscope.service.TaskResultCache.TaskType.POI);
+        if (weather != null) {
+            sb.append("\n- 天气（T2 数据已就绪，禁止再调 getWeatherForecast）：").append(weather);
+            markDone(userId, sessionId, "T2");
+        }
+        if (hotel != null) {
+            sb.append("\n- 酒店（T4 数据已就绪，禁止再调 searchHotels）：").append(hotel);
+            markDone(userId, sessionId, "T4");
+        }
+        if (poi != null) {
+            sb.append("\n- POI 候选池（已就绪，禁止再调 retrieve_poi_candidates，直接用它做第 2 步筛选）：").append(poi);
+        }
+        return sb.length() == 0 ? "" :
+                "\n\n【缓存命中（以下数据已就绪，禁止再调对应查询工具或 get_cached_task_result 预检，直接引用）】"
+                + sb;
+    }
+
+    /** 预检命中项标 DONE（容器不存在=评测/非编排上下文，静默跳过） */
+    private void markDone(String userId, String sessionId, String taskId) {
+        if (taskRegistry == null) {
+            return;
+        }
+        String r = taskRegistry.updateStatus(userId, sessionId, taskId, TaskRegistry.STATUS_DONE);
+        if (r != null && r.startsWith("ERROR")) {
+            log.debug("预检命中标 DONE 跳过: 会话={}, 任务={}, 原因={}", sessionId, taskId, r);
+        }
     }
 
     /**

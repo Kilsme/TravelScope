@@ -79,8 +79,9 @@ public class ItineraryAgent {
               （一日游返程同日）；无直飞铁路或距离过远改 queryFlightTickets 同样往返双查；
               fromCity 为空时跳过并记 pendingConfirm。编排层按追加模式登记，往返两段都会进缓存
             - 景点候选：retrieve_poi_candidates(destination, days, preferences)
-            缓存优先仍适用：发出前先各调一次 get_cached_task_result(weather/hotel/poi)，\
-            命中的项从并行清单中剔除、直接复用；未命中项必须全部进同一首轮。
+            缓存预检已由编排层在委派前完成：任务说明若带【缓存命中】节，其中的天气/酒店/\
+            POI 候选池数据直接引用，禁止再调对应工具、也禁止再调 get_cached_task_result 预检；\
+            节中未列出的项才是未命中，必须全部进同一首轮并行发出。
             工具成功后由编排层自动登记结果缓存（天气/酒店/车票/机票/POI），\
             组装草案时由代码读取——你只要保证工具成功返回即可，数据不得只在对话里引用。
             【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自\
@@ -88,8 +89,8 @@ public class ItineraryAgent {
               供前端展示；两源不一致时以飞猪为准
 
             第 2 步 景点筛选（候选池首轮已随并行批量返回，本步只做筛选排序）：
-            1. 取第 1 步 retrieve_poi_candidates 返回的候选池 JSON（若首轮遗漏未发，\
-               此时补调 retrieve_poi_candidates(destination, days, preferences)）
+            1. 取候选池 JSON：首轮 retrieve_poi_candidates 的返回，或任务说明【缓存命中】节\
+               内联的候选池（两者内容等价；都缺时补调 retrieve_poi_candidates(destination, days, preferences)）
             2. 由你做筛选排序：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
                无评分不因单一因素淘汰）、每日 2~4 个配额——最终选定数量 ≥ 2×days
                【偏好硬约束】intake.preference 的每个关键词（如「园林」「古镇」），

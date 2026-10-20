@@ -260,6 +260,41 @@ class ChatServicePlanningOrchestrationTest {
 
     // ==================== 契约内联与二次规划（2026-10-20 晚） ====================
 
+    // ---------- 缓存预检上提：命中项内联进委派说明 + 对应任务标 DONE（planner 首轮只查未命中项） ----------
+    @Test
+    void cachePrecheckInlinesHitsAndMarksDone() throws Exception {
+        seedIntakeAndArtifacts(true);
+        // 编排层预检：weather/hotel 命中、poi 未命中（部分命中路径）
+        TaskResultCache cache = mock(TaskResultCache.class);
+        when(cache.get("1", "conv-13", TaskResultCache.TaskType.WEATHER)).thenReturn("杭州 10-24 多云 20℃");
+        when(cache.get("1", "conv-13", TaskResultCache.TaskType.HOTEL)).thenReturn("西湖边民宿 ¥300");
+        TaskRegistry registry = mock(TaskRegistry.class);
+        ReflectionTestUtils.setField(chatService, "taskResultCache", cache);
+        ReflectionTestUtils.setField(chatService, "taskRegistry", registry);
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "完整行程规划"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
+                .thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenReturn(Flux.empty());
+
+        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+
+        ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
+        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        String text = delegated.getValue().getTextContent();
+        // 命中节内联了天气/酒店内容，且声明禁止再调对应工具与预检
+        assertThat(text).contains("【缓存命中").contains("杭州 10-24 多云 20℃").contains("西湖边民宿 ¥300")
+                .contains("禁止再调 getWeatherForecast").contains("禁止再调 searchHotels");
+        // POI 未命中 → 不出现在命中节
+        assertThat(text).doesNotContain("POI 候选池（已就绪");
+        // 命中项对应任务标 DONE；POI（T3）不在标 DONE 之列
+        verify(registry).updateStatus("1", "conv-13", "T2", "DONE");
+        verify(registry).updateStatus("1", "conv-13", "T4", "DONE");
+        verify(registry, org.mockito.Mockito.never()).updateStatus(eq("1"), eq("conv-13"), eq("T3"), anyString());
+    }
+
     // ---------- DONE 会话上的新 PLANNING：需求状态机重开为 COLLECTING 交给 workflow 增量合并 ----------
     @Test
     void planningOnDoneConversationReopensRequirementForMerge() throws Exception {
