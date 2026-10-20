@@ -626,6 +626,46 @@ public class AgentConfig {
     }
 
     /**
+     * 独立质检 Agent（质检规则化的 LLM 兜底）：规则质检（RuleReviewService）未通过时
+     * 由编排层直接调起做定向修订——不再是 planner 的子 Agent spawn，而是独立叶子 Agent。
+     * 原型作用域：每次调用新建实例（不共享状态，同 assessmentPlanningAgent 模式）；
+     * 挂 ReviewerRetryMiddleware（修订轮次保险丝拦 revise_poi_selection ≤2 次）。
+     */
+    @Bean
+    @org.springframework.context.annotation.Scope("prototype")
+    public HarnessAgent standaloneReviewerAgent(Toolkit toolkit,
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model gatewayReviewerModel,
+            TaskWorkspace taskWorkspace) {
+        Toolkit view = toolkit.copy();
+        for (String name : new java.util.ArrayList<>(view.getToolNames())) {
+            if (!REVIEWER_TOOL_WHITELIST.contains(name) && !name.startsWith("mcp__")) {
+                view.removeTool(name);
+            }
+        }
+        return HarnessAgent.builder()
+                .name(ReviewerAgent.AGENT_NAME)
+                .sysPrompt(ReviewerAgent.SYS_PROMPT)
+                .model(gatewayReviewerModel)
+                .toolkit(view)
+                .maxIters(ReviewerAgent.MAX_ITERS)
+                .middlewares(List.of(observationMiddleware,
+                        new ReviewerRetryMiddleware(taskWorkspace, tracingHelper)))
+                .enablePendingToolRecovery(true)
+                .permissionContext(PermissionContextState.builder()
+                        .mode(PermissionMode.BYPASS).build())
+                .workspace(appProperties.getAgentscope().getWorkspacePath())
+                .stateStore(new InMemoryAgentStateStore())
+                .build();
+    }
+
+    /** 独立质检 Agent 的工具白名单（与 buildPlannerAgent 内 reviewer 声明的工具面一致） */
+    private static final java.util.Set<String> REVIEWER_TOOL_WHITELIST = java.util.Set.of(
+            "write_collab_file", "register_task_result", "get_cached_task_result",
+            "plan_route", "searchHotels", "retrieve_poi_candidates",
+            "revise_poi_selection", "assemble_itinerary", "review_retry_hint");
+
+
+    /**
      * planning-agent 工具白名单（S2.11 终态收紧）：数据查询（天气/酒店/交通地理/车票机票）
      * + CollabTools 三件套 + 任务缓存/状态回报 + review_retry_hint。
      * <p>

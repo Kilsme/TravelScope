@@ -119,8 +119,8 @@ public class ItineraryAssembler {
         return result;
     }
 
-    /** 非景点项豁免：车站/机场/酒店/餐厅/车次/航班/交通/集合等（这些不进 POI 校验） */
-    private boolean isNonPoiItem(DraftItem item) {
+    /** 非景点项豁免：车站/机场/酒店/餐厅/车次/航班/交通/集合等（包内共享给质检） */
+    static boolean isNonPoiItem(DraftItem item) {
         String text = (nvl(item.activity()) + nvl(item.location())).toLowerCase();
         String[] exempt = {"站", "机场", "酒店", "宾馆", "餐", "饭", "吃", "高铁", "火车",
                 "航班", "飞机", "地铁", "公交", "打车", "集合", "出发", "抵达", "入住",
@@ -133,8 +133,8 @@ public class ItineraryAssembler {
         return false;
     }
 
-    /** 该项是否命中候选池 POI（activity 或 location 含任一已核验 POI 名，或 POI 名含该项地名） */
-    private boolean poiMentioned(DraftItem item, java.util.Set<String> knownPoiNames) {
+    /** 该项是否命中候选池 POI（双向包含；包内共享给质检） */
+    static boolean poiMentioned(DraftItem item, java.util.Set<String> knownPoiNames) {
         String text = nvl(item.activity()) + nvl(item.location());
         for (String poi : knownPoiNames) {
             if (poi == null || poi.isBlank()) {
@@ -148,8 +148,8 @@ public class ItineraryAssembler {
         return false;
     }
 
-    /** 偏好关键词同义/关联映射（防幻觉校验用）：偏好词 → 行程中可能出现的关联词 */
-    private static final java.util.Map<String, List<String>> PREF_SYNONYMS = java.util.Map.ofEntries(
+    /** 偏好关键词同义/关联映射（包内共享：RuleReviewService 质检判定复用） */
+    static final java.util.Map<String, List<String>> PREF_SYNONYMS = java.util.Map.ofEntries(
             java.util.Map.entry("园林", List.of("园林", "拙政园", "留园", "狮子林", "网师园", "个园", "何园", "豫园")),
             java.util.Map.entry("古镇", List.of("古镇", "同里", "周庄", "乌镇", "西塘", "甪直", "朱家角", "南浔")),
             java.util.Map.entry("海滨", List.of("海滨", "海滩", "海边", "海水浴场", "海岸", "沙滩", "海景")),
@@ -188,8 +188,8 @@ public class ItineraryAssembler {
         }
     }
 
-    /** 偏好是否被行程覆盖：关键词本身或其关联词任一命中 */
-    private boolean preferenceCovered(String keyword, String haystack) {
+    /** 偏好是否被行程覆盖：关键词本身或其关联词任一命中（包内共享给质检） */
+    static boolean preferenceCovered(String keyword, String haystack) {
         if (haystack.contains(keyword)) {
             return true;
         }

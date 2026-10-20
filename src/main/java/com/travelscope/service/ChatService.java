@@ -70,6 +70,13 @@ public class ChatService {
     @org.springframework.beans.factory.annotation.Autowired
     @org.springframework.beans.factory.annotation.Qualifier("assessmentPlanningAgent")
     private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentPlanners;
+    /** 规则质检（零 LLM）：PLANNING 收尾前执行；字段注入避免撑大构造器（测试走 ReflectionTestUtils） */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private RuleReviewService ruleReviewService;
+    /** 规则质检未通过时的 LLM 定向修订兜底（独立质检 Agent，原型实例） */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.beans.factory.annotation.Qualifier("standaloneReviewerAgent")
+    private org.springframework.beans.factory.ObjectProvider<HarnessAgent> standaloneReviewers;
     public HarnessAgent newAssessmentAgent(){return assessmentAgents.getObject();}
     public boolean assessmentWaiting(long identity){
         var state=tripRequirementStore.get(""+identity,SESSION_PREFIX+identity);
@@ -289,7 +296,7 @@ public class ChatService {
         String task = "【系统指令】需求与任务清单已就绪（已由系统登记进任务容器，禁止重新拆分或自行创建清单）。"
                 + "用 read_file 读取 " + collabDir + "/task_backlog.json 与 " + collabDir + "/intake_result.json 执行"
                 + "（任务按 T1→T5 顺序、P0→P1 优先级执行）；"
-                + "产出 " + collabDir + "/itinerary_draft.json 后按流程送审。"
+                + "产出 " + collabDir + "/itinerary_draft.json 后即完成（质检由系统规则校验执行，无需送审）。"
                 + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext;
         UserMessage msg = new UserMessage(task);
         Duration laneTimeout = llmGateway.laneTimeout(true);
@@ -306,11 +313,49 @@ public class ChatService {
         return Flux.concat(
                 Flux.just(milestoneStatus("任务清单已登记（" + backlog.tasks().size() + " 项），开始行程规划")),
                 plannerFlow,
-                // ---------- step5：渲染收尾（replyBuf 注入最终方案 + 质检标注） ----------
+                // ---------- step5：规则质检（零 LLM）→ 渲染收尾 ----------
                 Flux.defer(() -> {
+                    runRuleReview(userIdStr, sessionId);
                     renderPlanningResult(userIdStr, sessionId, replyBuf);
                     return Flux.empty();
                 }));
+    }
+
+    /**
+     * 规则质检（质检降级为规则校验）：planner 结束后先跑 RuleReviewService（纯 Java 三段规则，
+     * 常规路径零 LLM <1s）——全过则 review_passed.json 直接落盘；不通过才唤起独立质检 Agent
+     * 做定向修订（修订后重跑规则校验收敛）。无草案产物（规划中途失败）则跳过。
+     * 任何异常只记日志，绝不影响 step5 渲染。
+     */
+    private void runRuleReview(String userId, String sessionId) {
+        if (ruleReviewService == null) {
+            return;
+        }
+        try {
+            if (taskWorkspaceService.readItineraryDraft(userId, sessionId).isEmpty()) {
+                return;
+            }
+            RuleReviewService.Outcome outcome = ruleReviewService.check(userId, sessionId);
+            if (outcome.passed()) {
+                return;
+            }
+            // 规则不过 → LLM reviewer 定向修订兜底（卡 B 修订闭环保留）
+            if (standaloneReviewers == null) {
+                return;
+            }
+            log.info("规则质检未通过，唤起 reviewer 定向修订: 会话={}, 问题数={}", sessionId,
+                    outcome.issues().size());
+            String collabDir = taskWorkspaceService.collabDirRelativePath(sessionId);
+            HarnessAgent reviewer = standaloneReviewers.getObject();
+            RuntimeContext ctx = RuntimeContext.builder().userId(userId).sessionId(sessionId).build();
+            ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
+            reviewer.streamEvents(new UserMessage(outcome.revisionTask(collabDir, sessionId)), ctx)
+                    .blockLast(llmGateway.laneTimeout(true));
+            // 修订后重跑规则校验收敛（产物以最后一次规则校验为准）
+            ruleReviewService.check(userId, sessionId);
+        } catch (Exception e) {
+            log.warn("规则质检/修订异常（不影响方案渲染）: 会话={}, 原因={}", sessionId, e.getMessage());
+        }
     }
 
     /**
