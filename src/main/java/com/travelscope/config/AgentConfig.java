@@ -623,7 +623,8 @@ public class AgentConfig {
      */
     public static void revokeOffScriptTools(HarnessAgent agent) {
         Toolkit delegate = agent.getDelegate().getToolkit();
-        for (String name : new String[]{"edit_file", "write_file", "web_search", "web_fetch"}) {
+        for (String name : new String[]{"edit_file", "write_file", "web_search", "web_fetch",
+                "execute"}) {
             delegate.removeTool(name);
         }
     }
@@ -702,7 +703,7 @@ public class AgentConfig {
             "getWeather", "getWeatherForecast", "searchHotels",
             "getDrivingRoute", "getTransitRoute", "geocode",
             "queryTrainTickets", "queryFlightTickets",
-            "retrieve_poi_candidates", "plan_route", "write_collab_file",
+            "retrieve_poi_candidates", "select_poi_shortlist", "plan_route", "write_collab_file",
             "assemble_itinerary",
             // register_task_result 保留：reviewer 回炉修订自登记仍走工具；
             // update_task_status 已移除——planner 的任务状态由 BookkeepingMiddleware 代码副作用维护

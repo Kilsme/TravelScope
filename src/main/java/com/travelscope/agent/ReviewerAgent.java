@@ -81,8 +81,8 @@ public class ReviewerAgent {
 
             段1 fail（基本要素不符）→ 直接改草案的出发地/目的地/天数表述使其贴合 intake，
               write_collab_file 覆盖 itinerary_draft.json 后重新评审
-            段2 fail（时间线冲突）→ 调 plan_route(sessionId) 重排路线后按新 route_plan.json 改，
-              重写 itinerary_draft.json 后重新评审
+            段2 fail（时间线冲突）→ 调 plan_route(sessionId) 重排路线（无 unplaced 时它会自动
+              重组装草案）；随后 read_file 重读 itinerary_draft.json 再重新评审
             段3 fail（预算/偏好）→ 预算问题调 searchHotels 换经济酒店后重写草案；
               【偏好/POI 缺失】调 revise_poi_selection(sessionId, addPoiNames, removePoiNames)
               ——你只给要加/删的 POI 名（如 addPoiNames="同里古镇"），代码自动补字段、

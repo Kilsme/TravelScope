@@ -22,6 +22,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -87,7 +88,7 @@ public class CollabTools {
     @Tool(description = "检索目的地 POI 候选池（知识库 RAG+ES 双路召回 + 高德硬字段补全，批量一次成型）。"
             + "返回候选池 JSON：candidates 每条含 chunkId/content(片段原文)/source/score(融合分)/"
             + "vectorScore(余弦相似度)/hitVariants，stats 为池统计。拿到后由你做偏好筛选排序，"
-            +  "结果经 write_collab_file 写 poi_shortlist.json")
+            + "结果经 select_poi_shortlist 传名单定案落盘")
     public String retrieve_poi_candidates(
             @ToolParam(name = "destination", description = "目的地城市，如「杭州」")
             String destination,
@@ -110,14 +111,160 @@ public class CollabTools {
     }
 
     /**
+     * POI 筛选名单制（卡③：LLM 只传选中名单，代码校验候选池+补硬字段+落盘，零手写 JSON）。
+     * 候选池来源=首轮 retrieve_poi_candidates 的返回全文（记账中间件登记进 POI 缓存）；
+     * 名单校验=候选 content 文本 contains 命中（池外名直接拒绝，防幻觉加锁）；
+     * lng/lat/rating/openHours 候选池无结构化字段（在 content 文本内）→ 置空（契约允许）。
+     */
+    @Tool(description = "POI 筛选定案（你只给选中名单，代码校验+补字段+落盘 poi_shortlist.json）。"
+            + "names：选中的 POI 名（逗号/顿号分隔；候选池内优先，领域常识名也可——代码会逐一调实时 POI 库校验并补坐标/开放时段，查无此地会被整体拒绝）；"
+            + "durationMins：与 names 同顺序的建议游玩分钟数（逗号分隔，可空，默认 120）；"
+            + "reasons：与 names 同顺序的一句话入选理由（分号分隔，可空）。"
+            + "数量目标 ≥ 2×days（每日 2~4 个配额）。严禁手写 shortlist JSON")
+    public String select_poi_shortlist(
+            @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
+            String sessionId,
+            @ToolParam(name = "names", description = "选中 POI 名，逗号/顿号分隔（必须来自候选池）")
+            String names,
+            @ToolParam(name = "durationMins", description = "与 names 同顺序的游玩分钟数，逗号分隔，可空",
+                    required = false)
+            String durationMins,
+            @ToolParam(name = "reasons", description = "与 names 同顺序的一句话理由，分号分隔，可空",
+                    required = false)
+            String reasons,
+            RuntimeContext ctx) {
+        String userId = ctx.getUserId();
+        try {
+            Optional<IntakeResult> intake = taskWorkspace.readIntakeResult(userId, sessionId);
+            if (intake.isEmpty()) {
+                return "ERROR: 会话目录缺 intake_result.json";
+            }
+            String destination = intake.get().fields().destination() == null
+                    ? null : intake.get().fields().destination().value();
+            if (destination == null || destination.isBlank()) {
+                return "ERROR: intake_result.json 中目的地缺失";
+            }
+            String daysStr = intake.get().fields().days() == null ? null : intake.get().fields().days().value();
+
+            // 候选池（首轮 retrieve 工具返回的 JSON 全文，由记账中间件登记进 POI 缓存）
+            String poolJson = taskResultCache.get(userId, sessionId,
+                    com.travelscope.service.TaskResultCache.TaskType.POI);
+            // 候选池只用于 source 标记继承：缺失/解析失败不阻断（硬门在 searchPois 实证）
+            PoiCandidatePool pool = new PoiCandidatePool(List.of(),
+                    new PoiCandidatePool.PoolStats(0, new java.util.LinkedHashMap<>(), 0, 0));
+            if (poolJson != null && !poolJson.isBlank()) {
+                try {
+                    PoiCandidatePool parsed = JSON.parseObject(poolJson, PoiCandidatePool.class);
+                    if (parsed != null && parsed.candidates() != null) {
+                        pool = parsed;
+                    }
+                } catch (Exception e) {
+                    log.debug("候选池缓存解析失败（仅丢 source 继承，不阻断）: {}", e.getMessage());
+                }
+            }
+
+            List<String> selected = splitNames(names);
+            if (selected.isEmpty()) {
+                return "ERROR: names 为空——数量目标 ≥ 2×days 个 POI 名";
+            }
+            List<Integer> durations = parseIntList(durationMins);
+            List<String> reasonList = splitReasons(reasons);
+
+            // 定案规则（卡③+conv-56/57 实证修正）：候选池只是挑选建议（知识库种子偏杭州，
+            // 池薄是常态），防幻觉硬锁改为「实时 POI 库实证存在」——每个名字调 searchPois
+            // （高德/飞猪）验证并补硬字段（lng/lat/openHours/rating，路线求解要坐标）；
+            // 池内命中 → source 沿用候选池来源标记；查无此地 → 真幻觉，拒绝。
+            List<String> rejected = new ArrayList<>();
+            List<com.travelscope.collab.PoiShortlist.PoiItem> items = new ArrayList<>();
+            for (int i = 0; i < selected.size(); i++) {
+                String name = selected.get(i);
+                var inPool = pool.candidates().stream()
+                        .filter(c -> c.content() != null && c.content().contains(name))
+                        .findFirst();
+                com.travelscope.collab.PoiShortlist.PoiItem resolved = resolvePoiItem(destination, name);
+                if (resolved == null) {
+                    rejected.add(name);
+                    continue;
+                }
+                Integer dur = i < durations.size() ? durations.get(i) : null;
+                String reason = i < reasonList.size() ? reasonList.get(i) : null;
+                items.add(new com.travelscope.collab.PoiShortlist.PoiItem(
+                        resolved.name(), resolved.lng(), resolved.lat(), resolved.rating(),
+                        resolved.openHours(), dur == null ? 120 : dur,
+                        inPool.map(c -> c.source()).orElse(resolved.source()),
+                        reason == null ? resolved.reason() : reason));
+            }
+            // 防幻觉锁：池外名单整体拒绝，不部分落盘
+            if (!rejected.isEmpty()) {
+                return "ERROR: 以下 POI 在实时 POI 库中查无此地（未落盘任何内容）：" + rejected
+                        + "——请核对名字（用候选池/常识中的正式名称）后重调";
+            }
+
+            int days = parseDays(daysStr);
+            String warn = days > 0 && items.size() < 2 * days
+                    ? "（提示：选定 " + items.size() + " 个 < 2×days=" + (2 * days) + " 目标，确认是否漏选）" : "";
+
+            taskWorkspace.writePoiShortlist(userId, sessionId, new com.travelscope.collab.PoiShortlist(
+                    destination, "候选池 " + pool.candidates().size() + " 个，名单制筛选 " + items.size() + " 个",
+                    items));
+            log.info("select_poi_shortlist: 用户={}, 会话={}, 落盘 {} 个（候选池 {} 个）",
+                    userId, sessionId, items.size(), pool.candidates().size());
+            return "POI 筛选完成：已落盘 poi_shortlist.json 共 " + items.size() + " 个（候选池 "
+                    + pool.candidates().size() + " 个）" + warn + "。下一步调 plan_route。";
+        } catch (Exception e) {
+            log.warn("select_poi_shortlist 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
+            return "ERROR: POI 筛选落盘失败: " + e.getMessage();
+        }
+    }
+
+    /** 逗号/顿号分隔的整数列表（非法项占位置 null，保持与 names 的同序对齐） */
+    private static List<Integer> parseIntList(String text) {
+        if (text == null || text.isBlank()) {
+            return List.of();
+        }
+        List<Integer> out = new ArrayList<>();
+        for (String t : text.split("[,，、]")) {
+            try {
+                out.add(Integer.parseInt(t.trim()));
+            } catch (Exception e) {
+                out.add(null);
+            }
+        }
+        return out;
+    }
+
+    /** 分号分隔的理由列表（理由内可含逗号；分号在中文理由里罕见） */
+    private static List<String> splitReasons(String reasons) {
+        if (reasons == null || reasons.isBlank()) {
+            return List.of();
+        }
+        return java.util.Arrays.stream(reasons.split("[;；]"))
+                .map(String::trim).filter(s -> !s.isEmpty()).toList();
+    }
+
+    /** 天数解析（非法/缺失按 1 天兜底——只用于召回池规模，不阻断） */
+    private static int parseDays(String daysStr) {
+        try {
+            return Integer.parseInt(daysStr.trim());
+        } catch (Exception e) {
+            return 1;
+        }
+    }
+
+    /** plan_route 无 unplaced 时自动链进组装的返回标记（中间件凭它补 ITINERARY 登记与草案产物捕获） */
+    public static final String AUTO_ASSEMBLED_MARKER = "已自动完成组装落盘 itinerary_draft.json";
+
+    /**
      * 分日路线求解并落盘 route_plan.json。输入全部来自会话目录契约文件：
      * poi_shortlist.json（POI 清单）+ intake_result.json（天数/目的地）。
      * 覆盖约束参数用于质检回炉后的调参重排。
+     * 无 unplaced 时自动链进组装（LLM 免评估轮）：落盘 itinerary_draft.json 并返回合并摘要。
      */
     @Tool(description = "分日路线求解（代码 VRPTW：最近邻构造 + 2-opt 优化 + 时段顺排，零 LLM），"
-            + "求解结果落盘 route_plan.json 并返回摘要。前置：本会话已用 write_collab_file 写入 "
+            + "求解结果落盘 route_plan.json。前置：本会话已用 select_poi_shortlist 落盘 "
             + "poi_shortlist.json；天数与目的地自动取 intake_result.json。"
-            + "maxDailyCommuteMin/preferTransit 为可选约束覆盖，供质检回炉调参重排用")
+            + "无 unplaced 时会自动完成 itinerary_draft.json 组装落盘（返回合并摘要），"
+            + "有 unplaced 时返回未排入清单由你取舍。maxDailyCommuteMin/preferTransit 为可选约束覆盖")
     public String plan_route(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值，如 conv-13")
             String sessionId,
@@ -128,6 +275,13 @@ public class CollabTools {
                     required = false)
             Boolean preferTransit,
             RuntimeContext ctx) {
+        return planRouteInternal(sessionId, maxDailyCommuteMin, preferTransit, ctx, true);
+    }
+
+    /** plan_route 主体；autoChain=false 供 revise_poi_selection 内部调用（重组装由它自己收尾，防双重组装） */
+    private String planRouteInternal(
+            String sessionId, Integer maxDailyCommuteMin, Boolean preferTransit,
+            RuntimeContext ctx, boolean autoChain) {
         String userId = ctx.getUserId();
         // 天数与目的地取需求契约（唯一事实源，防止 agent 传参与需求漂移）
         Optional<IntakeResult> intake = taskWorkspace.readIntakeResult(userId, sessionId);
@@ -176,7 +330,24 @@ public class CollabTools {
                     ? com.travelscope.assessment.FixtureServices.planner(taskWorkspace) : routePlannerService;
             RoutePlan plan = planner.planAndWrite(userId, sessionId, pois,
                     constraints, destination);
-            return JSON.toJSONString(plan);
+            String routeJson = JSON.toJSONString(plan);
+            // 无 unplaced → 代码自动链进组装（LLM 免评估轮）；组装失败降级为提示手动调
+            boolean noUnplaced = plan.solverMeta() == null
+                    || plan.solverMeta().unplaced() == null || plan.solverMeta().unplaced().isEmpty();
+            if (autoChain && noUnplaced) {
+                String assembled = doAssembleItinerary(sessionId, ctx);
+                if (!assembled.startsWith("ERROR")) {
+                    log.info("plan_route 无溢出，自动链进组装: 用户={}, 会话={}", userId, sessionId);
+                    return routeJson + "\n\n" + AUTO_ASSEMBLED_MARKER + "：" + assembled
+                            + "（路线与草案均已落盘，请直接进入第 5 步一行收尾）";
+                }
+                log.warn("plan_route 自动链组装失败（降级为提示手动组装）: 用户={}, 会话={}, 原因={}",
+                        userId, sessionId, assembled);
+                // 内嵌失败原因时剥掉 ERROR 前缀（本返回是成功级结果，防误判）
+                String detail = assembled.startsWith("ERROR: ") ? assembled.substring(7) : assembled;
+                return routeJson + "\n\n（自动组装未完成：" + detail + "——请手动调 assemble_itinerary）";
+            }
+            return routeJson;
         } catch (Exception e) {
             log.warn("plan_route 求解失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: 路线求解失败: " + e.getMessage();
@@ -226,16 +397,22 @@ public class CollabTools {
                 return "ERROR: 草案结构字段生成失败（模型未返回有效结构，已自动重试 1 次），请重试一次";
             }
 
-            // ② 读缓存（天气/酒店/车票）+ poi_shortlist 已核验 POI 集合 + intake 偏好，代码渲染
-            String weather = taskResultCache.get(userId, sessionId,
-                    com.travelscope.service.TaskResultCache.TaskType.WEATHER);
-            String hotel = taskResultCache.get(userId, sessionId,
-                    com.travelscope.service.TaskResultCache.TaskType.HOTEL);
-            String train = taskResultCache.get(userId, sessionId,
-                    com.travelscope.service.TaskResultCache.TaskType.TRAIN);
+            // ② 读缓存（天气/酒店/车票）+ poi_shortlist 已核验 POI 集合 + intake 偏好，代码渲染。
+            // 缓存原文是工具返回的原始 JSON（记账去 LLM 化后不再经 LLM 消化）——进组装器前
+            // 必须过 TaskResultFormatter 转摘要，否则 raw JSON 直通最终方案上屏（2026-10-20 实证）
+            String weather = com.travelscope.service.TaskResultFormatter.formatWeather(
+                    taskResultCache.get(userId, sessionId,
+                            com.travelscope.service.TaskResultCache.TaskType.WEATHER));
+            String hotel = com.travelscope.service.TaskResultFormatter.formatHotel(
+                    taskResultCache.get(userId, sessionId,
+                            com.travelscope.service.TaskResultCache.TaskType.HOTEL));
+            String train = com.travelscope.service.TaskResultFormatter.formatTrain(
+                    taskResultCache.get(userId, sessionId,
+                            com.travelscope.service.TaskResultCache.TaskType.TRAIN));
             if (train == null) {
-                train = taskResultCache.get(userId, sessionId,
-                        com.travelscope.service.TaskResultCache.TaskType.FLIGHT);
+                train = com.travelscope.service.TaskResultFormatter.formatTrain(
+                        taskResultCache.get(userId, sessionId,
+                                com.travelscope.service.TaskResultCache.TaskType.FLIGHT));
             }
             // 防幻觉与偏好硬约束的校验输入
             com.travelscope.collab.PoiShortlist shortlist =
@@ -327,8 +504,8 @@ public class CollabTools {
                     pois);
             taskWorkspace.writePoiShortlist(userId, sessionId, updated);
 
-            // ④ 重跑 plan_route → 重组装
-            String routeResult = plan_route(sessionId, null, null, ctx);
+            // ④ 重跑 plan_route（不走自动链——重组装由下面的 doAssembleItinerary 收尾，防双重组装）
+            String routeResult = planRouteInternal(sessionId, null, null, ctx, false);
             if (routeResult.startsWith("ERROR")) {
                 return "ERROR: POI 已更新但路线重排失败: " + routeResult;
             }
@@ -474,6 +651,12 @@ public class CollabTools {
             String contentJson,
             RuntimeContext ctx) {
         String userId = ctx.getUserId();
+        // 名单制硬锁（卡③）：poi_shortlist 必须走 select_poi_shortlist——候选池校验+硬字段补齐
+        // 由代码保证，手写 JSON 是幻觉入口（conv-55 实测 LLM 绕过名单制手写）
+        if ("poi_shortlist.json".equals(fileName)) {
+            return "ERROR: poi_shortlist.json 不接受手写——请改用 select_poi_shortlist(sessionId, names, "
+                    + "durationMins, reasons) 传选中名单（必须全部来自候选池），代码校验+补字段+落盘";
+        }
         Class<?> type = SUPPORTED_FILES.get(fileName);
         if (type == null) {
             return "ERROR: 不支持的契约文件名「" + fileName + "」，支持: "

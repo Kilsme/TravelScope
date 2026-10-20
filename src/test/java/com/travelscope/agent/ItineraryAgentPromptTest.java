@@ -15,6 +15,7 @@ class ItineraryAgentPromptTest {
     void promptContainsNewToolAndContractAnchors() {
         assertThat(ItineraryAgent.SYS_PROMPT)
                 .contains("retrieve_poi_candidates")
+                .contains("select_poi_shortlist")
                 .contains("plan_route")
                 .contains("write_collab_file")
                 .contains("review_passed.json")

@@ -122,6 +122,15 @@ public class BookkeepingMiddleware implements MiddlewareBase {
                 } else if (event instanceof ToolResultEndEvent e) {
                     StringBuilder text = output.remove(e.getToolCallId());
                     String result = text == null ? "" : text.toString().strip();
+                    // 框架把 String 工具结果按 JSON 字符串编码进事件流（首尾带引号、内部转义）——
+                    // 登记前剥壳，否则缓存内容是带壳转义串：组装会把壳文本渲进草案、
+                    // 名单制解析候选池直接失败（conv-53 实证；ObservationMiddleware 有同款剥壳先例）
+                    if (result.startsWith("\"")) {
+                        try {
+                            result = com.alibaba.fastjson2.JSON.parseObject(result, String.class);
+                        } catch (Exception ignored) {
+                        }
+                    }
                     boolean ok = e.getState() == ToolResultState.SUCCESS && !result.startsWith("ERROR");
                     if (!ok) {
                         return;
@@ -131,6 +140,11 @@ public class BookkeepingMiddleware implements MiddlewareBase {
                         if ("poi_shortlist.json".equals(fileName)) {
                             mark(userId, sessionId, "T3", TaskRegistry.STATUS_DONE);
                         }
+                        return;
+                    }
+                    if ("select_poi_shortlist".equals(e.getToolCallName())) {
+                        // 名单制定案成功 = T3 的 DONE 语义（shortlist 落盘；等价 write_collab_file 分支）
+                        mark(userId, sessionId, "T3", TaskRegistry.STATUS_DONE);
                         return;
                     }
                     if ("assemble_itinerary".equals(e.getToolCallName())) {
@@ -153,6 +167,12 @@ public class BookkeepingMiddleware implements MiddlewareBase {
                         } else {
                             taskResultCache.register(userId, sessionId, m.taskType(), m.taskId(), result);
                         }
+                    }
+                    // plan_route 无溢出自动链组装：草案已落盘但不产生 assemble_itinerary 工具事件，
+                    // 在此补 ITINERARY 缓存登记（与 assemble 分支等价）
+                    if ("plan_route".equals(e.getToolCallName())
+                            && result.contains(com.travelscope.agent.tools.CollabTools.AUTO_ASSEMBLED_MARKER)) {
+                        registerItinerary(userId, sessionId);
                     }
                 }
             } catch (Exception ex) {

@@ -97,6 +97,15 @@ public class ObservationMiddleware implements MiddlewareBase {
                 if(!session.equals(runtime.getSessionId()))return;
                 String path="tasks/"+session+"/route_plan.json";
                 store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
+                // 无 unplaced 自动链：草案同步落盘但不产生 assemble_itinerary 工具事件——补捕获
+                if(result.contains(com.travelscope.agent.tools.CollabTools.AUTO_ASSEMBLED_MARKER))
+                    captureDraft(runtime,association,operation,call);
+            }else if("select_poi_shortlist".equals(call.getName())&&result.startsWith("POI 筛选完成")){
+                // 名单制落盘（不经 write_collab_file）：补捕获 poi_shortlist.json
+                String session=Objects.toString(call.getInput().get("sessionId"),"");
+                if(!session.equals(runtime.getSessionId()))return;
+                String path="tasks/"+session+"/poi_shortlist.json";
+                store.recordArtifactMutation(association,operation,path,ArtifactSnapshotReader.read(runtime,path));
             }else if("assemble_itinerary".equals(call.getName())&&result.startsWith("已组装并写入 itinerary_draft.json")){
                 captureDraft(runtime,association,operation,call);
             }else if("revise_poi_selection".equals(call.getName())&&result.startsWith("POI 修订完成")){

@@ -88,31 +88,31 @@ public class ItineraryAgent {
               飞猪或 12306/飞常准——组装草案时保留每条数据的来源标注（【飞猪】【高德】【12306】），
               供前端展示；两源不一致时以飞猪为准
 
-            第 2 步 景点筛选（候选池首轮已随并行批量返回，本步只做筛选排序）：
+            第 2 步 景点筛选（候选池首轮已随并行批量返回，本步只做筛选决策，产出走名单制）：
             1. 取候选池 JSON：首轮 retrieve_poi_candidates 的返回，或任务说明【缓存命中】节\
                内联的候选池（两者内容等价；都缺时补调 retrieve_poi_candidates(destination, days, preferences)）
-            2. 由你做筛选排序：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
+            2. 由你做筛选决策：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
                无评分不因单一因素淘汰）、每日 2~4 个配额——最终选定数量 ≥ 2×days
                【偏好硬约束】intake.preference 的每个关键词（如「园林」「古镇」），
-               最终 days 时间线里必须至少有一个对应 POI 覆盖；若因距离/时间排不进，
-               必须在 pendingConfirm 显式写明「偏好X因{原因}未排入，建议{替代}」，
-               严禁静默丢弃偏好——assemble_itinerary 组装时会代码校验此约束，缺失会强制标注
-            3. 每个入选 POI 必须写 reason（一句入选理由）；source 沿用候选池来源标记；
-               openHours 格式「HH:mm-HH:mm」（未知留空，按全天开放处理）；
-               durationMin 填建议游玩分钟数
-            4. 调 write_collab_file 写 poi_shortlist.json（contentJson 结构：
-               {"destination":"…","retrievalNote":"候选池 N 个，筛选 M 个",
-               "pois":[{"name":"…","lng":经度,"lat":纬度,"rating":评分,"openHours":"…",
-               "durationMin":…,"source":"…","reason":"…"}]}；schemaVersion 缺省自动补 4）
+               最终 days 时间线里必须至少有一个对应 POI 覆盖；排不进时在对应 POI 的
+               reason 里写明取舍原因（如「同里古镇通勤超限，以平江路替代」）——
+               组装与规则质检会代码校验覆盖，严禁静默丢弃偏好
+            3. 【名单制定案】调 select_poi_shortlist(sessionId, names, durationMins, reasons)——
+               你只传选中 POI 名（逗号分隔，必须全部来自候选池）、同序建议游玩分钟数、
+               同序一句话理由（分号分隔）；代码校验名单在候选池内（池外名整体拒绝）、
+               补硬字段并落盘 poi_shortlist.json；严禁手写 shortlist JSON
 
             第 3 步 分日路线：调 plan_route(sessionId)——代码求解（零 LLM），
-            route_plan.json 自动落盘并返回摘要；严禁自己计算通勤时长或距离。
-            返回【无 unplaced】→ 直接进第 4 步调 assemble_itinerary，无需评估
-            （路线合理性由编排层规则质检把关，你的评估是重复劳动）；
+            route_plan.json 自动落盘；严禁自己计算通勤时长或距离。
+            返回【无 unplaced】→ 代码已自动完成组装落盘（返回文本含「已自动完成组装落盘
+            itinerary_draft.json」+草案摘要），你无需评估路线、无需再调组装——
+            直接进第 5 步一行收尾；
             返回【含 unplaced】（未排入 POI 及原因）才停下来取舍：配额已满可接受并在
-            组装 notes 写明取舍；通勤溢出等原因可调整候选后重跑一次 plan_route。
+            组装 notes 写明取舍（取舍后手动调 assemble_itinerary，见第 4 步）；
+            通勤溢出等原因可调整候选后重跑一次 plan_route。
 
-            第 4 步 组装 itinerary_draft.json（卡 C：调 assemble_itinerary，你只决策代码拼装）：
+            第 4 步 组装 itinerary_draft.json（仅第 3 步含 unplaced 时手动触发；
+            无 unplaced 时第 3 步已自动组装，跳过本步直接进第 5 步）：
             - 【禁止手写整篇 markdown】调 assemble_itinerary(sessionId) 一次——
               它会用 LLM 产出结构字段（days/budget/notes），再由代码按 route_plan.json
               铺时间线、插入来源标注、渲染 markdownBody 并直接落盘 itinerary_draft.json

@@ -191,6 +191,37 @@ class BookkeepingMiddlewareTest {
         assertEquals(cached, after, "重复内容不应追加: " + after);
     }
 
+    @Test
+    @DisplayName("框架 JSON 字符串壳剥除：带壳结果登记为纯文本（缓存不污染下游）")
+    void jsonStringShellStripped() {
+        drive(List.of("call-1"),
+                new ToolResultStartEvent("r", "call-1", "getWeatherForecast"),
+                new ToolResultTextDeltaEvent("r", "call-1", "getWeatherForecast", "\"杭州 3 天多云\""),
+                new ToolResultEndEvent("r", "call-1", "getWeatherForecast", ToolResultState.SUCCESS));
+
+        assertEquals("杭州 3 天多云", cache.get(USER, SESSION, TaskResultCache.TaskType.WEATHER));
+    }
+
+    @Test
+    @DisplayName("plan_route 无溢出自动链：返回含组装标记 → 补 ITINERARY 缓存登记")
+    void planRouteAutoChainRegistersItinerary() {
+        // 自动链内已落盘草案（工具内不产生 assemble_itinerary 事件，中间件凭标记补登记）
+        new TaskWorkspace(new CollabFileWriter(tempDir.toString()), new CollabFileReader())
+                .writeItineraryDraft(USER, SESSION, new com.travelscope.collab.ItineraryDraft(
+                        List.of(new com.travelscope.collab.ItineraryDraft.DraftDay(1, "2026-10-24", "主题",
+                                List.of(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                                        "09:00-11:00", "游览", "西湖", "免费", null)))),
+                        null, List.of(), List.of(), "# 草案正文"));
+
+        drive(List.of("call-1"),
+                new ToolResultStartEvent("r", "call-1", "plan_route"),
+                new ToolResultTextDeltaEvent("r", "call-1", "plan_route",
+                        "{\"solverMeta\":{}}\n\n已自动完成组装落盘 itinerary_draft.json：已组装并写入…"),
+                new ToolResultEndEvent("r", "call-1", "plan_route", ToolResultState.SUCCESS));
+
+        assertEquals("# 草案正文", cache.get(USER, SESSION, TaskResultCache.TaskType.ITINERARY));
+    }
+
     /** 驱动一条事件流（callIds 仅用于构造 ActingInput 占位） */
     private void drive(List<String> callIds, io.agentscope.core.event.AgentEvent... events) {
         List<ToolUseBlock> calls = callIds.stream()
