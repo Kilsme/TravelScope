@@ -604,11 +604,28 @@ public class AgentConfig {
         HarnessAgent agent = buildPlannerAgent(toolkit, gatewayChatModel, gatewayReviewerModel,
                 List.of(new ReviewerRetryMiddleware(taskWorkspaceService, tracingHelper)),
                 taskRegistry, taskResultCache, taskWorkspaceService);
+        revokeOffScriptTools(agent);
         log.info("Agent 拓扑终态（v4 P2 收口）：{} → {} → {}（spawn 深度 3 层内）；"
                         + "planning 工具面 = 白名单 {} 项 + MCP(mcp__*) 放行 + agent_spawn/task_* 内置",
                 TravelMasterAgent.AGENT_NAME, ItineraryAgent.AGENT_NAME, ReviewerAgent.AGENT_NAME,
                 PLANNER_TOOL_WHITELIST.size());
         return agent;
+    }
+
+    /**
+     * 框架默认脱稿工具收编（后置剪枝，探针实证 2026-10-20：read_file/write_file/edit_file/
+     * web_search/web_fetch 等由框架挂在 delegate toolkit，白名单视图管不到）。
+     * 规划/质检类 Agent 的产物只能经 write_collab_file / assemble_itinerary 落盘（Schema 校验
+     * +原子写+观测捕获），数据只能走白名单查询工具——edit_file/write_file 是绕过契约的
+     * 脱稿口子（conv-52 四轮实测 planner 手编 route_plan.json），web_search/web_fetch 是
+     * 无来源标注的幻觉源，一并下线。read_file 保留（委派缺内联节的回退路径）。
+     * master 保留全部（v3 兜底链手写产物需要 edit）。
+     */
+    public static void revokeOffScriptTools(HarnessAgent agent) {
+        Toolkit delegate = agent.getDelegate().getToolkit();
+        for (String name : new String[]{"edit_file", "write_file", "web_search", "web_fetch"}) {
+            delegate.removeTool(name);
+        }
     }
 
     /** 每次评测执行使用独立规划实例，不与在线规划共享 Agent 状态。 */
@@ -620,9 +637,12 @@ public class AgentConfig {
             TaskWorkspace workspace,
             TaskRegistry taskRegistry,
             com.travelscope.service.TaskResultCache taskResultCache) {
-        return buildPlannerAgent(toolkit.copy(), mainModel, reviewerModel,
+        // 评测与在线同一构建口径：脱稿工具一并收编
+        HarnessAgent agent = buildPlannerAgent(toolkit.copy(), mainModel, reviewerModel,
                 List.of(new ReviewerRetryMiddleware(workspace, tracingHelper)),
                 taskRegistry, taskResultCache, workspace);
+        revokeOffScriptTools(agent);
+        return agent;
     }
 
     /**
@@ -642,7 +662,7 @@ public class AgentConfig {
                 view.removeTool(name);
             }
         }
-        return HarnessAgent.builder()
+        HarnessAgent agent = HarnessAgent.builder()
                 .name(ReviewerAgent.AGENT_NAME)
                 .sysPrompt(ReviewerAgent.SYS_PROMPT)
                 .model(gatewayReviewerModel)
@@ -656,6 +676,8 @@ public class AgentConfig {
                 .workspace(appProperties.getAgentscope().getWorkspacePath())
                 .stateStore(new InMemoryAgentStateStore())
                 .build();
+        revokeOffScriptTools(agent);
+        return agent;
     }
 
     /** 独立质检 Agent 的工具白名单（与 buildPlannerAgent 内 reviewer 声明的工具面一致） */

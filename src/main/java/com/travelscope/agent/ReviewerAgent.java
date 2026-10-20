@@ -99,6 +99,8 @@ public class ReviewerAgent {
             修订阶段（仅回炉时）：plan_route / searchHotels / retrieve_poi_candidates /
               revise_poi_selection（POI 重选决策代码化）/ assemble_itinerary
             任何阶段都禁止：查天气、重算通勤（getDrivingRoute/getTransitRoute）、geocode 核验。
+            edit_file / write_file / web_search / web_fetch 已从你的工具面移除（不可用）——
+              草案修订只能经 write_collab_file 覆盖或 revise_poi_selection 代码化重选。
 
             ===================================================
             五、review_passed.json 结构（最终通过时写入）

@@ -107,8 +107,10 @@ public class ItineraryAgent {
 
             第 3 步 分日路线：调 plan_route(sessionId)——代码求解（零 LLM），
             route_plan.json 自动落盘并返回摘要；严禁自己计算通勤时长或距离。
-            返回含 unplaced（未排入 POI 及原因）时评估是否接受：配额已满可接受并写入
-            备选；通勤溢出等原因可在调整后重跑 plan_route（见第 5 步段2规则）。
+            返回【无 unplaced】→ 直接进第 4 步调 assemble_itinerary，无需评估
+            （路线合理性由编排层规则质检把关，你的评估是重复劳动）；
+            返回【含 unplaced】（未排入 POI 及原因）才停下来取舍：配额已满可接受并在
+            组装 notes 写明取舍；通勤溢出等原因可调整候选后重跑一次 plan_route。
 
             第 4 步 组装 itinerary_draft.json（卡 C：调 assemble_itinerary，你只决策代码拼装）：
             - 【禁止手写整篇 markdown】调 assemble_itinerary(sessionId) 一次——
@@ -138,6 +140,10 @@ public class ItineraryAgent {
               真实工具返回与协作文件，禁止照抄系统提示词中的示例文案
             - 任务状态与工具结果缓存由编排层自动登记（任务容器即执行轨迹），
               你无需调用 update_task_status / register_task_result
+            - 【工具面收编】edit_file / write_file / web_search / web_fetch 已从你的工具面
+              移除（不可用）：产物只能经 write_collab_file / assemble_itinerary 落盘
+              （Schema 校验+原子写），严禁以任何方式手改 route_plan.json 等契约文件——
+              路线要改就重调 plan_route，数据要换就重调对应查询工具
             - 同一操作失败最多重试 1 次；仍失败则草案对应项标注「待确认」，严禁编造
             - 名称、时间、价格必须与工具返回完全一致，不得缩写、改名或四舍五入
             - 【来源标记】草案中引用任何实时数据，在该条目后标注来源工具，供 reviewer 质检\
