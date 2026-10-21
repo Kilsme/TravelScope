@@ -16,6 +16,10 @@ export interface ChatMessage {
   intent?: string
   /** 前端临时状态：质检结论载荷 JSON（review_report SSE 事件；R1 分级渲染：passed/total/segments/warnings） */
   reviewReport?: string
+  /** 前端临时状态：行程骨架（R3② itinerary_skeleton 事件；route_plan 落盘即推） */
+  itinerarySkeleton?: ItinerarySkeleton
+  /** 前端临时状态：逐天正文预览（R3② itinerary_day 事件；修订轮变化天 version+1 重推） */
+  itineraryDays?: ItineraryDaySection[]
   /** 前端临时状态：需求清单卡片（requirement_form SSE 事件；重推即原地刷新） */
   requirementForm?: RequirementFormPayload
   /** 前端临时状态：清单已提交（折叠为只读摘要，防重复提交） */
@@ -39,8 +43,23 @@ export type ChatEventType =
   | 'clarify_question'
   | 'requirement_form'
   | 'review_report'
+  | 'itinerary_skeleton'
+  | 'itinerary_day'
   | 'done'
   | 'error'
+
+/** R3② 行程骨架（itinerary_skeleton 事件载荷） */
+export interface ItinerarySkeleton {
+  dayCount: number
+  days: { day: number; poiNames: string[] }[]
+}
+
+/** R3② 逐天正文预览（itinerary_day 事件载荷；修订轮变化天 version+1 重推） */
+export interface ItineraryDaySection {
+  day: number
+  version: number
+  markdown: string
+}
 
 export interface ChatEvent {
   event: ChatEventType

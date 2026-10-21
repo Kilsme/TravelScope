@@ -40,6 +40,11 @@ public class ChatEvent {
      *  前端渲染可编辑清单卡片（要求采集期间每轮重发以原地刷新） */
     public static final String TYPE_REQUIREMENT_FORM = "requirement_form";
     public static final String TYPE_REVIEW_REPORT = "review_report";
+    /** R3② 流式行程进度（P1-lite）：route_plan 落盘即推骨架，载荷 {days:[{day,poiNames[]}],dayCount} */
+    public static final String TYPE_ITINERARY_SKELETON = "itinerary_skeleton";
+    /** R3② 流式行程进度：逐天正文（按「## Day N」节切分），载荷 {day,version,markdown}；
+     *  修订轮变化天按 version+1 重推（preview→终稿由 done 全文权威替换） */
+    public static final String TYPE_ITINERARY_DAY = "itinerary_day";
     public static final String TYPE_DONE = "done";
     public static final String TYPE_ERROR = "error";
 

@@ -392,6 +392,33 @@
   color: #8a6d3b;
 }
 
+/* R3② 流式行程预览（骨架先行 + 逐天填充，done 全文为终稿） */
+.itinerary-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.itinerary-preview-head {
+  font-size: 0.92em;
+  color: #2f6b3a;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+.itinerary-preview-day-names {
+  color: #666;
+  font-size: 0.88em;
+}
+.itinerary-preview-day {
+  border-left: 3px solid #9fc3a8;
+  padding-left: 10px;
+  opacity: 0.92;
+}
+.itinerary-preview-hint {
+  font-size: 0.85em;
+  color: #999;
+}
+
 /* ==================== 登录页 / 管理端 ==================== */
 .login-page {
   display: flex; align-items: center; justify-content: center; height: 100vh; background: #f5f6fa;

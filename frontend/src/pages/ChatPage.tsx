@@ -11,6 +11,8 @@ import type {
   ChatEvent,
   Conversation,
   IntentPayload,
+  ItineraryDaySection,
+  ItinerarySkeleton,
   RequirementFormPayload,
 } from '../types'
 
@@ -214,8 +216,33 @@ function ChatPage() {
             break
           }
           case 'review_report': {
-            // reviewer 质检报告（FR-S08）：markdown 全文，消息尾部折叠区渲染
+            // reviewer 质检报告（FR-S08）：载荷 JSON，质检明细折叠区分级渲染
             cur.reviewReport = event.data
+            break
+          }
+          case 'itinerary_skeleton': {
+            // R3② 流式行程进度：骨架（route_plan 落盘即推，代码渲染零 LLM）
+            try {
+              cur.itinerarySkeleton = JSON.parse(event.data) as ItinerarySkeleton
+            } catch {
+              /* 解析失败忽略 */
+            }
+            break
+          }
+          case 'itinerary_day': {
+            // R3② 流式行程进度：逐天正文（修订轮变化天 version+1 重推，旧版本丢弃）
+            try {
+              const d = JSON.parse(event.data) as ItineraryDaySection
+              const list = [...(cur.itineraryDays ?? [])]
+              const i = list.findIndex((x) => x.day === d.day)
+              if (i < 0 || list[i].version < d.version) {
+                if (i >= 0) list[i] = d
+                else list.push(d)
+                cur.itineraryDays = list.sort((a, b) => a.day - b.day)
+              }
+            } catch {
+              /* 解析失败忽略 */
+            }
             break
           }
           case 'done': {
@@ -390,16 +417,41 @@ function ChatPage() {
                 {msg.intent && (
                   <span className="intent-badge">{INTENT_LABELS[msg.intent] ?? msg.intent}</span>
                 )}
-                {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 → 阶段占位 */}
+                {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 →
+                    R3② 实时预览（骨架先行/逐天填充）优先于阶段占位；done 全文到达后切换为终稿 */}
                 {msg.role === 'assistant' ? (
                   msg.content ? (
                     <div className="bubble-content markdown-body">
                       <Md text={msg.content} />
                     </div>
                   ) : msg.streaming ? (
-                    <div className="bubble-content phase-hint">
-                      {msg.intent === 'PLANNING' ? '🗺 正在为您规划行程，过程见下方活动流…' : '思考中…'}
-                    </div>
+                    msg.intent === 'PLANNING' &&
+                    (msg.itinerarySkeleton || (msg.itineraryDays && msg.itineraryDays.length > 0)) ? (
+                      <div className="bubble-content itinerary-preview">
+                        {msg.itinerarySkeleton && (
+                          <div className="itinerary-preview-head">
+                            🗺 行程骨架已就绪（{msg.itinerarySkeleton.dayCount} 天）
+                            {msg.itinerarySkeleton.days.map((d) => (
+                              <span key={d.day} className="itinerary-preview-day-names">
+                                Day{d.day}：{d.poiNames.join('、') || '（待填充）'}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {msg.itineraryDays?.map((d) => (
+                          <div key={d.day} className="markdown-body itinerary-preview-day">
+                            <Md text={d.markdown} />
+                          </div>
+                        ))}
+                        <div className="itinerary-preview-hint">
+                          ⏳ 内容量产中（预览），最终方案以完成为准并附质检标注
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bubble-content phase-hint">
+                        {msg.intent === 'PLANNING' ? '🗺 正在为您规划行程，过程见下方活动流…' : '思考中…'}
+                      </div>
+                    )
                   ) : null
                 ) : (
                   <div className="bubble-content">{msg.content}</div>

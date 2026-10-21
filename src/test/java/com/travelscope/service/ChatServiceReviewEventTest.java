@@ -6,6 +6,7 @@ import com.travelscope.agent.IntentCascadeRouter;
 import com.travelscope.collab.CollabFileReader;
 import com.travelscope.collab.CollabFileWriter;
 import com.travelscope.collab.IntakeResult;
+import com.travelscope.collab.RoutePlan;
 import com.travelscope.collab.TaskBacklog;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.common.TracingHelper;
@@ -179,6 +180,43 @@ class ChatServiceReviewEventTest {
                 .isNotBlank();
         assertThat(payloadOf(items, "done"))
                 .contains("✅ 已通过质量审阅（评分 88/100，另有 1 项提示，详见质检明细）");
+    }
+
+    // ---------- 用例 4：R3② 流式行程进度 → 骨架/逐天事件先于 done 到达 ----------
+
+    @Test
+    @DisplayName("R3② 流式进度：itinerary_skeleton/itinerary_day 事件先于 done，载荷契约正确")
+    void itineraryProgressEventsEmittedBeforeDone() throws Exception {
+        seedPlanningChain();
+        // 产物：route_plan（骨架源）+ 带「## Day N」节标题的草案（逐天源）
+        workspace.writeRoutePlan("1", "conv-13", new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, null, List.of(
+                        new RoutePlan.RoutePoi("西湖", 120.15, 30.24, "09:00", "11:00", null, null)), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of())));
+        workspace.writeItineraryDraft("1", "conv-13", new com.travelscope.collab.ItineraryDraft(
+                List.of(new com.travelscope.collab.ItineraryDraft.DraftDay(1, "2026-10-24", "西湖环线",
+                        List.of(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                                "09:00-11:30", "环湖漫步", "西湖", "免费", null)))),
+                null, List.of(), List.of(),
+                "# 杭州两日游完整方案\n\n## Day 1（2026-10-24）西湖环线\n\n| 时间 | 活动 |\n| --- | --- |\n| 09:00 | 环湖 |\n"));
+
+        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        List<String> items = awaitEvent(emitter, "done");
+
+        List<String> names = eventNames(items);
+        assertThat(names).contains("itinerary_skeleton", "itinerary_day");
+        // 顺序契约：进度事件先于 done（done 全文为终稿，前端预览→终稿切换）
+        assertThat(names.indexOf("itinerary_skeleton")).isLessThan(names.indexOf("done"));
+        assertThat(names.indexOf("itinerary_day")).isLessThan(names.indexOf("done"));
+        // 载荷契约
+        JSONObject skeleton = JSON.parseObject(payloadOf(items, "itinerary_skeleton"));
+        assertThat(skeleton.getIntValue("dayCount")).isEqualTo(1);
+        assertThat(skeleton.getJSONArray("days").getJSONObject(0).getJSONArray("poiNames"))
+                .containsExactly("西湖");
+        JSONObject day = JSON.parseObject(payloadOf(items, "itinerary_day"));
+        assertThat(day.getIntValue("day")).isEqualTo(1);
+        assertThat(day.getIntValue("version")).isEqualTo(1);
+        assertThat(day.getString("markdown")).startsWith("## Day 1");
     }
 
     // ---------- 公共打桩与 SSE 捕获（与 ChatServicePlanningOrchestrationTest 同款） ----------

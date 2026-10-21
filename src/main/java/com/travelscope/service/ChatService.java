@@ -333,9 +333,11 @@ public class ChatService {
         Duration laneTimeout = llmGateway.laneTimeout(true);
 
         // ---------- step4：等待完成（600s 泳道；超时按 wait_async_results 等价语义截断） ----------
+        // R3② 流式行程进度：planner 工具落盘即推（骨架先行/逐天填充），step5 修订差量复用同一状态
+        ItineraryProgress progress = new ItineraryProgress();
         Flux<ChatEvent> plannerFlow = mapAgentEventStream(activePlanner.streamEvents(msg, ctx),
                         ItineraryAgent.AGENT_NAME, conversation, IntentType.PLANNING, true, laneTimeout,
-                        replyBuf, thinkingFull, usageTracker, observation)
+                        replyBuf, thinkingFull, usageTracker, observation, progress)
                 .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
                     log.warn("PLANNING 编排泳道超时（{}s），转 step5 尽力渲染: 会话={}",
                             laneTimeout.toSeconds(), sessionId);
@@ -344,11 +346,14 @@ public class ChatService {
         return Flux.concat(
                 Flux.just(milestoneStatus("任务清单已登记（" + backlog.tasks().size() + " 项），开始行程规划")),
                 plannerFlow,
-                // ---------- step5：规则质检（零 LLM）→ 渲染收尾 ----------
+                // ---------- step5：规则质检（零 LLM）→ 修订差量重推 → 渲染收尾 ----------
                 Flux.defer(() -> {
                     runRuleReview(userIdStr, sessionId, observation);
+                    // R3②：reviewer 修订流不经 planner 事件流——质检/修订完成后差量补推
+                    // （变化天 version+1；骨架如重排亦重发），在 done 全文之前到达前端
+                    List<ChatEvent> updates = progress.emit(taskWorkspaceService, userIdStr, sessionId);
                     renderPlanningResult(userIdStr, sessionId, replyBuf);
-                    return Flux.empty();
+                    return Flux.fromIterable(updates);
                 }));
     }
 
@@ -896,11 +901,24 @@ public class ChatService {
             Conversation conversation, IntentType type, boolean planning, Duration laneTimeout,
             StringBuilder replyBuf, StringBuilder thinkingFull, TurnUsageTracker usageTracker,
             com.travelscope.assessment.ObservationContext observation) {
+        return mapAgentEventStream(events, rootAgent, conversation, type, planning, laneTimeout,
+                replyBuf, thinkingFull, usageTracker, observation, null);
+    }
+
+    private Flux<ChatEvent> mapAgentEventStream(Flux<AgentEvent> events, String rootAgent,
+            Conversation conversation, IntentType type, boolean planning, Duration laneTimeout,
+            StringBuilder replyBuf, StringBuilder thinkingFull, TurnUsageTracker usageTracker,
+            com.travelscope.assessment.ObservationContext observation,
+            ItineraryProgress progress) {
         // THINKING 聚合句发射通道（accumulateThinking → Sinks.Many → mergeWith 回 SSE 流）：
         // 主流 doFinally 时 emitComplete——mergeWith 等两条流都完成才结束，Flux.create+轮询线程
         // 会永不 complete 导致 done 发不出（E2E 实测）；Sinks 无需独立线程且即时推送。
         // 全部为方法局部变量（2026-09-23 串话修复：原实例字段在并发 PLANNING 轮互相覆盖）
         reactor.core.publisher.Sinks.Many<ChatEvent> thinkingSink =
+                reactor.core.publisher.Sinks.many().unicast().onBackpressureBuffer();
+        // R3② 行程进度通道：planner 工具落盘钩子 → Sinks.Many → mergeWith 回 SSE 流
+        //（骨架先行/逐天填充；progress 仅 PLANNING 编排传入，其余调用方为 null 不触发）
+        reactor.core.publisher.Sinks.Many<ChatEvent> progressSink =
                 reactor.core.publisher.Sinks.many().unicast().onBackpressureBuffer();
         StringBuilder thinkingBuf = new StringBuilder();
         java.util.function.Consumer<String> thinkingEmitter = payload -> thinkingSink.tryEmitNext(
@@ -914,6 +932,21 @@ public class ChatService {
                 .doOnNext(event -> {
                     if (event instanceof ModelCallEndEvent mce) {
                         usageTracker.onModelCallEnd(mce.getUsage());
+                    }
+                    // R3② 流式行程进度：行程工具成功落盘即读产物，骨架/变化天即时推送
+                    //（plan_route 自动链组装时 route_plan 与 draft 同轮落盘，一次推齐）
+                    if (progress != null
+                            && event instanceof io.agentscope.core.event.ToolResultEndEvent e
+                            && e.getState() == io.agentscope.core.message.ToolResultState.SUCCESS
+                            && ItineraryProgress.TRIGGER_TOOLS.contains(e.getToolCallName())) {
+                        try {
+                            progress.emit(taskWorkspaceService,
+                                            String.valueOf(conversation.getUserId()),
+                                            SESSION_PREFIX + conversation.getId())
+                                    .forEach(progressSink::tryEmitNext);
+                        } catch (Exception ex) {
+                            log.debug("行程进度推送失败（不影响主链路）: {}", ex.getMessage());
+                        }
                     }
                 })
                 // 根 Agent 自身事件 + intake 反问 + 子 Agent 工具活动（前端可见性改造：
@@ -944,7 +977,7 @@ public class ChatService {
                 .mapNotNull(event -> toChatEvent(rootAgent, event, planning))
                 .timeout(laneTimeout)
                 .doFinally(signal -> {
-                    // 残留缓冲 flush + 关闭 THINKING 通道（mergeWith 需两流都 complete）
+                    // 残留缓冲 flush + 关闭 THINKING/行程进度通道（mergeWith 需全部流 complete）
                     if (planning && !thinkingBuf.isEmpty()) {
                         String rest = thinkingBuf.toString().strip();
                         thinkingBuf.setLength(0);
@@ -953,6 +986,7 @@ public class ChatService {
                         }
                     }
                     thinkingSink.tryEmitComplete();
+                    progressSink.tryEmitComplete();
                 })
                 .onErrorResume(e -> {
                     if (e instanceof java.util.concurrent.TimeoutException) {
@@ -964,8 +998,9 @@ public class ChatService {
                     return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
                             sseFallbackMessage(e)));
                 })
-                // THINKING 聚合句与主事件流合并（主流 complete 时 sink 同步关闭）
-                .mergeWith(thinkingSink.asFlux());
+                // THINKING 聚合句与行程进度事件流合并（主流 complete 时两 sink 同步关闭）
+                .mergeWith(thinkingSink.asFlux())
+                .mergeWith(progressSink.asFlux());
     }
 
     private void associateExecution(RuntimeContext runtime, HarnessAgent agent,
