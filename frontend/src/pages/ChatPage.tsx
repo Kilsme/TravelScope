@@ -5,6 +5,7 @@ import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
 import RequirementFormCard from '../components/RequirementFormCard'
 import ReviewReportCard from '../components/ReviewReportCard'
+import { defuseGfmTildes, sanitizeMarkdown } from '../markdown'
 import type {
   AgentActivity,
   ChatMessage,
@@ -16,31 +17,9 @@ import type {
   RequirementFormPayload,
 } from '../types'
 
-/**
- * Markdown 渲染前预处理（去 AI 味符号，2026-09-23）：
- * 1. 清理不成对的 **（流式截断时常见——半截加粗渲染成字面星号）：
- *    按段落统计 ** 出现次数，奇数个则把该段落所有 ** 去掉
- * 2. 压缩 3 个以上连续空行为最多 2 个（模型爱输出大片空白）
- * 3. 行内孤立的单个 * 不处理（列表项语法依赖它）
- */
-export function sanitizeMarkdown(text: string): string {
-  if (!text) return text
-  return text
-    .split(/\n{2,}/)
-    .map((para) => {
-      const count = (para.match(/\*\*/g) || []).length
-      if (count % 2 !== 0) {
-        return para.replace(/\*\*/g, '')
-      }
-      return para
-    })
-    .join('\n\n')
-    .replace(/\n{4,}/g, '\n\n\n')
-}
-
-/** Markdown 渲染（统一 GFM 插件 + sanitize——表格/删除线解析，去掉流式脏符号） */
+/** Markdown 渲染（GFM + 流式脏符号清理 + 波浪号删除线免疫——工具函数与缘由见 markdown.ts，全站出口共用） */
 function Md({ text }: { text: string }) {
-  return <Markdown remarkPlugins={[remarkGfm]}>{sanitizeMarkdown(text)}</Markdown>
+  return <Markdown remarkPlugins={[remarkGfm]}>{defuseGfmTildes(sanitizeMarkdown(text))}</Markdown>
 }
 
 const INTENT_LABELS: Record<string, string> = {

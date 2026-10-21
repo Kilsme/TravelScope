@@ -5,9 +5,9 @@ package com.travelscope.agent;
  * <p>
  * 卡 A：质检全程不调外部工具（纯文本需求符合性判断）。
  * 卡 B：检出不合格后不再交回 planner 回炉，改由 reviewer 自己「评审 → 修订 → 复审」
- * 闭环（≤2 次修订），收敛后才写 review_passed.json；planner 一次产出后送审即不再参与。
+ * 闭环（R4：≤1 次修订），收敛后才写 review_passed.json；planner 一次产出后送审即不再参与。
  * 质检阶段不调工具；修订阶段允许调 plan_route/searchHotels/retrieve_poi_candidates
- * 重排路线或换数据。回炉保险丝（ReviewerRetryMiddleware 拦修订轮次，上限 2）代码层兜底。
+ * 重排路线或换数据。回炉保险丝（ReviewerRetryMiddleware 拦修订轮次，R4 上限 1）代码层兜底。
  * </p>
  */
 public class ReviewerAgent {
@@ -16,8 +16,9 @@ public class ReviewerAgent {
     public static final String AGENT_NAME = "reviewer-agent";
 
     /**
-     * 最大推理迭代次数（卡 B：评审 + ≤2 轮修订复审 + 收尾，含 write 校验重写余量；
-     * 裸下限 10，卡 A 的 5 在修订闭环下会在第一轮回炉写一半时被截断）
+     * 最大推理迭代次数（卡 B：评审 + 修订复审 + 收尾，含 write 校验重写余量；
+     * 裸下限 10，卡 A 的 5 在修订闭环下会在第一轮回炉写一半时被截断；
+     * R4 修订上限降至 1 次，余量仍按 2 次预留不收紧）
      */
     public static final int MAX_ITERS = 12;
 
@@ -37,11 +38,14 @@ public class ReviewerAgent {
             【工作方式（两阶段）】
             阶段一·评审（不调任何外部数据工具）：只读文件、做需求符合性判断。\
             不查天气、不重算通勤、不 geocode——你只回答「草案是否满足用户需求、时间线是否自洽」。
-            阶段二·修订（仅评审不通过时进入，允许调修订工具）：按失败点直接修订草案，\
-            重写 itinerary_draft.json 后重新评审。修订 ≤ 2 次（系统保险丝会拦第 3 次写草案）。
+            阶段二·修订（仅评审不通过时进入，允许调修订工具）：按失败点调修订工具修复\
+            （POI/偏好→revise_poi_selection，路线→plan_route，预算→searchHotels 后 assemble_itinerary），\
+            代码自动重排重组装 itinerary_draft.json，read_file 重读后重新评审。\
+            修订 ≤ 1 次（系统保险丝会拦第 2 次修订，超限按当前最佳版本带问题收尾）。
 
             【输出纪律】先读文件/修订/写产物，最后输出最终回复；\
-            产物用 write_collab_file 写入协作目录（Schema 校验不过返回 ERROR，修正后重写）；\
+            评审产物用 write_collab_file 写入协作目录（仅 review_passed.json / review_report.json，\
+            Schema 校验不过返回 ERROR，修正后重写）；\
             回复只含首行标记 + 2-3 句摘要，第一行必须是裸标记 REVIEW_RESULT（见第七节）。
 
             ===================================================
@@ -52,7 +56,7 @@ public class ReviewerAgent {
             1. 【intake_result.json】—— 用户需求（fields 下 value；confirmed=false=默认值）
             2. 【itinerary_draft.json】—— 行程草案（markdownBody 正文，days/budget/notes 结构字段）
             委派说明缺内联节时（旧链路兜底）回退 read_file 读 {协作目录} 下同名文件。
-            【时效纪律】任何修订动作（plan_route / revise_poi_selection / write_collab_file 覆盖）
+            【时效纪律】任何修订动作（plan_route / revise_poi_selection / assemble_itinerary）
             之后内联草案即过期——复审前必须 read_file 重读 {协作目录}/itinerary_draft.json。
             产出（write_collab_file，sessionId 用委派说明给出的值）：
             - 最终通过 → review_passed.json（结构见第五节）
@@ -79,11 +83,12 @@ public class ReviewerAgent {
             三、修订（评审不通过时，按失败段处理）
             ===================================================
 
-            段1 fail（基本要素不符）→ 直接改草案的出发地/目的地/天数表述使其贴合 intake，
-              write_collab_file 覆盖 itinerary_draft.json 后重新评审
+            段1 fail（基本要素不符）→ 多为 POI 名单/路线与需求错位：调 revise_poi_selection
+              调整名单或 plan_route 重排，代码重组装后 read_file 重读再评审
             段2 fail（时间线冲突）→ 调 plan_route(sessionId) 重排路线（无 unplaced 时它会自动
               重组装草案）；随后 read_file 重读 itinerary_draft.json 再重新评审
-            段3 fail（预算/偏好）→ 预算问题调 searchHotels 换经济酒店后重写草案；
+            段3 fail（预算/偏好）→ 预算问题调 searchHotels 换经济酒店后调 assemble_itinerary
+              重组装（预算随新缓存重估）；
               【偏好/POI 缺失】调 revise_poi_selection(sessionId, addPoiNames, removePoiNames)
               ——你只给要加/删的 POI 名（如 addPoiNames="同里古镇"），代码自动补字段、
               重排路线并重组装 itinerary_draft.json，你拿到摘要后先 read_file 重读草案再重新评审，

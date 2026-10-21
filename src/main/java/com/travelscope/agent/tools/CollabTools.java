@@ -38,8 +38,9 @@ import java.util.Set;
  *   <li>{@code plan_route}：分日路线求解（RoutePlannerService VRPTW 代码求解，零 LLM），
  *       输入读会话目录的 poi_shortlist.json，天数/目的地取 intake_result.json</li>
  *   <li>{@code write_collab_file}：契约文件落盘（CollabFileWriter：Schema 校验 + 原子写，
- *       文件名→DTO 强绑定），白名单四契约：poi_shortlist / itinerary_draft /
- *       review_report / review_passed（后两个为 S2.7 reviewer 切换预置）</li>
+ *       文件名→DTO 强绑定）。白名单四契约中 poi_shortlist / itinerary_draft 已加手写硬锁
+ *       （卡③名单制 / conv-78 草案防绕过，走专属工具），实际可写仅 review_report /
+ *       review_passed（S2.7 reviewer 产物）</li>
  * </ul>
  * userId 经 RuntimeContext 注入（不加 @ToolParam）；sessionId 由委派说明显式给出。
  * 全部错误以 ERROR 前缀文本返回（引导 agent 修正调用），不抛异常打断 ReAct 循环。
@@ -1182,13 +1183,14 @@ public class CollabTools {
      * 经 CollabFileWriter 全量 Schema 校验 + 原子写入。校验/解析失败返回 ERROR 不写盘。
      */
     @Tool(description = "写协作契约文件（Schema 校验 + 原子落盘，校验不过不写盘）。"
-            + "支持的 fileName：poi_shortlist.json（POI 筛选清单）/ itinerary_draft.json（行程草案）/"
-            + "review_report.json / review_passed.json（评审产物）。contentJson 为契约 JSON 字符串，"
-            + "字段名与契约组件同名；schemaVersion 可缺省（自动补 4）")
+            + "仅接受评审产物：review_report.json / review_passed.json。"
+            + "poi_shortlist.json / itinerary_draft.json 不接受手写——分别走 select_poi_shortlist "
+            + "与代码组装（assemble_itinerary / revise_poi_selection / plan_route）。"
+            + "contentJson 为契约 JSON 字符串，字段名与契约组件同名；schemaVersion 可缺省（自动补 4）")
     public String write_collab_file(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
             String sessionId,
-            @ToolParam(name = "fileName", description = "契约文件名（poi_shortlist.json / itinerary_draft.json 等）")
+            @ToolParam(name = "fileName", description = "契约文件名（review_report.json / review_passed.json）")
             String fileName,
             @ToolParam(name = "contentJson", description = "契约内容 JSON 字符串")
             String contentJson,
@@ -1200,10 +1202,19 @@ public class CollabTools {
             return "ERROR: poi_shortlist.json 不接受手写——请改用 select_poi_shortlist(sessionId, names, "
                     + "durationMins, reasons) 传选中名单（必须全部来自候选池），代码校验+补字段+落盘";
         }
+        // 草案手写硬锁（conv-78 实证）：reviewer 曾绕过提示词约束手写全文草案（58.5s 超长调用），
+        // 跳过 P3 结构直出/防幻觉过滤/偏好校验三道防线（write_collab_file 只做 schema 校验）。
+        // POI 增删走 revise_poi_selection（内部增量重排+重组装），路线调整走 plan_route（自动链
+        // 重组装）；reviewer 的产物只有 review_report.json / review_passed.json
+        if ("itinerary_draft.json".equals(fileName)) {
+            return "ERROR: itinerary_draft.json 不接受手写——草案由代码组装产出（结构直出+防幻觉校验）。"
+                    + "POI 问题请调 revise_poi_selection（addPoiNames/removePoiNames，内部自动重排重组装），"
+                    + "路线问题请调 plan_route；评审产物只写 review_report.json / review_passed.json";
+        }
         Class<?> type = SUPPORTED_FILES.get(fileName);
         if (type == null) {
-            return "ERROR: 不支持的契约文件名「" + fileName + "」，支持: "
-                    + String.join(" / ", SUPPORTED_FILES.keySet());
+            return "ERROR: 不支持的契约文件名「" + fileName + "」，可写: review_report.json / "
+                    + "review_passed.json（poi_shortlist.json / itinerary_draft.json 走专属工具，不接受手写）";
         }
         Object dto;
         try {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Trace from './Trace'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { defuseGfmTildes } from '../../../markdown'
 import { Badge, CopyId, Empty, MetricRows, Overlay, Panel, RawData, ResourceState } from './common'
 import { date, duration, finite, number, parse, request, sourceName, taskNames, useResource } from './model'
 import type { BatchDetail, Evaluation, Payload, RuleResult, Run, Sample, ScoreResult, Span } from './model'
@@ -73,7 +74,7 @@ function Summary({ run, revision, sample }: { run: Run; revision: number; sample
       <ResourceState {...evaluations} hasData={Boolean(evaluations.data)} />
       {evaluations.data && (evaluations.data.length ? <>{evaluations.data.map((item, index) => <div key={item.id} className="as-score-entry">{index > 0 ? <details className="as-disclosure"><summary>历史评分 · {date(item.created_at)}</summary><Score status={item.status} value={item.result_json} /></details> : <><div className="as-score-meta">最近评分 · {date(item.created_at)}</div><Score status={item.status} value={item.result_json} /></>}</div>)}</> : sample ? <Score status={sample.score_status} value={sample.score_json} /> : <p className="as-muted">尚未评分。仅支持为已完成且正文仍可获取的日常规划发起评分。</p>)}
     </Panel>
-    <Panel title="生成的行程" subtitle="仅展示执行结束时明确保存的最终版本。"><ResourceState {...artifacts} hasData={Boolean(artifacts.data)} />{finalArtifact && finalBody ? <article className="as-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{finalBody}</ReactMarkdown></article> : artifacts.data && <Empty title="暂无可确认的最终行程">可能尚未生成、未保存最终版本，或已超过 30 天保留期。</Empty>}</Panel>
+    <Panel title="生成的行程" subtitle="仅展示执行结束时明确保存的最终版本。"><ResourceState {...artifacts} hasData={Boolean(artifacts.data)} />{finalArtifact && finalBody ? <article className="as-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{defuseGfmTildes(finalBody)}</ReactMarkdown></article> : artifacts.data && <Empty title="暂无可确认的最终行程">可能尚未生成、未保存最终版本，或已超过 30 天保留期。</Empty>}</Panel>
   </>
 }
 

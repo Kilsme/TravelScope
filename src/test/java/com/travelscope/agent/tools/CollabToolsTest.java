@@ -77,6 +77,17 @@ class CollabToolsTest {
         assertThat(workspace.readPoiShortlist("u1", "conv-1")).as("硬锁不落盘").isEmpty();
     }
 
+    // ---------- 用例 1b：itinerary_draft.json 手写硬锁 → ERROR 引导走代码组装（conv-78） ----------
+    @Test
+    void writeCollabFileItineraryDraftRejectedToCodePath() {
+        String json = "{\"days\":[],\"notes\":[],\"status\":\"组装中\"}";
+
+        String result = tools.write_collab_file("conv-1", "itinerary_draft.json", json, ctx);
+
+        assertThat(result).startsWith("ERROR").contains("revise_poi_selection").contains("plan_route");
+        assertThat(workspace.readItineraryDraft("u1", "conv-1")).as("硬锁不落盘").isEmpty();
+    }
+
     // ---------- 用例 2：白名单外文件名 → ERROR 拒写 ----------
     @Test
     void writeCollabFileUnknownFileNameRejected() {

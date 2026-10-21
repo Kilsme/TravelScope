@@ -452,7 +452,8 @@ public class AgentConfig {
                 // 会话永久卡死。开启后框架自动为 pending 调用生成错误结果，对话可继续。
                 .enablePendingToolRecovery(true)
                 // 责任链（S2.10 清理后）：意图路由（onSystemPrompt 注入本轮路由指令——
-                // 非规划轮禁派）+ Reviewer 回炉保险丝（FR-S08：第 3+ 次送审拦截改写为 hint）；
+                // 非规划轮禁派）+ Reviewer 回炉保险丝（拦 reviewer 第 2+ 次修订改写为 hint，
+                // R4 上限 1）；
                 // 提示词掩码（规划按需段已删）与委派门禁（PLANNING 已代码编排，登记由
                 // ChatService step2 保证）随 S2.10 移除
                 .middlewares(List.of(observationMiddleware, new IntentRouterMiddleware(),
@@ -548,7 +549,9 @@ public class AgentConfig {
                         "retrieve_poi_candidates",
                         // 卡 E POI 重选决策代码化（reviewer 只给加/删名，代码补字段+重排+重组装）
                         "revise_poi_selection",
-                        "assemble_itinerary"))
+                        "assemble_itinerary",
+                        // 保险丝超限改写目标（对齐 REVIEWER_TOOL_WHITELIST，缺失会把拦截变未知工具错误）
+                        "review_retry_hint"))
                 .build();
 
         try {
@@ -590,7 +593,7 @@ public class AgentConfig {
      * <p>
      * 与 master 的 subagentFactory 同源构建，但显式挂 {@link ReviewerRetryMiddleware}——
      * 编排路径（S2.5 起）下本 Agent 由 ChatService 直接调起（自身即根 Agent），master
-     * 中间件链覆盖不到，回炉保险丝（首审 + ≤2 次回炉）必须自带；master 兜底路径的工厂
+     * 中间件链覆盖不到，回炉保险丝（首审 + ≤1 次修订，R4）必须自带；master 兜底路径的工厂
      * 实例不传中间件（保险丝经 master 链生效），两条路径互不干扰。
      * review_retry_hint 工具在共享 toolkit 中已注册（TaskTools），可直接解析。
      * </p>
@@ -650,7 +653,7 @@ public class AgentConfig {
      * 独立质检 Agent（质检规则化的 LLM 兜底）：规则质检（RuleReviewService）未通过时
      * 由编排层直接调起做定向修订——不再是 planner 的子 Agent spawn，而是独立叶子 Agent。
      * 原型作用域：每次调用新建实例（不共享状态，同 assessmentPlanningAgent 模式）；
-     * 挂 ReviewerRetryMiddleware（修订轮次保险丝拦 revise_poi_selection ≤2 次）。
+     * 挂 ReviewerRetryMiddleware（修订轮次保险丝拦 revise_poi_selection ≤1 次，R4）。
      */
     @Bean
     @org.springframework.context.annotation.Scope("prototype")
