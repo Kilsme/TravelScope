@@ -55,19 +55,35 @@ public class PoiRetrievalService {
     private final RagServiceImpl ragService;
     private final AttractionTool attractionTool;
     private final QueryExpander queryExpander;
+    /** L3 变体缓存（可空——测试构造直连不缓存；生产由 Spring 注入） */
+    private final com.travelscope.service.TaskResultCache taskResultCache;
 
     /** Spring 装配入口（两个公有构造函数时须显式标注，否则容器找不到默认构造器） */
     @org.springframework.beans.factory.annotation.Autowired
-    public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool) {
-        this(ragService, attractionTool, new QueryExpander());
+    public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool,
+                               com.travelscope.service.TaskResultCache taskResultCache) {
+        this(ragService, attractionTool, new QueryExpander(), taskResultCache);
     }
 
-    /** 测试/词典定制注入（QueryExpander 可换词典） */
+    /** 兼容构造（无缓存直连；评测 fixture 等历史调用方） */
+    public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool) {
+        this(ragService, attractionTool, new QueryExpander(), null);
+    }
+
+    /** 测试/词典定制注入（QueryExpander 可换词典；无缓存直连） */
     public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool,
                                QueryExpander queryExpander) {
+        this(ragService, attractionTool, queryExpander, null);
+    }
+
+    /** 全参构造（L3 变体缓存可注入） */
+    public PoiRetrievalService(RagServiceImpl ragService, AttractionTool attractionTool,
+                               QueryExpander queryExpander,
+                               com.travelscope.service.TaskResultCache taskResultCache) {
         this.ragService = ragService;
         this.attractionTool = attractionTool;
         this.queryExpander = queryExpander;
+        this.taskResultCache = taskResultCache;
     }
 
     /**
@@ -145,11 +161,55 @@ public class PoiRetrievalService {
     }
 
     private List<RetrievedFragment> queryFragments(String variant) {
+        // L3 变体级缓存（v6）：命中直接返回（跳过 embedding 远程 + PG + ES）；
+        // 缓存读写任何异常都降级直连，绝不影响主链路
+        String scope = taskResultCache == null ? null : "ragvariant:" + variantKey(variant);
+        if (scope != null) {
+            try {
+                String cached = taskResultCache.get(GLOBAL_SCOPE, scope,
+                        com.travelscope.service.TaskResultCache.TaskType.RAG_VARIANT);
+                if (cached != null) {
+                    List<RetrievedFragment> hit = com.alibaba.fastjson2.JSON.parseArray(
+                            cached, RetrievedFragment.class);
+                    log.info("poi_retrieval 变体缓存命中: variant='{}', fragments={}", variant, hit.size());
+                    return hit;
+                }
+            } catch (Exception e) {
+                log.debug("变体缓存读取失败（直连检索）: {}", e.getMessage());
+            }
+        }
         RagServiceImpl.GatedResult gated = ragService.dualRetrieveGated(variant, PER_VARIANT_TOP_K);
         if (gated.gateEmpty()) {
             log.info("poi_retrieval 变体门控全灭: variant='{}', dropped={}", variant, gated.dropped());
         }
+        if (scope != null) {
+            try {
+                taskResultCache.register(GLOBAL_SCOPE, scope,
+                        com.travelscope.service.TaskResultCache.TaskType.RAG_VARIANT, null,
+                        com.alibaba.fastjson2.JSON.toJSONString(gated.fragments()));
+            } catch (Exception e) {
+                log.debug("变体缓存写入失败（不影响返回）: {}", e.getMessage());
+            }
+        }
         return gated.fragments();
+    }
+
+    /** 全局缓存 scope（与 CommuteMatrixBuilder 的 MATRIX/GEO 同一惯例） */
+    private static final String GLOBAL_SCOPE = "global";
+
+    /** 变体缓存键：变体文本 SHA-256 前 16 位（防 key 带中文/空格） */
+    private static String variantKey(String variant) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(variant.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private VariantResult queryVariant(String variant,

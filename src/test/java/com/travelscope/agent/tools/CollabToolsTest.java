@@ -340,6 +340,60 @@ class CollabToolsTest {
         assertThat(workspace.readPoiShortlist("u1", "conv-1").orElseThrow().pois()).hasSize(8);
     }
 
+    // ---------- L2① 组装 prompt 紧凑视图：剥渲染无关字段 ----------
+
+    @Test
+    void compactViewsStripRenderIrrelevantFields() {
+        RoutePlan plan = new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, null, List.of(
+                        new RoutePlan.RoutePoi("西湖", 120.15, 30.24, "09:00", "11:00", null, null),
+                        new RoutePlan.RoutePoi("灵隐寺", 120.10, 30.24, "13:30", "16:00", "公交", 40)), 40)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
+
+        String view = CollabTools.compactRoutePlanView(plan);
+
+        assertThat(view).contains("西湖").contains("09:00-11:00").contains("commuteMin")
+                // 剥 solverMeta/坐标/交通方式/天通勤总计/指纹（渲染无关）
+                .doesNotContain("solverMeta").doesNotContain("120.15")
+                .doesNotContain("公交").doesNotContain("commuteMinutesTotal")
+                .doesNotContain("inputFingerprint");
+
+        String intakeView = CollabTools.compactIntakeView(intake());
+
+        assertThat(intakeView).contains("杭州").contains("2026-10-24").contains("上海")
+                // 剥 FieldValue 包装与元信息；空值字段省略
+                .doesNotContain("confirmed").doesNotContain("clarifyCycles")
+                .doesNotContain("schemaVersion").doesNotContain("budget");
+    }
+
+    // ---------- P2 候选池瘦身视图：裁决策无关字段 + content 截断 ----------
+
+    @Test
+    void slimViewDropsDecisionIrrelevantFieldsAndTruncates() {
+        String longText = "西湖是杭州最著名的景点，".repeat(30); // 300+ 字
+        var pool = new com.travelscope.service.retrieval.dto.PoiCandidatePool(
+                List.of(new com.travelscope.service.retrieval.dto.PoiCandidatePool.Candidate(
+                                "seed-1:1", longText, "RAG", 0.9, 0.88, List.of("西湖")),
+                        new com.travelscope.service.retrieval.dto.PoiCandidatePool.Candidate(
+                                "hard:飞猪:灵隐寺", "灵隐寺｜评分=4.7", "HARD_COMPLETE", 0, null,
+                                List.of("灵隐寺"))),
+                new com.travelscope.service.retrieval.dto.PoiCandidatePool.PoolStats(
+                        2, new java.util.LinkedHashMap<>(), 2, 1));
+
+        String slim = pool.toSlimView(160);
+
+        assertThat(slim).doesNotContain("chunkId").doesNotContain("vectorScore")
+                .doesNotContain("hitVariants").doesNotContain("seed-1:1");
+        com.alibaba.fastjson2.JSONObject root = com.alibaba.fastjson2.JSON.parseObject(slim);
+        com.alibaba.fastjson2.JSONArray cands = root.getJSONArray("candidates");
+        assertThat(cands.getJSONObject(0).getString("content"))
+                .as("content 截断 160 字 + …").hasSize(161).endsWith("…");
+        assertThat(cands.getJSONObject(0).getString("source")).isEqualTo("RAG");
+        assertThat(cands.getJSONObject(1).getString("content"))
+                .as("短内容不截断").isEqualTo("灵隐寺｜评分=4.7");
+        assertThat(root.getJSONObject("stats").getIntValue("variantCount")).isEqualTo(2);
+    }
+
     // ==================== plan_route 无 unplaced 自动链 ====================
 
     @Test

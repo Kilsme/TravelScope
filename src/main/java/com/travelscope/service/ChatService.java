@@ -392,7 +392,20 @@ public class ChatService {
             markDone(userId, sessionId, "T4");
         }
         if (poi != null) {
-            sb.append("\n- POI 候选池（已就绪，禁止再调 retrieve_poi_candidates，直接用它做第 2 步筛选）：").append(poi);
+            // P2：缓存存全量（select 的 source 继承/content 匹配依赖全字段），
+            // 内联给模型的视角同样走瘦身（裁 chunkId/vectorScore/hitVariants + content 截断）
+            String slim = poi;
+            try {
+                com.travelscope.service.retrieval.dto.PoiCandidatePool pool =
+                        com.alibaba.fastjson2.JSON.parseObject(poi,
+                                com.travelscope.service.retrieval.dto.PoiCandidatePool.class);
+                if (pool != null) {
+                    slim = pool.toSlimView(160);
+                }
+            } catch (Exception e) {
+                log.debug("候选池瘦身失败（按原文内联）: {}", e.getMessage());
+            }
+            sb.append("\n- POI 候选池（已就绪，禁止再调 retrieve_poi_candidates，直接用它做第 2 步筛选）：").append(slim);
         }
         return sb.length() == 0 ? "" :
                 "\n\n【缓存命中（以下数据已就绪，禁止再调对应查询工具或 get_cached_task_result 预检，直接引用）】"

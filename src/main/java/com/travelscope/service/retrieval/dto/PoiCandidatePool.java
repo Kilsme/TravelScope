@@ -22,6 +22,32 @@ public record PoiCandidatePool(List<Candidate> candidates, PoolStats stats) {
     }
 
     /**
+     * P2 模型视角瘦身视图（v6）：候选条目只带 {content(截断), source, score}——
+     * 裁掉筛选决策无关的 chunkId/vectorScore/hitVariants（对齐官方 "smallest set of
+     * high-signal tokens"；池候选无结构化 rating/openHours 字段可白名单，它们在
+     * chunk 文本内，故瘦身形态=裁字段+截断而非字段筛选）。
+     * 全量 JSON 仍由工具自登记进 TaskResultCache 供代码消费（just-in-time）。
+     *
+     * @param maxContentLen content 截断长度（超出附 …）
+     */
+    public String toSlimView(int maxContentLen) {
+        com.alibaba.fastjson2.JSONArray arr = new com.alibaba.fastjson2.JSONArray();
+        for (Candidate c : candidates) {
+            com.alibaba.fastjson2.JSONObject o = new com.alibaba.fastjson2.JSONObject();
+            String content = c.content();
+            o.put("content", content.length() <= maxContentLen
+                    ? content : content.substring(0, maxContentLen) + "…");
+            o.put("source", c.source());
+            o.put("score", c.score());
+            arr.add(o);
+        }
+        com.alibaba.fastjson2.JSONObject root = new com.alibaba.fastjson2.JSONObject();
+        root.put("candidates", arr);
+        root.put("stats", stats);
+        return root.toJSONString();
+    }
+
+    /**
      * 候选条目（按 chunkId 去重合并后；补全条目走 hard:{来源}:{名称} 合成键）。
      *
      * @param chunkId      知识库 chunk 标识（去重键）或硬补全合成键

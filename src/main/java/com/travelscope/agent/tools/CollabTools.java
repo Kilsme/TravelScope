@@ -89,9 +89,9 @@ public class CollabTools {
      * 返回候选池 JSON，筛选排序是调用方（planning-agent）的职责。
      */
     @Tool(description = "检索目的地 POI 候选池（知识库 RAG+ES 双路召回 + 高德硬字段补全，批量一次成型）。"
-            + "返回候选池 JSON：candidates 每条含 chunkId/content(片段原文)/source/score(融合分)/"
-            + "vectorScore(余弦相似度)/hitVariants，stats 为池统计。拿到后由你做偏好筛选排序，"
-            + "结果经 select_poi_shortlist 传名单定案落盘")
+            + "返回候选池瘦身 JSON：candidates 每条含 content(片段摘要≤160字)/source/score(融合分)，"
+            + "stats 为池统计（全量片段由代码侧缓存持有，select_poi_shortlist 会自动取用）。"
+            + "拿到后由你做偏好筛选排序，结果经 select_poi_shortlist 传名单定案落盘")
     public String retrieve_poi_candidates(
             @ToolParam(name = "destination", description = "目的地城市，如「杭州」")
             String destination,
@@ -110,7 +110,16 @@ public class CollabTools {
         PoiCandidatePool pool = com.travelscope.assessment.FixtureServices.enabled(ctx)
                 ? com.travelscope.assessment.FixtureServices.retrieve(poiRetrievalService, destination, prefs, days, ctx)
                 : poiRetrievalService.retrieve(destination, prefs, days);
-        return JSON.toJSONString(pool);
+        // P2 上下文瘦身（v6）：模型视角返回瘦身视图（裁 chunkId/vectorScore/hitVariants + content
+        // 截断）；全量 JSON 由工具自登记进 POI 缓存供代码消费（select 的 source 继承、
+        // 缓存命中轮内联）——just-in-time 按需加载，BookkeepingMiddleware 对本工具跳过登记防覆盖
+        try {
+            taskResultCache.register(ctx.getUserId(), ctx.getSessionId(),
+                    com.travelscope.service.TaskResultCache.TaskType.POI, "T3", JSON.toJSONString(pool));
+        } catch (Exception e) {
+            log.debug("候选池全量缓存登记失败（不影响返回）: {}", e.getMessage());
+        }
+        return pool.toSlimView(160);
     }
 
     /**
@@ -669,10 +678,10 @@ public class CollabTools {
         List<ItineraryDraft.DraftDay> keptOldDays = oldDraft.days().stream()
                 .filter(d -> !changedDays.contains(d.day())).toList();
         String prompt = "行程草案增量修订：部分天的路线已更新，只重新生成指定天的结构字段。\n\n"
-                + "【需重新生成的天（新路线）】\n" + JSON.toJSONString(changedRoute)
+                + "【需重新生成的天（新路线，紧凑视图）】\n" + compactRouteDaysView(changedRoute)
                 + "\n\n【保持不变的天的既有草案条目（仅供预算与连贯性参考，禁止改动、禁止输出这些天）】\n"
                 + JSON.toJSONString(keptOldDays)
-                + "\n\n【用户需求】\n" + JSON.toJSONString(intake)
+                + "\n\n【用户需求】\n" + compactIntakeView(intake)
                 + "\n\n输出 ItineraryDraft 结构字段：days 数组只包含需重新生成的天"
                 + "（day 字段用对应天号，每项含 time（形如 09:00-11:30）/activity/location/theme），"
                 + "外加全局 budget（须按全部天数估算）、notes、pendingConfirm。"
@@ -894,15 +903,71 @@ public class CollabTools {
     }
 
     /** LLM 一次产 ItineraryDraft 结构字段（复刻 RequirementExtractor 合成工具路径，markdownBody 用占位待代码渲染） */
+    /**
+     * L2① 组装 prompt 紧凑视图：routePlan 只保留 LLM 产结构字段所需的最小信息
+     * （剥 solverMeta/坐标/transitFromPrev/通勤总计等渲染无关字段——对齐官方
+     * "smallest set of high-signal tokens"）。包私有静态便于单测锚定。
+     */
+    static String compactRoutePlanView(RoutePlan routePlan) {
+        return compactRouteDaysView(routePlan.days());
+    }
+
+    /** 天级紧凑视图（增量重组装的变化天子集同用） */
+    static String compactRouteDaysView(List<RoutePlan.RouteDay> routeDays) {
+        com.alibaba.fastjson2.JSONArray days = new com.alibaba.fastjson2.JSONArray();
+        for (RoutePlan.RouteDay d : routeDays) {
+            com.alibaba.fastjson2.JSONArray items = new com.alibaba.fastjson2.JSONArray();
+            for (RoutePlan.RoutePoi p : d.pois()) {
+                com.alibaba.fastjson2.JSONObject o = new com.alibaba.fastjson2.JSONObject();
+                o.put("poi", p.name());
+                o.put("time", (p.startTime() == null ? "" : p.startTime())
+                        + "-" + (p.endTime() == null ? "" : p.endTime()));
+                if (p.commuteMinutesFromPrev() != null) {
+                    o.put("commuteMin", p.commuteMinutesFromPrev());
+                }
+                items.add(o);
+            }
+            com.alibaba.fastjson2.JSONObject day = new com.alibaba.fastjson2.JSONObject();
+            day.put("day", d.day());
+            day.put("items", items);
+            days.add(day);
+        }
+        return days.toJSONString();
+    }
+
+    /**
+     * L2① intake 紧凑视图：只传筛选/预算/主题所需核心字段
+     * （FieldValue 包装剥离取 value，空值键省略）。
+     */
+    static String compactIntakeView(com.travelscope.collab.IntakeResult intake) {
+        com.alibaba.fastjson2.JSONObject o = new com.alibaba.fastjson2.JSONObject();
+        var f = intake.fields();
+        putIfPresent(o, "destination", f.destination());
+        putIfPresent(o, "days", f.days());
+        putIfPresent(o, "startDate", f.startDate());
+        putIfPresent(o, "fromCity", f.fromCity());
+        putIfPresent(o, "budget", f.budget());
+        putIfPresent(o, "preference", f.preference());
+        return o.toJSONString();
+    }
+
+    private static void putIfPresent(com.alibaba.fastjson2.JSONObject o, String key,
+                                     com.travelscope.collab.IntakeResult.FieldValue fv) {
+        if (fv != null && fv.value() != null && !fv.value().isBlank()) {
+            o.put(key, fv.value());
+        }
+    }
+
     private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(
             String userId, String sessionId,
             com.travelscope.collab.RoutePlan routePlan,
             com.travelscope.collab.IntakeResult intake) {
+        // L2① 消化结果代码化：routePlan/intake 以紧凑视图进 prompt（渲染无关字段不过 LLM）
         String prompt = "基于以下分日路线生成行程草案的结构字段（days/items 的 time/activity/location、"
                 + "每日主题 theme、预算 budget、注意事项 notes、待确认 pendingConfirm）。"
                 + "不要写 markdown 正文，只产结构字段。\n\n分日路线：\n"
-                + com.alibaba.fastjson2.JSON.toJSONString(routePlan)
-                + "\n\n用户需求：\n" + com.alibaba.fastjson2.JSON.toJSONString(intake);
+                + compactRoutePlanView(routePlan)
+                + "\n\n用户需求：\n" + compactIntakeView(intake);
         RuntimeContext callCtx = RuntimeContext.builder()
                 .userId("itinerary-assembler").sessionId("itinerary-assemble-" + sessionId).build();
         var agent = io.agentscope.core.ReActAgent.builder()

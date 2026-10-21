@@ -47,7 +47,10 @@ public class TaskResultCache {
         MATRIX(Duration.ofMinutes(30)),
         GEO(Duration.ofHours(24)),
         TRAIN(Duration.ofMinutes(30)),
-        FLIGHT(Duration.ofMinutes(30));
+        FLIGHT(Duration.ofMinutes(30)),
+        /** L3（v6）检索变体级缓存（POI 知识库变更低频；全局共享，
+         *  userId="global" + "ragvariant:{sha256前16}" 拼 key；摄入主动失效未做，TTL 兜底） */
+        RAG_VARIANT(Duration.ofMinutes(30));
 
         public final Duration ttl;
 

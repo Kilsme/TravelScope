@@ -160,6 +160,11 @@ public class BookkeepingMiddleware implements MiddlewareBase {
                         mark(userId, sessionId, m.taskId(), TaskRegistry.STATUS_DONE);
                     }
                     if (!result.isBlank()) {
+                        // P2（v6）：retrieve_poi_candidates 返回的是瘦身视图，全量候选池
+                        // 已由工具自登记进 POI 缓存——此处跳过登记防 slim 覆盖全量
+                        if ("retrieve_poi_candidates".equals(e.getToolCallName())) {
+                            return;
+                        }
                         // 车票/机票同类型多段（往返双查）：append 防返程覆盖去程（conv-46 实证互覆）
                         if (m.taskType() == TaskResultCache.TaskType.TRAIN
                                 || m.taskType() == TaskResultCache.TaskType.FLIGHT) {

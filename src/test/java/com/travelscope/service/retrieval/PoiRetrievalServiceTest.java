@@ -194,4 +194,67 @@ class PoiRetrievalServiceTest {
         verify(attraction).searchPois("杭州", "杭州", 4);
         verify(attraction, never()).searchPois(any(), org.mockito.ArgumentMatchers.eq("西湖"), anyInt());
     }
+
+    // ---------- 用例 5：L3 变体缓存 → 同需求第二轮零远程调用 ----------
+
+    /** 计数版检索桩：dualRetrieveGated 调用计数 */
+    static class CountingRagService extends RagServiceImpl {
+        private final Map<String, GatedResult> script;
+        final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        CountingRagService(Map<String, GatedResult> script) {
+            super(new AppProperties(), null, null, "u", "p");
+            this.script = script;
+        }
+
+        @Override
+        public GatedResult dualRetrieveGated(String query, int topK) {
+            calls.incrementAndGet();
+            GatedResult result = script.get(query);
+            return result == null ? new GatedResult(List.of(), 0, false) : result;
+        }
+    }
+
+    /** Redis 全灭 → TaskResultCache 走内存降级（TaskResultCacheTest 同款打桩） */
+    static class ThrowingRedisTemplate
+            extends org.springframework.data.redis.core.StringRedisTemplate {
+        @Override
+        public org.springframework.data.redis.core.ValueOperations<String, String> opsForValue() {
+            throw new IllegalStateException("redis down");
+        }
+
+        @Override
+        public Boolean hasKey(String key) {
+            throw new IllegalStateException("redis down");
+        }
+
+        @Override
+        public Boolean delete(String key) {
+            throw new IllegalStateException("redis down");
+        }
+    }
+
+    @Test
+    void variantCacheSkipsRemoteCallsOnSecondRetrieve() {
+        Map<String, RagServiceImpl.GatedResult> script = new LinkedHashMap<>();
+        script.put("杭州", gated(List.of(
+                frag("seed-1:1", "西湖是杭州最著名景点…", "RAG", 0.05, 0.9))));
+        CountingRagService rag = new CountingRagService(script);
+        com.travelscope.service.TaskResultCache cache =
+                new com.travelscope.service.TaskResultCache(new ThrowingRedisTemplate());
+        PoiRetrievalService svc = new PoiRetrievalService(rag, mock(AttractionTool.class),
+                new QueryExpander(Map.of("杭州", List.of("西湖", "杭城")), Map.of()), cache);
+
+        PoiCandidatePool first = svc.retrieve("杭州", List.of(), 1);
+        int firstCalls = rag.calls.get();
+        assertThat(firstCalls).as("首轮每变体一次远程检索")
+                .isEqualTo(first.stats().variantCount()).isPositive();
+        assertThat(first.candidates()).isNotEmpty();
+
+        PoiCandidatePool second = svc.retrieve("杭州", List.of(), 1);
+        assertThat(rag.calls.get()).as("第二轮全部变体缓存命中，零远程调用").isEqualTo(firstCalls);
+        assertThat(second.candidates()).as("缓存命中的候选内容一致")
+                .extracting(PoiCandidatePool.Candidate::content)
+                .isEqualTo(first.candidates().stream().map(PoiCandidatePool.Candidate::content).toList());
+    }
 }

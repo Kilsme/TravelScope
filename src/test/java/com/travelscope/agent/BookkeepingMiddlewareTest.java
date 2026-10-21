@@ -109,7 +109,7 @@ class BookkeepingMiddlewareTest {
     }
 
     @Test
-    @DisplayName("T3 语义：检索成功只登记 POI 缓存不标 DONE，写 poi_shortlist.json 才 DONE")
+    @DisplayName("T3 语义：检索成功只标 IN_PROGRESS；P2 起 POI 缓存由工具自登记全量，中间件不登记")
     void poiDoneSemantics() {
         drive(List.of("call-1", "call-2"),
                 new ToolResultStartEvent("r", "call-1", "retrieve_poi_candidates"),
@@ -118,7 +118,9 @@ class BookkeepingMiddlewareTest {
 
         String progress = registry.progress(USER, SESSION);
         assertTrue(progress.contains("T3(IN_PROGRESS)"), "检索后 T3 应 IN_PROGRESS: " + progress);
-        assertNotNull(cache.get(USER, SESSION, TaskResultCache.TaskType.POI), "候选池缓存应已登记");
+        // P2（v6）：工具返回瘦身视图，全量由 retrieve_poi_candidates 自登记——中间件跳过登记防覆盖
+        assertNull(cache.get(USER, SESSION, TaskResultCache.TaskType.POI),
+                "中间件不再登记 POI 缓存（防 slim 覆盖全量）");
 
         // write_collab_file(fileName=poi_shortlist.json) 成功 → T3 DONE
         driveCalls(List.of(new ToolUseBlock("call-2", "write_collab_file",
