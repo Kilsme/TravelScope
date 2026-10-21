@@ -36,12 +36,19 @@ public record RoutePlan(
         this(SCHEMA_VERSION, days, solverMeta);
     }
 
-    /** 单日路线。day 从 1 起；date 可空（出发日期未定时）；commuteMinutesTotal 为当日各段通勤之和。 */
+    /**
+     * 单日路线。day 从 1 起；date 可空（出发日期未定时）；commuteMinutesTotal 为当日各段通勤之和。
+     * <p>
+     * inputFingerprint（R2 增量重组装，可空）：当日 POI 输入指纹（排序后的 name@坐标 SHA-256 前 16 位）。
+     * 增量轮按它识别「输入未变的天」并字节级复用旧条目；存量产物缺键为 null（按 RoutePoi 现算兼容）。
+     * </p>
+     */
     public record RouteDay(
             int day,
             String date,
             List<RoutePoi> pois,
-            int commuteMinutesTotal) {
+            int commuteMinutesTotal,
+            String inputFingerprint) {
 
         public RouteDay {
             if (day < 1) {
@@ -51,6 +58,12 @@ public record RoutePlan(
             if (commuteMinutesTotal < 0) {
                 throw new IllegalArgumentException("commuteMinutesTotal 不能为负: " + commuteMinutesTotal);
             }
+            // inputFingerprint 可空（存量产物未记录）
+        }
+
+        /** 兼容构造（v4 原签名）：不记输入指纹（增量轮按 RoutePoi 现算匹配） */
+        public RouteDay(int day, String date, List<RoutePoi> pois, int commuteMinutesTotal) {
+            this(day, date, pois, commuteMinutesTotal, null);
         }
     }
 

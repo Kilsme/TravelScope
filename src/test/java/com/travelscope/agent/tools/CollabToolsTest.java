@@ -3,6 +3,7 @@ package com.travelscope.agent.tools;
 import com.travelscope.collab.CollabFileReader;
 import com.travelscope.collab.CollabFileWriter;
 import com.travelscope.collab.IntakeResult;
+import com.travelscope.collab.ItineraryDraft;
 import com.travelscope.collab.PoiShortlist;
 import com.travelscope.collab.RoutePlan;
 import com.travelscope.collab.TaskWorkspace;
@@ -23,6 +24,8 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -269,5 +272,116 @@ class CollabToolsTest {
         assertThat(result).contains("虎丘")
                 .doesNotContain(CollabTools.AUTO_ASSEMBLED_MARKER);
         assertThat(workspace.readItineraryDraft("u1", "conv-1")).as("有 unplaced 不自动组装").isEmpty();
+    }
+
+    // ==================== R2 增量重组装：revise 链 + 骨架合并 ====================
+
+    @Test
+    void reviseRoutesIncrementalWhenPreviousPlanExists() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        seedShortlist();
+        // 旧产物两件（revise 增量链的输入）：route_plan + itinerary_draft
+        // commuteMinutesTotal=0：空 pois 桩要经得起 writeRoutePlan 的 Schema 校验（0 ≤ 各段之和(0)+1）
+        RoutePlan previous = new RoutePlan(
+                List.of(new RoutePlan.RouteDay(1, null, List.of(), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
+        workspace.writeRoutePlan("u1", "conv-1", previous);
+        workspace.writeItineraryDraft("u1", "conv-1", new ItineraryDraft(
+                List.of(new ItineraryDraft.DraftDay(1, "2026-10-24", "西湖", List.of())),
+                null, List.of(), List.of(), "旧草案正文"));
+        // 新增 POI 的实时库实证（resolvePoiItem 桩）
+        when(attractionTool.searchPois(eq("杭州"), eq("灵隐寺"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn("{\"attractions\":[{\"name\":\"灵隐寺\",\"location\":\"120.0962,30.2435\","
+                        + "\"source\":\"高德\",\"openHours\":\"07:00-18:00\"}]}");
+        RoutePlannerServiceImpl.IncrementalOutcome inc = new RoutePlannerServiceImpl.IncrementalOutcome(
+                new RoutePlan(List.of(new RoutePlan.RouteDay(1, null, List.of(), 0)),
+                        new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 3, List.of())),
+                java.util.Set.of(), java.util.Set.of(1));
+        when(routePlanner.planAndWriteIncremental(
+                eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"), any(RoutePlan.class)))
+                .thenReturn(inc);
+
+        String result = tools.revise_poi_selection("conv-1", "灵隐寺", null, ctx);
+
+        // LLM 骨架（mock 模型）增量/全量两级都失败 → 优雅降级 ERROR 文案
+        assertThat(result).startsWith("ERROR").contains("重组装失败");
+        // 路线走了增量入口；全量入口未被触碰
+        verify(routePlanner).planAndWriteIncremental(
+                eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"), any(RoutePlan.class));
+        verify(routePlanner, never()).planAndWrite(anyString(), anyString(), anyList(), any(), anyString());
+        // shortlist 已更新（+灵隐寺）
+        assertThat(workspace.readPoiShortlist("u1", "conv-1"))
+                .hasValueSatisfying(s -> assertThat(s.pois())
+                        .extracting(PoiShortlist.PoiItem::name)
+                        .contains("西湖", "灵隐寺"));
+    }
+
+    @Test
+    void reviseFallsBackToFullRouteWithoutPreviousPlan() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        seedShortlist();
+        when(attractionTool.searchPois(eq("杭州"), eq("灵隐寺"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn("{\"attractions\":[{\"name\":\"灵隐寺\",\"location\":\"120.0962,30.2435\","
+                        + "\"source\":\"高德\",\"openHours\":\"07:00-18:00\"}]}");
+        RoutePlan stub = new RoutePlan(List.of(new RoutePlan.RouteDay(1, null, List.of(), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
+        when(routePlanner.planAndWrite(eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州")))
+                .thenAnswer(inv -> {
+                    workspace.writeRoutePlan("u1", "conv-1", stub);
+                    return stub;
+                });
+
+        String result = tools.revise_poi_selection("conv-1", "灵隐寺", null, ctx);
+
+        // 无旧 route_plan → 全量路径（现状行为），增量入口未被触碰
+        verify(routePlanner).planAndWrite(eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"));
+        verify(routePlanner, never()).planAndWriteIncremental(
+                anyString(), anyString(), anyList(), any(), anyString(), any(RoutePlan.class));
+        assertThat(result).startsWith("ERROR").contains("重组装失败");  // mock 模型组装失败照旧降级
+    }
+
+    @Test
+    void mergeIncrementalSkeletonKeepsUnchangedDaysVerbatim() {
+        ItineraryDraft.DraftDay day1 = new ItineraryDraft.DraftDay(1, "2026-10-24", "西湖环线",
+                List.of(new ItineraryDraft.DraftItem("09:00-11:30", "环湖漫步", "西湖", "免费", null)));
+        ItineraryDraft.DraftDay day2 = new ItineraryDraft.DraftDay(2, "2026-10-25", "旧主题", List.of());
+        ItineraryDraft.DraftDay day3 = new ItineraryDraft.DraftDay(3, "2026-10-26", "灵隐祈福", List.of());
+        ItineraryDraft oldDraft = new ItineraryDraft(List.of(day1, day2, day3),
+                new ItineraryDraft.Budget("CNY", "900", List.of()),
+                List.of("旧注意事项"), List.of(), "旧正文");
+        ItineraryDraft.DraftDay freshDay2 = new ItineraryDraft.DraftDay(2, "2026-10-25", "新主题",
+                List.of(new ItineraryDraft.DraftItem("10:00-12:00", "游览新景点", "新景点", "¥80", null)));
+        ItineraryDraft partial = new ItineraryDraft(List.of(freshDay2),
+                new ItineraryDraft.Budget("CNY", "1000", List.of()),
+                List.of("新注意事项"), List.of("待确认项"), "组装中");
+
+        ItineraryDraft merged = CollabTools.mergeIncrementalSkeleton(
+                oldDraft, partial, java.util.Set.of(2));
+
+        assertThat(merged.days()).hasSize(3);
+        assertThat(merged.days().get(0)).isEqualTo(day1);       // 未变天逐字沿用（代码级，不信模型）
+        assertThat(merged.days().get(1)).isEqualTo(freshDay2);  // 变化天取增量骨架
+        assertThat(merged.days().get(2)).isEqualTo(day3);
+        assertThat(merged.budget().totalEstimate()).isEqualTo("1000");  // 全局字段取增量骨架
+        assertThat(merged.notes()).containsExactly("新注意事项");
+        assertThat(merged.pendingConfirm()).containsExactly("待确认项");
+    }
+
+    @Test
+    void mergeIncrementalSkeletonNullWhenChangedDayMissing() {
+        ItineraryDraft oldDraft = new ItineraryDraft(
+                List.of(new ItineraryDraft.DraftDay(1, null, "a", List.of()),
+                        new ItineraryDraft.DraftDay(2, null, "b", List.of()),
+                        new ItineraryDraft.DraftDay(3, null, "c", List.of())),
+                null, List.of(), List.of(), "旧正文");
+        // 变化天 {2,3}，增量骨架只回了 day2 → 缺 day3 → null（降级全量信号）
+        ItineraryDraft partial = new ItineraryDraft(
+                List.of(new ItineraryDraft.DraftDay(2, null, "b2", List.of())),
+                null, List.of(), List.of(), "组装中");
+
+        ItineraryDraft merged = CollabTools.mergeIncrementalSkeleton(
+                oldDraft, partial, java.util.Set.of(2, 3));
+
+        assertThat(merged).as("变化天缺失任一天即不可用（旧草案该天 POI 已变）").isNull();
     }
 }

@@ -111,10 +111,10 @@ class CollabDtoRoundTripTest {
                         new RoutePlan.RoutePoi("西湖风景名胜区", 120.1449, 30.2436,
                                 "09:00", "13:00", null, null),
                         new RoutePlan.RoutePoi("雷峰塔", 120.1486, 30.2312,
-                                "14:00", "16:00", "公交", 25)), 25),
+                                "14:00", "16:00", "公交", 25)), 25, "3f9a1c82d4e5b607"),
                 new RoutePlan.RouteDay(2, "2026-10-26", List.of(
                         new RoutePlan.RoutePoi("灵隐寺", 120.0962, 30.2435,
-                                "08:30", "11:00", null, null)), 0)),
+                                "08:30", "11:00", null, null)), 0, "8b2d4f60a1c93e75")),
                 new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 12, List.of()));
     }
 

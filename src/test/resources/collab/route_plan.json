@@ -4,10 +4,10 @@
     {"day": 1, "date": "2026-10-25", "pois": [
       {"name": "西湖风景名胜区", "lng": 120.1449, "lat": 30.2436, "startTime": "09:00", "endTime": "13:00"},
       {"name": "雷峰塔", "lng": 120.1486, "lat": 30.2312, "startTime": "14:00", "endTime": "16:00", "transitFromPrev": "公交", "commuteMinutesFromPrev": 25}
-    ], "commuteMinutesTotal": 25},
+    ], "commuteMinutesTotal": 25, "inputFingerprint": "3f9a1c82d4e5b607"},
     {"day": 2, "date": "2026-10-26", "pois": [
       {"name": "灵隐寺", "lng": 120.0962, "lat": 30.2435, "startTime": "08:30", "endTime": "11:00"}
-    ], "commuteMinutesTotal": 0}
+    ], "commuteMinutesTotal": 0, "inputFingerprint": "8b2d4f60a1c93e75"}
   ],
   "solverMeta": {"algorithm": "NN+2opt", "matrixSource": "amap-transit", "durationMs": 12, "unplaced": []}
 }

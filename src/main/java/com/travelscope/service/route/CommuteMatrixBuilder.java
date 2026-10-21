@@ -36,9 +36,13 @@ import java.util.stream.Collectors;
  *       高德个人 key QPS 约 3/s（S1.9 冒烟实测 8 并发 5/8 被 CUQPS 限流）——调用
  *       起步全局节流 ~350ms/次，偶发限流整对重试一次（600ms）；双模式均失败置 -1
  *       并记入 missingPairs（不中断）</li>
- *   <li><b>缓存</b>：矩阵整体存 TaskResultCache（MATRIX 类型，TTL 30min），
- *       key = taskresult:global:routematrix:{sha256前16位}:{mode}:matrix——全局共享、
- *       按 POI 集合分槽；geocode 结果缓存 GEO 类型（TTL 24h，坐标极少变化）</li>
+ *   <li><b>缓存（双层，R2 增量重组装）</b>：①矩阵整体存 TaskResultCache（MATRIX 类型，
+ *       TTL 30min），key = taskresult:global:routematrix:{sha256前16位}:{mode}:matrix——
+ *       全局共享、按 POI 集合分槽，同集合重查零 API；②<b>对级缓存</b>
+ *       routepair:{mode}:{city}:{名A|名B}——矩阵级 miss 后逐对预扫描，命中对直接填矩阵，
+ *       只有未命中对进并行查询，节点集合变化（增删 POI）时未涉及的对全部复用、
+ *       仅涉及对补查（17 节点增删 1 点：136 对全查 ≈48s → 32 对 ≈11s）；
+ *       city 进键（公交结果依赖城市）。geocode 结果缓存 GEO 类型（TTL 24h，坐标极少变化）</li>
  *   <li>全程零 LLM；API 调用 ≤ n(n-1)/2（单向查询 + 对称填充）</li>
  * </ul>
  * </p>
@@ -120,32 +124,56 @@ public class CommuteMatrixBuilder {
         AtomicInteger retriedPairs = new AtomicInteger();
         Semaphore permits = new Semaphore(MAX_PARALLEL);
 
+        // R2 对级缓存预扫描：命中对直接填矩阵（-1 照样复用，missingPairs 行为与新鲜查询一致），
+        // 只有未命中对进并行查询——节点集合变化时未涉及对零 API 调用
+        List<int[]> toQuery = new ArrayList<>();
+        int pairCacheHits = 0;
+        for (int i = 0; i < n; i++) {
+            for (int j = i + 1; j < n; j++) {
+                Long cachedSec = parseSeconds(taskResultCache.get(GLOBAL_SCOPE,
+                        pairScope(nodes.get(i), nodes.get(j), mode, city),
+                        TaskResultCache.TaskType.MATRIX));
+                if (cachedSec != null) {
+                    durations[i][j] = cachedSec;
+                    durations[j][i] = cachedSec;
+                    if (cachedSec < 0) {
+                        missing.add(nodes.get(i).name() + "→" + nodes.get(j).name());
+                    }
+                    pairCacheHits++;
+                } else {
+                    toQuery.add(new int[]{i, j});
+                }
+            }
+        }
+
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (int i = 0; i < n; i++) {
-                for (int j = i + 1; j < n; j++) {
-                    final int a = i;
-                    final int b = j;
-                    futures.add(CompletableFuture.runAsync(() -> {
+            for (int[] pair : toQuery) {
+                final int a = pair[0];
+                final int b = pair[1];
+                futures.add(CompletableFuture.runAsync(() -> {
+                    try {
+                        permits.acquire();
                         try {
-                            permits.acquire();
-                            try {
-                                long sec = queryPairSeconds(nodes.get(a), nodes.get(b), city,
-                                        preferTransit, missing, retriedPairs);
-                                apiCalls.incrementAndGet();
-                                durations[a][b] = sec;
-                                durations[b][a] = sec;
-                            } finally {
-                                permits.release();
-                            }
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            durations[a][b] = -1;
-                            durations[b][a] = -1;
-                            missing.add(nodes.get(a).name() + "→" + nodes.get(b).name());
+                            long sec = queryPairSeconds(nodes.get(a), nodes.get(b), city,
+                                    preferTransit, missing, retriedPairs);
+                            apiCalls.incrementAndGet();
+                            durations[a][b] = sec;
+                            durations[b][a] = sec;
+                            // R2 对级缓存：查询结果逐对登记（含 -1，与矩阵级缓存语义一致）
+                            taskResultCache.register(GLOBAL_SCOPE,
+                                    pairScope(nodes.get(a), nodes.get(b), mode, city),
+                                    TaskResultCache.TaskType.MATRIX, null, String.valueOf(sec));
+                        } finally {
+                            permits.release();
                         }
-                    }, executor));
-                }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        durations[a][b] = -1;
+                        durations[b][a] = -1;
+                        missing.add(nodes.get(a).name() + "→" + nodes.get(b).name());
+                    }
+                }, executor));
             }
             CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
         }
@@ -154,8 +182,8 @@ public class CommuteMatrixBuilder {
         TimeMatrix matrix = new TimeMatrix(nodeNames, durations);
         taskResultCache.register(GLOBAL_SCOPE, scope, TaskResultCache.TaskType.MATRIX,
                 null, matrixToJson(matrix));
-        log.info("通勤矩阵构建完成: nodes={}, apiCalls={}, retriedPairs={}, missingPairs={}, duration={}ms",
-                n, apiCalls.get(), retriedPairs.get(), missing.size(),
+        log.info("通勤矩阵构建完成: nodes={}, apiCalls={}, pairCacheHits={}, retriedPairs={}, missingPairs={}, duration={}ms",
+                n, apiCalls.get(), pairCacheHits, retriedPairs.get(), missing.size(),
                 (System.nanoTime() - start) / 1_000_000);
         return new MatrixBuildOutcome(matrix, nodes, List.copyOf(missing), apiCalls.get(), false);
     }
@@ -339,6 +367,33 @@ public class CommuteMatrixBuilder {
                 .sorted()
                 .collect(Collectors.joining("|"));
         return sha256Hex(material).substring(0, 16);
+    }
+
+    /**
+     * R2 对级缓存键：名序无关（矩阵对称）+ mode + city（公交结果依赖城市，null 记 "-"）。
+     * 名字即本系统 POI 身份（shortlist 按名去重、GEO 缓存同口径），坐标随名稳定。
+     */
+    private static String pairScope(PoiCandidate a, PoiCandidate b, String mode, String city) {
+        String first = a.name();
+        String second = b.name();
+        if (second.compareTo(first) < 0) {
+            String t = first;
+            first = second;
+            second = t;
+        }
+        return "routepair:" + mode + ":" + (city == null ? "-" : city) + ":" + first + "|" + second;
+    }
+
+    /** 对级缓存值解析（秒，含 -1）；脏值/空值返回 null 按未命中处理（重新查询） */
+    private static Long parseSeconds(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static String sha256Hex(String s) {

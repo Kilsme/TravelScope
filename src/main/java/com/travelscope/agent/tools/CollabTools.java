@@ -24,9 +24,12 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * 协作契约工具三件套（S2.6）：planning-agent 触发代码服务与落盘契约文件的唯一入口。
@@ -282,11 +285,61 @@ public class CollabTools {
     private String planRouteInternal(
             String sessionId, Integer maxDailyCommuteMin, Boolean preferTransit,
             RuntimeContext ctx, boolean autoChain) {
+        RoutePrep prep = prepareRoute(sessionId, maxDailyCommuteMin, preferTransit, ctx);
+        if (prep.failed()) {
+            return prep.error();
+        }
+        log.info("plan_route: 用户={}, 会话={}, POI数={}, days={}, 城市={}",
+                prep.userId(), sessionId, prep.pois().size(), prep.days(), prep.destination());
+        try {
+            if (prep.fixture() && Boolean.TRUE.equals(ctx.get("assessment.toolFailure"))) {
+                return "ERROR: FIXTURE injected external tool failure";
+            }
+            RoutePlannerServiceImpl planner = prep.fixture()
+                    ? com.travelscope.assessment.FixtureServices.planner(taskWorkspace) : routePlannerService;
+            RoutePlan plan = planner.planAndWrite(prep.userId(), sessionId, prep.pois(),
+                    prep.constraints(), prep.destination());
+            String routeJson = JSON.toJSONString(plan);
+            // 无 unplaced → 代码自动链进组装（LLM 免评估轮）；组装失败降级为提示手动调
+            boolean noUnplaced = plan.solverMeta() == null
+                    || plan.solverMeta().unplaced() == null || plan.solverMeta().unplaced().isEmpty();
+            if (autoChain && noUnplaced) {
+                String assembled = doAssembleItinerary(sessionId, ctx);
+                if (!assembled.startsWith("ERROR")) {
+                    log.info("plan_route 无溢出，自动链进组装: 用户={}, 会话={}", prep.userId(), sessionId);
+                    return routeJson + "\n\n" + AUTO_ASSEMBLED_MARKER + "：" + assembled
+                            + "（路线与草案均已落盘，请直接进入第 5 步一行收尾）";
+                }
+                log.warn("plan_route 自动链组装失败（降级为提示手动组装）: 用户={}, 会话={}, 原因={}",
+                        prep.userId(), sessionId, assembled);
+                // 内嵌失败原因时剥掉 ERROR 前缀（本返回是成功级结果，防误判）
+                String detail = assembled.startsWith("ERROR: ") ? assembled.substring(7) : assembled;
+                return routeJson + "\n\n（自动组装未完成：" + detail + "——请手动调 assemble_itinerary）";
+            }
+            return routeJson;
+        } catch (Exception e) {
+            log.warn("plan_route 求解失败: 用户={}, 会话={}, 原因={}", prep.userId(), sessionId, e.getMessage());
+            return "ERROR: 路线求解失败: " + e.getMessage();
+        }
+    }
+
+    /** plan_route 输入准备结果：error 非空即失败（ERROR 文本直返调用方） */
+    private record RoutePrep(String error, String userId, int days, String destination,
+                             List<PoiCandidate> pois, RouteConstraints constraints, boolean fixture) {
+        boolean failed() {
+            return error != null;
+        }
+    }
+
+    /** 输入准备（与 planRouteInternal 原逻辑一致）：intake 天数/目的地 + shortlist POI + 约束 + fixture 判定 */
+    private RoutePrep prepareRoute(String sessionId, Integer maxDailyCommuteMin,
+                                   Boolean preferTransit, RuntimeContext ctx) {
         String userId = ctx.getUserId();
         // 天数与目的地取需求契约（唯一事实源，防止 agent 传参与需求漂移）
         Optional<IntakeResult> intake = taskWorkspace.readIntakeResult(userId, sessionId);
         if (intake.isEmpty()) {
-            return "ERROR: 会话目录缺 intake_result.json（需求未收齐即开始规划？），无法确定天数与目的地";
+            return new RoutePrep("ERROR: 会话目录缺 intake_result.json（需求未收齐即开始规划？），无法确定天数与目的地",
+                    userId, 0, null, null, null, false);
         }
         String daysStr = intake.get().fields().days() == null ? null : intake.get().fields().days().value();
         String destination = intake.get().fields().destination() == null
@@ -295,19 +348,23 @@ public class CollabTools {
         try {
             days = Integer.parseInt(daysStr);
         } catch (Exception e) {
-            return "ERROR: intake_result.json 中天数缺失或非法: " + daysStr;
+            return new RoutePrep("ERROR: intake_result.json 中天数缺失或非法: " + daysStr,
+                    userId, 0, null, null, null, false);
         }
         if (destination == null || destination.isBlank()) {
-            return "ERROR: intake_result.json 中目的地缺失";
+            return new RoutePrep("ERROR: intake_result.json 中目的地缺失",
+                    userId, days, null, null, null, false);
         }
         // POI 清单取筛选契约（planning-agent 第 2 步产出）
         Optional<PoiShortlist> shortlist = taskWorkspace.readPoiShortlist(userId, sessionId);
         if (shortlist.isEmpty()) {
-            return "ERROR: 会话目录缺 poi_shortlist.json——先完成 POI 筛选并用 write_collab_file 写入";
+            return new RoutePrep("ERROR: 会话目录缺 poi_shortlist.json——先完成 POI 筛选并用 write_collab_file 写入",
+                    userId, days, destination, null, null, false);
         }
         List<PoiCandidate> pois = shortlist.get().pois().stream().map(CollabTools::toCandidate).toList();
         if (pois.isEmpty()) {
-            return "ERROR: poi_shortlist.json 的 pois 为空——先完成 POI 筛选";
+            return new RoutePrep("ERROR: poi_shortlist.json 的 pois 为空——先完成 POI 筛选",
+                    userId, days, destination, null, null, false);
         }
         RouteConstraints constraints = RouteConstraints.ofDays(days);
         if (maxDailyCommuteMin != null) {
@@ -319,38 +376,39 @@ public class CollabTools {
         if (preferTransit != null) {
             constraints = constraints.withPreferTransit(preferTransit);
         }
-        log.info("plan_route: 用户={}, 会话={}, POI数={}, days={}, 城市={}",
-                userId, sessionId, pois.size(), days, destination);
+        boolean fixture = com.travelscope.assessment.FixtureServices.enabled(ctx);
+        return new RoutePrep(null, userId, days, destination, pois, constraints, fixture);
+    }
+
+    /**
+     * R2 增量重排（revise_poi_selection 专用）：全量求解 + 未变天指纹复用
+     * （矩阵经对级缓存增量补查）。错误时 outcome 为 null。
+     */
+    private record IncrementalRouteResult(String error,
+                                          RoutePlannerServiceImpl.IncrementalOutcome outcome) {
+    }
+
+    private IncrementalRouteResult planRouteIncremental(String sessionId, RuntimeContext ctx,
+                                                        RoutePlan previous) {
+        RoutePrep prep = prepareRoute(sessionId, null, null, ctx);
+        if (prep.failed()) {
+            return new IncrementalRouteResult(prep.error(), null);
+        }
+        log.info("plan_route 增量重排: 用户={}, 会话={}, POI数={}, days={}, 城市={}",
+                prep.userId(), sessionId, prep.pois().size(), prep.days(), prep.destination());
         try {
-            boolean fixture = com.travelscope.assessment.FixtureServices.enabled(ctx);
-            if (fixture && Boolean.TRUE.equals(ctx.get("assessment.toolFailure"))) {
-                return "ERROR: FIXTURE injected external tool failure";
+            if (prep.fixture() && Boolean.TRUE.equals(ctx.get("assessment.toolFailure"))) {
+                return new IncrementalRouteResult("ERROR: FIXTURE injected external tool failure", null);
             }
-            RoutePlannerServiceImpl planner = fixture
+            RoutePlannerServiceImpl planner = prep.fixture()
                     ? com.travelscope.assessment.FixtureServices.planner(taskWorkspace) : routePlannerService;
-            RoutePlan plan = planner.planAndWrite(userId, sessionId, pois,
-                    constraints, destination);
-            String routeJson = JSON.toJSONString(plan);
-            // 无 unplaced → 代码自动链进组装（LLM 免评估轮）；组装失败降级为提示手动调
-            boolean noUnplaced = plan.solverMeta() == null
-                    || plan.solverMeta().unplaced() == null || plan.solverMeta().unplaced().isEmpty();
-            if (autoChain && noUnplaced) {
-                String assembled = doAssembleItinerary(sessionId, ctx);
-                if (!assembled.startsWith("ERROR")) {
-                    log.info("plan_route 无溢出，自动链进组装: 用户={}, 会话={}", userId, sessionId);
-                    return routeJson + "\n\n" + AUTO_ASSEMBLED_MARKER + "：" + assembled
-                            + "（路线与草案均已落盘，请直接进入第 5 步一行收尾）";
-                }
-                log.warn("plan_route 自动链组装失败（降级为提示手动组装）: 用户={}, 会话={}, 原因={}",
-                        userId, sessionId, assembled);
-                // 内嵌失败原因时剥掉 ERROR 前缀（本返回是成功级结果，防误判）
-                String detail = assembled.startsWith("ERROR: ") ? assembled.substring(7) : assembled;
-                return routeJson + "\n\n（自动组装未完成：" + detail + "——请手动调 assemble_itinerary）";
-            }
-            return routeJson;
+            return new IncrementalRouteResult(null, planner.planAndWriteIncremental(
+                    prep.userId(), sessionId, prep.pois(), prep.constraints(),
+                    prep.destination(), previous));
         } catch (Exception e) {
-            log.warn("plan_route 求解失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
-            return "ERROR: 路线求解失败: " + e.getMessage();
+            log.warn("plan_route 增量重排失败: 用户={}, 会话={}, 原因={}",
+                    prep.userId(), sessionId, e.getMessage());
+            return new IncrementalRouteResult("ERROR: 路线增量重排失败: " + e.getMessage(), null);
         }
     }
 
@@ -371,7 +429,7 @@ public class CollabTools {
         return doAssembleItinerary(sessionId, ctx);
     }
 
-    /** assemble_itinerary 主体（供 revise_poi_selection 复用，重跑重组装） */
+    /** assemble_itinerary 主体（R2 起 revise 链走增量版 doAssembleItineraryIncremental，本方法为其全量兜底） */
     private String doAssembleItinerary(String sessionId, RuntimeContext ctx) {
         String userId = ctx.getUserId();
         try {
@@ -400,29 +458,8 @@ public class CollabTools {
             // ② 读缓存（天气/酒店/车票）+ poi_shortlist 已核验 POI 集合 + intake 偏好，代码渲染。
             // 缓存原文是工具返回的原始 JSON（记账去 LLM 化后不再经 LLM 消化）——进组装器前
             // 必须过 TaskResultFormatter 转摘要，否则 raw JSON 直通最终方案上屏（2026-10-20 实证）
-            String weather = com.travelscope.service.TaskResultFormatter.formatWeather(
-                    taskResultCache.get(userId, sessionId,
-                            com.travelscope.service.TaskResultCache.TaskType.WEATHER));
-            String hotel = com.travelscope.service.TaskResultFormatter.formatHotel(
-                    taskResultCache.get(userId, sessionId,
-                            com.travelscope.service.TaskResultCache.TaskType.HOTEL));
-            String train = com.travelscope.service.TaskResultFormatter.formatTrain(
-                    taskResultCache.get(userId, sessionId,
-                            com.travelscope.service.TaskResultCache.TaskType.TRAIN));
-            if (train == null) {
-                train = com.travelscope.service.TaskResultFormatter.formatTrain(
-                        taskResultCache.get(userId, sessionId,
-                                com.travelscope.service.TaskResultCache.TaskType.FLIGHT));
-            }
-            // 防幻觉与偏好硬约束的校验输入
-            com.travelscope.collab.PoiShortlist shortlist =
-                    taskWorkspace.readPoiShortlist(userId, sessionId).orElse(null);
-            List<String> preferences = extractPreferences(intake.get());
-            com.travelscope.collab.ItineraryDraft draft = itineraryAssembler.assemble(
-                    skeleton, routePlan.get(), weather, hotel, train, shortlist, preferences);
-
-            // ③ 直接落盘
-            taskWorkspace.writeItineraryDraft(userId, sessionId, draft);
+            ItineraryDraft draft = renderAndWriteDraft(userId, sessionId, skeleton,
+                    routePlan.get(), intake.get());
             log.info("assemble_itinerary 已组装落盘: 用户={}, 会话={}, {} 天, markdownBody={} 字符",
                     userId, sessionId, draft.days().size(), draft.markdownBody().length());
             return "已组装并写入 itinerary_draft.json（" + draft.days().size()
@@ -435,15 +472,189 @@ public class CollabTools {
     }
 
     /**
+     * 组装公共收尾（全量/增量共用）：读缓存（TaskResultFormatter 转摘要）→
+     * ItineraryAssembler 渲染 + 防幻觉 + 偏好校验 → 落盘 itinerary_draft.json。
+     */
+    private ItineraryDraft renderAndWriteDraft(String userId, String sessionId,
+                                               ItineraryDraft skeleton, RoutePlan routePlan,
+                                               IntakeResult intake) {
+        String weather = com.travelscope.service.TaskResultFormatter.formatWeather(
+                taskResultCache.get(userId, sessionId,
+                        com.travelscope.service.TaskResultCache.TaskType.WEATHER));
+        String hotel = com.travelscope.service.TaskResultFormatter.formatHotel(
+                taskResultCache.get(userId, sessionId,
+                        com.travelscope.service.TaskResultCache.TaskType.HOTEL));
+        String train = com.travelscope.service.TaskResultFormatter.formatTrain(
+                taskResultCache.get(userId, sessionId,
+                        com.travelscope.service.TaskResultCache.TaskType.TRAIN));
+        if (train == null) {
+            train = com.travelscope.service.TaskResultFormatter.formatTrain(
+                    taskResultCache.get(userId, sessionId,
+                            com.travelscope.service.TaskResultCache.TaskType.FLIGHT));
+        }
+        // 防幻觉与偏好硬约束的校验输入
+        PoiShortlist shortlist = taskWorkspace.readPoiShortlist(userId, sessionId).orElse(null);
+        List<String> preferences = extractPreferences(intake);
+        ItineraryDraft draft = itineraryAssembler.assemble(
+                skeleton, routePlan, weather, hotel, train, shortlist, preferences);
+        taskWorkspace.writeItineraryDraft(userId, sessionId, draft);
+        return draft;
+    }
+
+    /**
+     * R2 增量重组装（revise 链）：LLM 只对变化天重产结构字段（prompt 只含变化天路线 +
+     * 旧草案未变天条目作预算参考），未变天由代码从旧草案逐字沿用——不信模型抄写。
+     * 增量骨架失败/变化天缺失 → 逐级降级（重试 1 次 → 全量 doAssembleItinerary 兜底）。
+     */
+    private String doAssembleItineraryIncremental(String sessionId, RuntimeContext ctx,
+                                                  Set<Integer> changedDays) {
+        String userId = ctx.getUserId();
+        try {
+            var routePlan = taskWorkspace.readRoutePlan(userId, sessionId);
+            if (routePlan.isEmpty()) {
+                return doAssembleItinerary(sessionId, ctx);  // 防御：revise 已落盘，理论不可达
+            }
+            var intake = taskWorkspace.readIntakeResult(userId, sessionId);
+            if (intake.isEmpty()) {
+                return doAssembleItinerary(sessionId, ctx);
+            }
+            var oldDraftOpt = taskWorkspace.readItineraryDraft(userId, sessionId);
+            if (oldDraftOpt.isEmpty()) {
+                return doAssembleItinerary(sessionId, ctx);  // 无旧草案（首排后被外删等）→ 全量
+            }
+            ItineraryDraft oldDraft = oldDraftOpt.get();
+
+            // ① 增量骨架：只产变化天结构 + 全局 budget/notes；失败代码内重试 1 次
+            ItineraryDraft partial = produceDraftSkeletonIncremental(
+                    userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft);
+            if (partial == null) {
+                log.info("增量骨架首次生成失败，代码内重试: 用户={}, 会话={}", userId, sessionId);
+                partial = produceDraftSkeletonIncremental(
+                        userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft);
+            }
+            ItineraryDraft skeleton = partial == null ? null
+                    : mergeIncrementalSkeleton(oldDraft, partial, changedDays);
+            if (skeleton == null) {
+                log.info("增量骨架不完整（变化天缺失），降级全量重组装: 会话={}", sessionId);
+                return doAssembleItinerary(sessionId, ctx);
+            }
+
+            // ② 渲染 + 校验 + 落盘：与全量路径共用（防幻觉/偏好校验/缓存摘要全保留，质量门不缩水）
+            ItineraryDraft draft = renderAndWriteDraft(userId, sessionId, skeleton,
+                    routePlan.get(), intake.get());
+            log.info("增量重组装已落盘: 用户={}, 会话={}, 变化天={}, 其余天沿用旧草案, markdownBody={} 字符",
+                    userId, sessionId, changedDays, draft.markdownBody().length());
+            return "已增量重组装并写入 itinerary_draft.json（重排天 " + joinDayNumbers(changedDays)
+                    + "，其余天沿用原草案条目）。请重新评审。";
+        } catch (Exception e) {
+            log.warn("增量重组装失败（降级全量）: 用户={}, 会话={}, 原因={}",
+                    userId, sessionId, e.getMessage());
+            return doAssembleItinerary(sessionId, ctx);
+        }
+    }
+
+    /**
+     * R2 增量骨架合并（纯函数，包内可测）：未变天从旧草案逐字沿用（代码级，不信模型抄写），
+     * 变化天取增量骨架对应天；增量骨架缺失任一变化天 → 返回 null（调用方降级全量——
+     * 旧草案该天的 POI 已变，不可沿用）。全局 budget/notes/pendingConfirm 取增量骨架。
+     */
+    static ItineraryDraft mergeIncrementalSkeleton(ItineraryDraft oldDraft, ItineraryDraft partial,
+                                                   Set<Integer> changedDays) {
+        Map<Integer, ItineraryDraft.DraftDay> partialByDay = new HashMap<>();
+        for (ItineraryDraft.DraftDay d : partial.days()) {
+            partialByDay.put(d.day(), d);
+        }
+        for (Integer day : changedDays) {
+            if (!partialByDay.containsKey(day)) {
+                return null;
+            }
+        }
+        List<ItineraryDraft.DraftDay> merged = new ArrayList<>();
+        Set<Integer> takenDays = new LinkedHashSet<>();
+        for (ItineraryDraft.DraftDay oldDay : oldDraft.days()) {
+            ItineraryDraft.DraftDay fresh = partialByDay.get(oldDay.day());
+            takenDays.add(oldDay.day());
+            merged.add(fresh != null ? fresh : oldDay);
+        }
+        // 增量骨架带旧草案没有的天号（模型越权产出，理论不该有）：按天号补挂保守接受
+        partial.days().stream()
+                .filter(d -> !takenDays.contains(d.day()))
+                .sorted(java.util.Comparator.comparing(ItineraryDraft.DraftDay::day))
+                .forEach(merged::add);
+        return new ItineraryDraft(merged, partial.budget(), partial.notes(),
+                partial.pendingConfirm(), partial.markdownBody());
+    }
+
+    /** R2 增量骨架：LLM 只产变化天的 days 结构 + 全局 budget/notes/pendingConfirm */
+    private ItineraryDraft produceDraftSkeletonIncremental(String userId, String sessionId,
+                                                           RoutePlan routePlan, IntakeResult intake,
+                                                           Set<Integer> changedDays,
+                                                           ItineraryDraft oldDraft) {
+        List<RoutePlan.RouteDay> changedRoute = routePlan.days().stream()
+                .filter(d -> changedDays.contains(d.day())).toList();
+        List<ItineraryDraft.DraftDay> keptOldDays = oldDraft.days().stream()
+                .filter(d -> !changedDays.contains(d.day())).toList();
+        String prompt = "行程草案增量修订：部分天的路线已更新，只重新生成指定天的结构字段。\n\n"
+                + "【需重新生成的天（新路线）】\n" + JSON.toJSONString(changedRoute)
+                + "\n\n【保持不变的天的既有草案条目（仅供预算与连贯性参考，禁止改动、禁止输出这些天）】\n"
+                + JSON.toJSONString(keptOldDays)
+                + "\n\n【用户需求】\n" + JSON.toJSONString(intake)
+                + "\n\n输出 ItineraryDraft 结构字段：days 数组只包含需重新生成的天"
+                + "（day 字段用对应天号，每项含 time（形如 09:00-11:30）/activity/location/theme），"
+                + "外加全局 budget（须按全部天数估算）、notes、pendingConfirm。"
+                + "名称/时间/价格必须与输入一致，不编造；markdownBody 填占位「组装中」。";
+        RuntimeContext callCtx = RuntimeContext.builder()
+                .userId("itinerary-assembler").sessionId("itinerary-assemble-" + sessionId).build();
+        var agent = io.agentscope.core.ReActAgent.builder()
+                .name("itinerary-assembler")
+                .sysPrompt("你是行程结构整理器（增量模式）。只为指定天生成结构字段，"
+                        + "budget 需覆盖参考条目在内的全部天数；不要输出未变化的天。"
+                        + "markdownBody 填占位「组装中」。")
+                .model(chatModel)
+                .maxIters(2)
+                .build();
+        try {
+            var reply = agent.call(prompt, ItineraryDraft.class, callCtx)
+                    .block(java.time.Duration.ofSeconds(60));
+            if (reply == null) {
+                return null;
+            }
+            try {
+                return reply.getStructuredData(ItineraryDraft.class);
+            } catch (Exception ignored) {
+                String text = reply.getTextContent();
+                if (text != null && text.contains("\"days\"")) {
+                    com.alibaba.fastjson2.JSONObject json = com.alibaba.fastjson2.JSON.parseObject(
+                            text.replaceAll("(?s).*?(\\{.*\\}).*", "$1"));
+                    json.putIfAbsent("markdownBody", "组装中");
+                    json.putIfAbsent("schemaVersion", 4);
+                    return json.toJavaObject(ItineraryDraft.class);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("增量骨架生成异常: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /** 天号集合拼接（升序、「、」分隔），revise 返回与日志披露用 */
+    private static String joinDayNumbers(Set<Integer> days) {
+        return days.stream().sorted().map(String::valueOf)
+                .collect(java.util.stream.Collectors.joining("、"));
+    }
+
+    /**
      * POI 重选决策代码化（卡 E：reviewer 只传加/删 POI 名，代码补字段+重排+重组装）。
      * ① 按名删 removePoiNames；② 对每个 addPoiNames 名调 searchPois 补硬字段
      * （lng/lat/openHours/source）构造 PoiItem 加入；③ 写回 poi_shortlist.json；
-     * ④ 重跑 plan_route → 复用 assemble_itinerary 重组装 itinerary_draft.json。
+     * ④ R2 增量重排：有旧 route_plan 时未变天（POI 集合指纹全等）字节级复用，
+     * 矩阵经对级缓存只补查涉及对；⑤ R2 增量重组装：只对变化天重产结构字段。
      */
     @Tool(description = "POI 重选（卡 E：你只给加/删的 POI 名，代码补字段并重排重组装，零手写）。"
             + "检出偏好/POI 缺失时调用：addPoiNames 传要补的 POI 名（如「同里古镇」），"
             + "removePoiNames 传要删的 POI 名（可空）。内部自动补坐标/开放时段、写回清单、"
-            + "重跑 plan_route 并重组装 itinerary_draft.json。严禁自己 write_collab_file 重写草案")
+            + "增量重排路线（未变天沿用原解）并重组装 itinerary_draft.json，"
+            + "返回会披露重排/沿用的天号。严禁自己 write_collab_file 重写草案")
     public String revise_poi_selection(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
             String sessionId,
@@ -504,20 +715,40 @@ public class CollabTools {
                     pois);
             taskWorkspace.writePoiShortlist(userId, sessionId, updated);
 
-            // ④ 重跑 plan_route（不走自动链——重组装由下面的 doAssembleItinerary 收尾，防双重组装）
-            String routeResult = planRouteInternal(sessionId, null, null, ctx, false);
-            if (routeResult.startsWith("ERROR")) {
-                return "ERROR: POI 已更新但路线重排失败: " + routeResult;
+            // ④ R2 增量重排：旧 route_plan 在覆盖前先取——未变天（POI 集合指纹全等）字节级复用，
+            //    矩阵经对级缓存只补查涉及对（17 节点增删 1 点：136 对 ≈48s → 32 对 ≈11s）
+            Optional<RoutePlan> previous = taskWorkspace.readRoutePlan(userId, sessionId);
+            Set<Integer> changedDays = null;
+            Set<Integer> reusedDays = null;
+            if (previous.isPresent() && !previous.get().days().isEmpty()) {
+                IncrementalRouteResult inc = planRouteIncremental(sessionId, ctx, previous.get());
+                if (inc.outcome() == null) {
+                    return "ERROR: POI 已更新但路线重排失败: " + inc.error();
+                }
+                changedDays = inc.outcome().changedDays();
+                reusedDays = inc.outcome().reusedDays();
+            } else {
+                String routeResult = planRouteInternal(sessionId, null, null, ctx, false);
+                if (routeResult.startsWith("ERROR")) {
+                    return "ERROR: POI 已更新但路线重排失败: " + routeResult;
+                }
             }
-            String assembleResult = doAssembleItinerary(sessionId, ctx);
+
+            // ⑤ R2 增量重组装：只对变化天重产结构字段，未变天沿用旧草案条目（代码级合并）
+            String assembleResult = changedDays == null
+                    ? doAssembleItinerary(sessionId, ctx)
+                    : doAssembleItineraryIncremental(sessionId, ctx, changedDays);
             if (assembleResult.startsWith("ERROR")) {
                 return "ERROR: POI 已更新并重排路线，但重组装失败: " + assembleResult;
             }
-            log.info("revise_poi_selection: 用户={}, 会话={}, +{} -{}, 失败={}",
-                    userId, sessionId, added, removed, failed);
+            log.info("revise_poi_selection: 用户={}, 会话={}, +{} -{}, 失败={}, 重排天={}, 沿用天={}",
+                    userId, sessionId, added, removed, failed, changedDays, reusedDays);
             return "POI 修订完成：新增 " + added + "，删除 " + removed
                     + (failed.isEmpty() ? "" : "，补字段失败 " + failed)
-                    + "；已重排路线并重组装 itinerary_draft.json，请重新评审。";
+                    + (changedDays == null ? "" : "；增量重排：第 " + joinDayNumbers(changedDays)
+                            + " 天重排" + (reusedDays == null || reusedDays.isEmpty() ? ""
+                            : "，第 " + joinDayNumbers(reusedDays) + " 天沿用原路线（输入未变）"))
+                    + "；已重组装 itinerary_draft.json，请重新评审。";
         } catch (Exception e) {
             log.warn("revise_poi_selection 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: POI 修订失败: " + e.getMessage();

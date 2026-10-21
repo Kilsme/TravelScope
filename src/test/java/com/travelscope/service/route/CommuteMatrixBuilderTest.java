@@ -168,13 +168,59 @@ class CommuteMatrixBuilderTest {
         assertThat(first.matrix().get(0, 1)).isEqualTo(720);
         verify(transportTool, times(1)).geocode("九溪烟树");
 
-        // 加一个点使矩阵 hash 变化（矩阵级 miss，对级无缓存 → 全部 3 对重查），
-        // 但 geocode 应走 GEO 缓存不再调
+        // 加一个点使矩阵 hash 变化（矩阵级 miss），但对级缓存命中 西湖↔九溪（首查已登记）
+        // → 仅新点涉及的 2 对重查；geocode 应走 GEO 缓存不再调
         MatrixBuildOutcome second = builder.build(List.of(WEST_LAKE, jiuxi, yanggongdi), "杭州", true);
         assertThat(second.cacheHit()).isFalse();
-        assertThat(second.apiCalls()).isEqualTo(3);
+        assertThat(second.apiCalls()).isEqualTo(2);
         verify(transportTool, times(1)).geocode("九溪烟树");
         assertThat(second.matrix().get(1, 2)).isEqualTo(780);
         assertThat(second.matrix().get(0, 2)).isEqualTo(300);
+        // 对级缓存值与首查一致（西湖↔九溪未重查，值从缓存回填）
+        assertThat(second.matrix().get(0, 1)).isEqualTo(720);
+    }
+
+    @Test
+    void pairCacheSkipsUnchangedPairsOnNodeSetChange() {
+        // 首查 3 节点：全部 3 对走 API
+        when(transportTool.getDrivingRoute("120.1449,30.2436", "120.1486,30.2312"))
+                .thenReturn(drivingJson(420));
+        when(transportTool.getTransitRoute("120.1449,30.2436", "120.0962,30.2435", "杭州"))
+                .thenReturn(transitJson(900));
+        when(transportTool.getTransitRoute("120.1486,30.2312", "120.0962,30.2435", "杭州"))
+                .thenReturn(transitJson(1080));
+        MatrixBuildOutcome first = builder.build(List.of(WEST_LAKE, LEIFENG, LINGYIN), "杭州", true);
+        assertThat(first.apiCalls()).isEqualTo(3);
+
+        // 增 1 点（净慈寺，雷峰塔近旁）：6 对中 3 对命中对级缓存（零 API），仅新点 3 对重查
+        // 西湖→净慈寺 ≈1.6km（驾车）；雷峰塔→净慈寺 ≈0.2km（驾车）；灵隐寺→净慈寺 ≈5.4km（公交）
+        // 坐标尾随零坑：120.1500 经 Double.toString 为 "120.15"（S1.2 既有坑，桩串用解析后格式）
+        PoiCandidate jingci = new PoiCandidate("净慈寺", 120.15, 30.23,
+                "08:00", "17:00", 90, 4.5, "RAG");
+        when(transportTool.getDrivingRoute("120.1449,30.2436", "120.15,30.23"))
+                .thenReturn(drivingJson(360));
+        when(transportTool.getDrivingRoute("120.1486,30.2312", "120.15,30.23"))
+                .thenReturn(drivingJson(180));
+        when(transportTool.getTransitRoute("120.0962,30.2435", "120.15,30.23", "杭州"))
+                .thenReturn(transitJson(1200));
+
+        MatrixBuildOutcome second = builder.build(
+                List.of(WEST_LAKE, LEIFENG, LINGYIN, jingci), "杭州", true);
+
+        assertThat(second.cacheHit()).isFalse();       // 矩阵级 miss（节点集合变了）
+        assertThat(second.apiCalls()).isEqualTo(3);    // 仅新点涉及的 3 对
+        assertThat(second.missingPairs()).isEmpty();
+        // 未涉及对的值来自对级缓存，与首查一致；新对为本次查询值
+        assertThat(second.matrix().get(0, 1)).isEqualTo(420);
+        assertThat(second.matrix().get(0, 2)).isEqualTo(900);
+        assertThat(second.matrix().get(1, 2)).isEqualTo(1080);
+        assertThat(second.matrix().get(0, 3)).isEqualTo(360);
+        assertThat(second.matrix().get(1, 3)).isEqualTo(180);
+        assertThat(second.matrix().get(2, 3)).isEqualTo(1200);
+        // 旧对未重查（对级缓存生效的调用侧证据）
+        verify(transportTool, times(1))
+                .getDrivingRoute("120.1449,30.2436", "120.1486,30.2312");
+        verify(transportTool, times(1))
+                .getTransitRoute("120.1486,30.2312", "120.0962,30.2435", "杭州");
     }
 }

@@ -10,10 +10,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ForkJoinTask;
+import java.util.stream.Collectors;
 
 /**
  * 路线求解实现（S1.5，v4 计算代码化主线收口）：串起
@@ -124,34 +132,120 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
 
     /**
      * 求解并落盘 route_plan.json（单一生产者 = 本服务；文件名→DTO 绑定由
-     * CollabFileWriter 强制）。
+     * CollabFileWriter 强制）。逐天记录输入指纹（R2 增量轮的复用判据）。
      *
      * @return 落盘的 RoutePlan（与磁盘内容一致）
      */
     public RoutePlan planAndWrite(String userId, String sessionId, List<PoiCandidate> pois,
                                   RouteConstraints constraints, String city) {
         RouteSolveResult result = solve(pois, constraints, city);
-        // RouteDay.date 置 null：日历日期在需求侧（startDate），S2 接线时由上游补
-        List<RoutePlan.RouteDay> days = result.days().stream()
-                .map(d -> new RoutePlan.RouteDay(d.day(), null,
-                        d.pois().stream()
-                                .map(sp -> new RoutePlan.RoutePoi(sp.candidate().name(),
-                                        sp.candidate().lng(), sp.candidate().lat(),
-                                        sp.startTime(), sp.endTime(), sp.transitFromPrev(),
-                                        sp.commuteMinutesFromPrev()))
-                                .toList(),
-                        d.commuteMinutesTotal()))
-                .toList();
-        RoutePlan plan = new RoutePlan(days, new RoutePlan.SolverMeta(
+        RoutePlan plan = toPlan(result);
+        taskWorkspace.writeRoutePlan(userId, sessionId, plan);
+        log.info("route_plan.json 已落盘: userId={}, sessionId={}, days={}, unplaced={}",
+                userId, sessionId, plan.days().size(), plan.solverMeta().unplaced().size());
+        return plan;
+    }
+
+    /**
+     * R2 增量落盘：全量求解（矩阵经对级缓存增量补查）后，按天级输入指纹匹配旧产物——
+     * POI 集合全等的天输入未变 ⟹ 矩阵值相同 ⟹ 旧解仍有效，字节级复用旧 RouteDay
+     * （时段/顺序/通勤总分钟原样，仅天号取新位）；未命中天用新解。复用数为 0 时
+     * 与全量 {@link #planAndWrite} 等价（安全退化，无变更数量门控）。
+     * <p>
+     * 复用条件是集合全等而非相似——防「看到已有进展过早宣布完成」；约束沿用
+     * intake 派生默认值（revise 链不传覆盖参数，与旧解同约束系）。
+     * </p>
+     */
+    public IncrementalOutcome planAndWriteIncremental(String userId, String sessionId,
+                                                      List<PoiCandidate> pois,
+                                                      RouteConstraints constraints, String city,
+                                                      RoutePlan previous) {
+        long startNano = System.nanoTime();
+        RouteSolveResult result = solve(pois, constraints, city);
+        // 旧天指纹映射（存量产物无 fingerprint 字段 → 按 RoutePoi 现算，兼容）
+        Map<String, RoutePlan.RouteDay> oldByFingerprint = new HashMap<>();
+        for (RoutePlan.RouteDay d : previous.days()) {
+            oldByFingerprint.putIfAbsent(fingerprintOf(d.pois()), d);
+        }
+        List<RoutePlan.RouteDay> days = new ArrayList<>();
+        Set<Integer> reusedDays = new LinkedHashSet<>();
+        Set<Integer> changedDays = new LinkedHashSet<>();
+        for (RouteSolveResult.RouteDay d : result.days()) {
+            List<RoutePlan.RoutePoi> newPois = toRoutePois(d);
+            String fingerprint = fingerprintOf(newPois);
+            RoutePlan.RouteDay old = oldByFingerprint.get(fingerprint);
+            if (old != null) {
+                days.add(new RoutePlan.RouteDay(d.day(), old.date(), old.pois(),
+                        old.commuteMinutesTotal(), fingerprint));
+                reusedDays.add(d.day());
+            } else {
+                days.add(new RoutePlan.RouteDay(d.day(), null, newPois,
+                        d.commuteMinutesTotal(), fingerprint));
+                changedDays.add(d.day());
+            }
+        }
+        RoutePlan plan = new RoutePlan(days, toSolverMeta(result));
+        taskWorkspace.writeRoutePlan(userId, sessionId, plan);
+        log.info("route_plan.json 增量落盘: route_incremental_reused_days={}/{}, 变化天={}, unplaced={}, durationMs={}",
+                reusedDays.size(), days.size(), changedDays,
+                plan.solverMeta().unplaced().size(), (System.nanoTime() - startNano) / 1_000_000);
+        return new IncrementalOutcome(plan, reusedDays, changedDays);
+    }
+
+    /** 增量落盘结论：plan + 复用天/变化天编号（revise 链据此定重组装范围并向 reviewer 披露） */
+    public record IncrementalOutcome(RoutePlan plan, Set<Integer> reusedDays, Set<Integer> changedDays) {
+    }
+
+    /** 求解结果 → 落盘契约（逐天记录输入指纹） */
+    private static RoutePlan toPlan(RouteSolveResult result) {
+        List<RoutePlan.RouteDay> days = new ArrayList<>();
+        for (RouteSolveResult.RouteDay d : result.days()) {
+            List<RoutePlan.RoutePoi> pois = toRoutePois(d);
+            days.add(new RoutePlan.RouteDay(d.day(), null, pois, d.commuteMinutesTotal(),
+                    fingerprintOf(pois)));
+        }
+        return new RoutePlan(days, toSolverMeta(result));
+    }
+
+    private static RoutePlan.SolverMeta toSolverMeta(RouteSolveResult result) {
+        return new RoutePlan.SolverMeta(
                 result.solverMeta().algorithm(), result.solverMeta().matrixSource(),
                 result.solverMeta().durationMs(),
                 result.unplaced().stream()
                         .map(u -> new RoutePlan.UnplacedPoi(u.name(), u.reason().name()))
-                        .toList()));
-        taskWorkspace.writeRoutePlan(userId, sessionId, plan);
-        log.info("route_plan.json 已落盘: userId={}, sessionId={}, days={}, unplaced={}",
-                userId, sessionId, days.size(), plan.solverMeta().unplaced().size());
-        return plan;
+                        .toList());
+    }
+
+    private static List<RoutePlan.RoutePoi> toRoutePois(RouteSolveResult.RouteDay d) {
+        return d.pois().stream()
+                .map(sp -> new RoutePlan.RoutePoi(sp.candidate().name(), sp.candidate().lng(),
+                        sp.candidate().lat(), sp.startTime(), sp.endTime(), sp.transitFromPrev(),
+                        sp.commuteMinutesFromPrev()))
+                .toList();
+    }
+
+    /** R2 天级输入指纹：当日 POI 排序后的 name@坐标 SHA-256 前 16 位（与矩阵 hash 同风格） */
+    static String fingerprintOf(List<RoutePlan.RoutePoi> pois) {
+        String material = pois.stream()
+                .map(p -> p.name() + "@" + p.lng() + "," + p.lat())
+                .sorted()
+                .collect(Collectors.joining("|"));
+        return sha256Hex(material).substring(0, 16);
+    }
+
+    private static String sha256Hex(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 不可用", e);
+        }
     }
 
     /** 单日：2-opt 改进 → 时段顺排 → RouteDay（纯函数，ForkJoin 任务体内线程安全） */
