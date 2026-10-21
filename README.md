@@ -1,12 +1,10 @@
-> ⚠️ **v4 重构中**：本项目正在进行大规模架构重构（六 Agent → 三 Agent、JSON 契约通信、路线计算代码化）。本文档描述的是 v3 现状，即将重写；权威方案见 [docs/TravelScope重构计划-v4.md](docs/TravelScope重构计划-v4.md)。
-
 <div align="center">
 
 # 🧭 TravelScope
 
 **从一句话需求到可执行行程单的 AI 多智能体旅行规划系统**
 
-六 Agent 协作编排 · 分段质检回炉 · 任务结果缓存复用 · 全链路可观测
+三 Agent + 代码编排 · JSON 契约驱动 · 规则质检零 LLM · 任务结果缓存复用 · 全链路可观测
 
 [Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [glm-5-3-260814 / deepseek-v4-flash-0731](https://img.shields.io/badge/LLM-glm--5.3%20%2F%20ds--flash-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
 
@@ -17,9 +15,10 @@
 ---
 
 > 你说「**帮我规划杭州加上海双城 2 日游，预算 700，喜欢自然和人文**」——
-> 需求收集 Agent 会反问补齐关键信息，检索员双路搜景点，排线员两两算通勤迭代调优，
-> 质检员（独立质检档模型）分三段审核行程；哪段不通过就**只回炉那一段**，其余成果走缓存复用，
-> 最后把一份带时间线、预算汇总与备选方案行程单流式推到你的浏览器。
+> 编排层代码采集需求、登记任务并预检缓存；规划 Agent 首轮一次并行抓齐天气、酒店、往返车票与景点候选池，
+> 名单制定案 POI、代码求解分日路线并自动组装行程草案；
+> 规则质检 <1 秒全过即零 LLM 送审，发现硬伤才唤起质检 Agent 定向修订——
+> 最后把一份带时间线、预算汇总与来源标注的行程单流式推到你的浏览器。
 
 ## 📸 界面预览
 
@@ -31,85 +30,105 @@
 <p align="center">
   <img src="assets/admin-console.png" width="920" alt="管理员端：用户管理 / Token 用量 / 文档上传"/>
 </p>
-<p align="center"><b>🛠️ 管理员端</b> —— 用户管理 · Token 用量统计 · 知识文档上传</p>
+<p align="center"><b>🛠️ 管理员端</b> —— 用户管理 · 邀请码 · Token 用量 · 知识文档上传 · 评估中心</p>
 
-**⚡ 数据速览**：**6** 个 Agent 深度 3 层编排 · 回炉 LLM 调用实测 **↓33%**（最好一轮 **↓50%**）· 意图路由约 **60%** 流量 0 LLM 成本 · **10** 条 EvalCase 双轨质量门禁 · **40+** 测试类
+**⚡ 数据速览**：LLM 全链只保留 **2** 件不可替代的事（POI 偏好筛选决策、草案结构字段产出）· 质检 LLM 258s → 规则 **<1s** · happy path 端到端 **131s**（同需求优化后最快 **63.9s**）· 意图路由约 **60%** 流量 0 LLM 成本 · **24** 条 EvalCase 双轨质量门禁 · **93** 个测试类
 
 ## ✨ 核心特性
 
-- 🤖 **六 Agent 协作编排** — `travel-master`（意图路由 + 编排）→ `intake-agent`（需求收集状态机，反问 ≤3 轮）→ `planning-agent`（二级编排，直调实时数据工具）→ `poi-research` / `route-optimizer` / `reviewer-agent` 三剑客；编排深度 3 层，委派有代码层门禁与保险丝
+- 🤖 **三 Agent + 代码五步编排** — `travel-master`（单点查询接待员，工具直调零委派）/ `planning-agent`（规划执行）/ `reviewer-agent`（质检兜底）；PLANNING 链路由 `ChatService` 代码编排：需求采集 → 任务登记 + 缓存预检 → 委派规划 → 规则质检 + 渲染，慢泳道 600s
+- 🧠 **LLM 只做两件事** — planner 首轮并行抓齐全量数据后，POI 偏好筛选（名单制工具）与草案结构字段产出是仅有的 LLM 决策点；检索、路线求解、组装、质检、记账全部代码化（OpenAI Agents SDK「LLM 产结构化 JSON → 代码执行」模式），happy path 全链仅 5~7 次 LLM 调用
+- 📜 **JSON 契约驱动协作** — 六个契约文件（`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`）+ collab 五件套（9 个 DTO + Schema 校验 + 原子写 + TaskWorkspace + TaskRegistry）；工具面收编：`write_collab_file` 是唯一落盘口，`edit_file` / `write_file` / `web_search` / `web_fetch` 已从 planner 工具面移除
+- ✅ **规则质检 + 定向修订** — `RuleReviewService` 三段规则（基本要素 / 时间线自洽 / 预算偏好 + 防幻觉）零 LLM <1s 出分；全过直接交付，发现硬伤才唤起 reviewer 用 `revise_poi_selection` 名单式修订（代码补硬字段 → 重跑路线 → 重组装），修订上限 2 次由中间件保险丝代码硬拦
 - 🧭 **意图三层级联路由** — L0 会话延续（Redis 最近意图 + 短追问识别，0 计算）→ L1 规则表（承接约 60% 流量）→ L2 deepseek-v4-flash-0731 轻量语义分类（带结果缓存）→ L3 主链路模型兜底，上层命中即短路
-- 🔍 **RAG 双路检索** — pgvector 语义检索 + Elasticsearch BM25 关键词检索，RRF 融合排序，结果带 `RAG / ES / RAG+ES` 来源标记，供 poi-research 多轮换词重查
-- ✅ **分段审核 + 按段回炉（v3.2 招牌）** — 一次 LLM 调用内分三段顺序审（POI 有效性 / 路线连贯性 / 预算偏好匹配），不通过时按失败段路由：**只重跑失败的子任务，其余成果一律复用**，严禁全量重做
-- ⚡ **任务结果缓存（FR-S14）** — Redis `taskresult:{userId}:{sessionId}:{taskType}`，POI/路线/酒店 30min、天气 10min TTL；回炉与二次规划先查缓存，命中即复用（日志锚点 `cache_hit=poi`）
-- 🛡️ **LLM Gateway** — 全局并发 Semaphore(200) → 全局 QPS 100/s → 单用户并发 2，全 `tryAcquire` 快速失败；PLANNING 慢泳道 420s（2026-10-04 由 300s 上调：回炉全链实测 274~320s 触顶）与查询快泳道隔离，超限四级降级文案直推 SSE
-- 📡 **全链路可观测** — OpenTelemetry 埋点（chat-turn / task-cache / review-attempt / review_retry count=N 等 span 与日志锚点）对接 Jaeger；SSE 过程/结果分离事件协议（`agent_status` 活动流 + 最终方案独立事件）
-- 🧪 **双轨质量门禁** — 10 条 EvalCase 真实链路用例（多城市/亲子/严格预算/地点不存在/路线过密），「确定性规则断言 + 质检模型 Rubric 三维评分」双轨判定，任一 FAIL 或总分 <80 即门禁失败，结果含 trace_id 落库 `evaluation_records`
+- 🔍 **RAG 双路检索** — pgvector 语义检索 + Elasticsearch BM25 关键词检索，RRF 融合排序，证据门控 + 变体扩展（3~5 个查询变体并行）；向量路不可用时自动退化为 ES 全文（`mode=fulltext`）
+- ⚡ **任务结果缓存** — Redis `taskresult:{userId}:{sessionId}:{taskType}`，TTL 按数据时效分级（天气 10min、POI/酒店/路线 30min）；**预检上提到编排层**：委派前代码查缓存，命中内容直接内联进委派说明；工具成功由记账中间件零 LLM 自动登记，往返车票 append 防互覆
+- 🛡️ **LLM Gateway** — 全局并发 Semaphore(200) → 全局 QPS 100/s → 单用户并发 2，全 `tryAcquire` 快速失败；PLANNING 慢泳道 600s 与查询快泳道 25s 隔离；主备模型（glm-5-3-260814 → deepseek-v4-flash-0731）+ 熔断 + 首包超时闸门 + 粘滞回切
+- 📡 **全链路可观测** — OpenTelemetry 埋点（chat-turn / task-cache / review-attempt 等 span）对接 Jaeger；SSE 过程/结果分离事件协议（`agent_status` 活动流 + 最终方案独立事件）
+- 🧪 **双轨质量门禁** — 24 条 EvalCase 真实链路用例（12 类场景），「确定性规则断言 + 质检模型 Rubric 三维评分」双轨判定，任一 FAIL 或总分 <80 即门禁失败，结果含 trace_id 落库
 
 ## 🏗️ 系统架构
 
 ```mermaid
 flowchart TD
-    U["💻 用户 · React 19 前端（SSE 流式）"] --> M
+    U["💻 用户 · React 19 前端（SSE 流式）"] --> IR{"意图级联路由<br/>L0 会话延续 · L1 规则表 · L2 轻量语义 · L3 兜底"}
 
-    subgraph MAST ["travel-master 主 Agent（主链路模型）"]
-        M["意图级联路由 + 任务拆分编排"]
-        M -.-> MW["中间件责任链：<br/>IntentRouterMiddleware（路由指令注入）<br/>PlanningGateMiddleware（委派门禁）<br/>ReviewerRetryMiddleware（回炉保险丝 ≤2 次）"]
+    IR -->|"CHAT / TOOL_CALL / RAG"| M["🛎️ travel-master<br/>单点查询接待员<br/>天气/酒店/景点/车票/机票工具直调"]
+
+    IR -->|"PLANNING（慢泳道 600s）"| CS
+
+    subgraph CS ["⚙️ ChatService 代码编排（五步）"]
+        S1["step1 需求采集 workflow<br/>零 LLM · 缺字段推 requirement_form 卡片"]
+        S2["step2 任务登记 T1~T5 + 缓存预检<br/>命中内联进委派说明 · 标 DONE"]
+        S34["step3~4 委派 planning-agent 并等待"]
+        S5["step5 规则质检 + 渲染<br/>读 itinerary_draft.json 的 markdownBody"]
+        S1 --> S2 --> S34 --> S5
     end
 
-    M -->|PLANNING 意图| I["🛎️ intake-agent<br/>需求收集状态机<br/>反问 ≤3 轮 → intake_done.md"]
-    I --> P["🗺️ planning-agent（二级编排）<br/>直调天气/酒店/车票/地理工具<br/>组装 itinerary_draft.md"]
-    P --> POI["🔍 poi-research<br/>RAG+ES 双路检索<br/>→ poi_shortlist.md"]
-    P --> RT["🛣️ route-optimizer<br/>两两算通勤迭代调优<br/>→ route_plan.md"]
-    P --> RV["🕵️ reviewer-agent（质检档模型）<br/>三段审核 + 5 维评分<br/>REVIEW_RESULT: PASS|FAIL 失败段=1|2|3"]
-    RV -->|"FAIL 失败段"| P
-    RV -->|"PASS"| OUT["✅ review_passed.md → master 整合输出"]
+    subgraph PA ["🗺️ planning-agent（LLM 只做决策）"]
+        direction TB
+        P1["① 首轮并行全量数据<br/>天气 / 酒店 / 往返车票双查 / POI 候选池"]
+        P2["② POI 筛选（名单制）<br/>只传名+时长+理由，代码实证补字段落盘"]
+        P3["③ 路线：plan_route<br/>VRPTW 代码求解（零 LLM）<br/>无 unplaced 自动链进组装"]
+        P4["④ 组装：assemble_itinerary<br/>LLM 产结构字段 · 代码渲染 markdownBody"]
+        P1 --> P2 --> P3 --> P4
+    end
 
-    P -.->|get_cached_task_result / register| C[("⚡ TaskResultCache<br/>Redis 任务结果缓存")]
-    M -.->|CHAT / TOOL_CALL / RAG 意图| T["🛠️ 工具直调 / 知识库检索<br/>天气 · 酒店 · 火车票(12306 MCP) · 机票(variflight MCP)"]
+    CS -->|"委派说明内联：backlog + intake + 缓存命中节"| PA
+
+    PA -.->|"零 LLM 代码服务"| SVC["RoutePlannerService 通勤矩阵·2-opt·时间线<br/>PoiRetrievalService 变体扩展·RAG+ES·RRF<br/>ItineraryAssembler + TaskResultFormatter"]
+    PA -.->|"工具成功自动登记（记账中间件，零 LLM）"| TC[("⚡ TaskResultCache<br/>Redis · TTL 分级 · 车票 append")]
+    TC -.->|"二次规划/修订 预检命中即复用"| CS
+
+    S5 -->|"规则全过（<1s 零 LLM）"| OUT["✅ review_passed → done 事件（方案正文 + 评分）"]
+    S5 -->|"规则不过 → 定向修订 ≤2 次（保险丝硬拦）"| RV["🕵️ reviewer-agent<br/>revise_poi_selection 名单式修订"]
+
+    OUT --> U
 ```
 
-**质检回炉路由（核心闭环，FR-S08 v3.2 + FR-S14）：**
+**质检与修订闭环（规则质检为第一道门，LLM reviewer 只兜底）：**
 
-| 失败段 | 审核项 | 回炉动作 | 复用方式 |
-|---|---|---|---|
-| 段 1 | POI 有效性 | 只重跑 `poi-research` 换 POI | 路线/酒店/天气走 `get_cached_task_result` 缓存复用 |
-| 段 2 | 路线连贯性+时间密度 | 只重跑 `route-optimizer` 重排 | POI 池缓存复用（`cache_hit=poi`），**严禁**重跑 poi-research |
-| 段 3 | 预算+偏好匹配 | planner **自行**重组装/换酒店 | 零子 Agent 重跑，POI 与路线沿用现有成果 |
-| 多段失败 | — | 按段号升序逐段处理 | 未失败段成果一律复用 |
-
-回炉 ≤2 次，第 3 次送审被 `ReviewerRetryMiddleware` 代码保险丝硬拦截（不依赖模型自觉），超限以「当前最佳版本（已尽力）」收尾。
-
-**回炉成本实测**（真实主链路模型，qwen-plus 时期采集，段2 fail 最坏场景，各 2 轮采样，详见 `docs/fix-record-2026-10-04-回炉成本实测.md`）：
-
-| 路径 | LLM 调用（均值） | 总耗时（均值） |
+| 规则质检结果 | 动作 | LLM 成本 |
 |---|---|---|
-| 全量重做（v3.1 语义，缓存清空） | 47 | 275.1 s |
-| **分段回炉（本项目）** | **31.5（↓ 33%，最好一轮 ↓ 50%）** | 297.5 s（未下降） |
+| 三段全过（总分 ≥80 且单维 ≥12） | `review_passed.json` 落盘，直接渲染交付 | 0（<1s） |
+| 段 1 基本要素（天数/目的地/出发地/unplaced 溢出）不过 | 唤起 reviewer 定向修订，修订任务内联 intake + 草案 | 1~2 轮 |
+| 段 2 时间线重叠 / 段 3 预算·偏好·防幻觉不过 | reviewer 用 `revise_poi_selection` 名单式修订（只传加/删 POI 名，代码补硬字段 → 重跑路线 → 重组装） | 1~2 轮 |
+| 修订后重跑规则质检 | 收敛即交付；未收敛继续修订 | 上限 2 次，第 3 次被 `ReviewerRetryMiddleware` 代码保险丝硬拦，以「当前最佳版本（已尽力）」收尾 |
 
-poi-research 分支被整体省掉（6 次调用 → 0），四类缓存命中；墙钟收益取决于失败段子任务重量——段2 fail（必重跑最重的 route-optimizer，约 3 分钟）为最坏情况，段3 fail 纯 planner 自修订为最优场景。实测回炉链路 274~320s 触及原 300s 泳道上限，据此慢泳道上调至 420s。
+**耗时演进（同需求「西安四日」真实链路实测）：**
+
+| 阶段 | 端到端 | 关键变化 |
+|---|---|---|
+| v3.2 分段回炉基线 | 273~320s | reviewer LLM 质检 258s、planner 手写整篇草案 |
+| v4 重构 + 五卡优化 | 169.5s | reviewer 砍工具重算 25.8s、组装代码化 10.7s、偏好硬约束 |
+| 质检规则化 | 131s | 规则 <1s 全过零 reviewer（100/100 分） |
+| 名单制 + 自动链组装 | **63.9s** | planner 仅 4 轮 / 模型耗时 28.2s（缓存保留轮实测） |
 
 ## 🧠 工程思维：关键设计与取舍
 
 | 设计决策 | 为什么这么选 |
 |---|---|
-| **提示词驱动 + 代码层兜底** | Agent 行为靠 SYS_PROMPT 契约约束，但关键不变量绝不依赖模型自觉：委派前 `PlanningGateMiddleware` 强制校验任务清单、回炉次数 `ReviewerRetryMiddleware` 硬拦第 3 次送审（日志锚点 `review_retry count=N`）、酒店按预算过滤放代码层零幻觉 |
-| **分级模型策略** | 全部对话模型经自建 OpenAI 兼容网关（2026-10-05 迁移）：质量敏感的质检走独立配置的 reviewer-model（经 modelResolver 按子 Agent 名分流，框架首个按名分流的 resolver）、主链路 glm-5-3-260814、L2 意图分类 deepseek-v4-flash-0731——按任务性质分层，成本与质量兼得；Embedding 仍走 DashScope |
-| **意图级联而非一锅 LLM** | 意图识别是分类问题不是 Agent 问题：L0 会话延续 0 计算 → L1 规则表承接约 60% 流量 → L2 轻量模型 + Redis 结果缓存 → L3 兜底，上层命中即短路，分类成本随流量自适应 |
-| **面向失败设计** | Redis 挂 → 任务缓存 / Agent 状态自动降级进程内存；RAG 不可用 → poi-research 退化为高德直查；泳道超时 → 用户可读降级文案直推 SSE；评审核验工具失败 → 保守评分不中断流程 |
-| **可观测即契约** | 日志锚点（`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`）同时是运维 grep 点和验收测试断言点；OTel span（chat-turn / task-cache / review-attempt）让每一次回炉可追溯 |
-| **缓存与成本联动** | TTL 按数据时效分级（天气 10min、POI/路线/酒店 30min）；回炉入口先查缓存命中即复用，失败段直接重跑并覆盖登记——显式规避"缓存里存的就是失败结果"的复用陷阱 |
+| **决策给 LLM、组装给代码** | 检索、路线求解、组装、质检、记账全部代码化；LLM 只保留 POI 偏好筛选与草案结构字段产出两件不可替代的事——happy path 5~7 次调用，全链 63.9s 起步 |
+| **契约即护栏** | 全部产物只经 `write_collab_file` / `assemble_itinerary` 落盘（Schema 校验 + 原子写）；`edit_file` 等自由文件工具从工具面收编——LLM 想改路线只能重调 `plan_route`，杜绝手改契约产物 |
+| **提示词驱动 + 代码层兜底** | Agent 行为靠 SYS_PROMPT 契约约束，但关键不变量绝不依赖模型自觉：回炉次数中间件硬拦、名单制代码实证防幻觉、组装失败代码内重试不惊动 planner 整轮 |
+| **分级模型策略** | 质量敏感的质检走独立配置的 reviewer-model（modelResolver 按子 Agent 名分流）、主链路 glm-5-3-260814、L2 意图分类 deepseek-v4-flash-0731——按任务性质分层，成本与质量兼得 |
+| **意图级联而非一锅 LLM** | 意图识别是分类问题不是 Agent 问题：L0 会话延续 0 计算 → L1 规则表承接约 60% 流量 → L2 轻量模型 + Redis 结果缓存 → L3 兜底，上层命中即短路 |
+| **面向失败设计** | Redis 挂 → 任务缓存/Agent 状态自动降级进程内存；RAG 向量路不可用 → 退化为 ES 全文；泳道超时 → 用户可读降级文案直推 SSE；组装 LLM 产字段失败 → 代码内重试 1 次 |
+| **缓存与成本联动** | TTL 按数据时效分级；预检上提到编排层（委派前代码查缓存，命中内联进任务说明省一轮）；需求变更（目的地/日期）自动全清会话缓存，防「缓存里存的就是失败结果」的复用陷阱 |
+| **可观测即契约** | 日志锚点（`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`）同时是运维 grep 点和验收测试断言点；OTel span（chat-turn / task-cache / review-attempt）让每一次修订可追溯 |
 
 ### 🐛 实测驱动：真跑暴露的问题（单测发现不了）
 
-每个特性都配环境变量门控的真实链路验收测试（B1 分段审核契约 / B2 按段回炉路由 / B3 成本基准）。以下四个问题全部由真跑暴露、定位根因后修复——这是"实测驱动开发"最直接的注脚：
+每个特性都配环境变量门控的真实链路验收测试。以下问题全部由真实链路跑出、定位根因后修复：
 
 | 现象 | 根因 | 修复 |
 |---|---|---|
-| planner 在送审前被截断 | `MAX_ITERS=12` 跑不完「首审 + 回炉 + 重审」全闭环（实测需 26~30 轮） | 迭代预算按实测校准至 28，注释写明轮次构成 |
-| 子 Agent 结论永久丢失 | `agent_spawn` 被传 `timeout_seconds=0` 异步转后台，planner 输出"正在等待…"纯文本即结束回合 | 同步委派纪律（显式 300s）+ 转后台后连续 `wait_async_results` + 禁止无结论纯文本收尾 |
-| 杭州行程的最终汇报竟是北京文案 | 四类缓存全命中时模型走捷径，把系统提示词里的示例**原文照抄**当最终回复 | 示例改占位符模板 + 「完整闭环」纪律（缓存命中不豁免送审流程） |
-| 质检报告没有落盘 | reviewer 6 轮耗尽在路径探索上，未写 review_report.md 就被迫输出结论——而报告文件正是 planner 按段路由的契约输入 | reviewer 迭代预算 6→10 + 送审任务说明写明草案完整路径 |
+| 名单制工具死循环 | 候选池校验硬门遇到「池薄」（知识库种子偏杭州，池内无目标 POI），模型反复换名重试 | 硬门改为 searchPois 实时 POI 库实证存在 + 补硬字段，候选池仅作 source 标记继承 |
+| 缓存原文 JSON 直通用户屏幕 | 记账去 LLM 化后，缓存承载物从「LLM 摘要」变「工具原文 JSON」，组装把中间元信息头行一并拼进草案 | 组装出口统一 `TaskResultFormatter` 格式化，剥离全部元信息头行 |
+| 返程车票缓存覆盖去程 | 缓存按 taskType 单键存储，往返两次登记互相覆盖 | append 拼接 + 内容去重，往返双段共存 |
+| planner 15 轮补偿性复查（135.7s） | 记账去 LLM 化删掉了模型的「汇报确认」信号，模型自发 read_file 复查草案 + 补查数据 | 确定性通道补回等价确认（组装返回摘要即核对依据 + 一行收尾纪律），planner 段 75.1s |
+
+> 教训：**去 LLM 化不能只删信号，要在确定性通道补回等价确认**——否则模型会用更多轮次自己找回来。
 
 ## 🚀 快速开始
 
@@ -148,8 +167,7 @@ cp .env.example .env   # 填入下列 Key
 | `AMAP_WEB_API_KEY` | 高德地图 Web API Key | [lbs.amap.com](https://lbs.amap.com/) |
 | `WEATHER_API_HOST` | 和风天气 API Host（不含 https://） | [dev.qweather.com](https://dev.qweather.com/) |
 | `WEATHER_API_KEY` | 和风天气 API Key | [dev.qweather.com](https://dev.qweather.com/) |
-
-> 火车票/机票查询走 MCP 工具（`mcp__c12306__*` / `mcp__variflight__*`），由框架经 npx 拉起，首次运行会下载对应 MCP Server。
+| `FLYAI_API_KEY` | 飞猪 flyai CLI Key（可选，酒店/景点/火车票飞猪源；留空走免 key 体验模式） | 飞猪开放平台 |
 
 ### 4. 启动后端与前端
 
@@ -189,21 +207,20 @@ cd frontend && npm install && npm run dev
 ## 🧪 测试与质量门禁
 
 ```bash
-# 单元 / 契约测试（无需外部 API，40+ 测试类）
+# 单元 / 契约测试（无需外部 API，93 个测试类）
 mvn test
 
 # 真实链路验收测试（需 export media_model_gateway_api_key=...）
-mvn test -Dtest=ReviewerSegmentedReviewRealApiTest      # B1：reviewer 分段审核契约
-mvn test -Dtest=PlannerSegmentReworkRealApiTest         # B2：planner 按段回炉路由（两场景）
-mvn test -Dtest=ReworkCostBenchmarkRealApiTest          # B3：回炉成本实测基准
+mvn test -Dtest=ReviewerSegmentedReviewRealApiTest   # reviewer 分段审核契约
+mvn test -Dtest=RoutePlannerRealApiTest              # VRPTW 路线求解真实链路
+mvn test -Dtest=IntentCascadeRealApiTest             # 意图级联路由
+mvn test -Dtest=LlmGatewayRealApiTest                # 网关主备与熔断
 
-# EvalCase 全链路质量门禁（FR-S15，另需 PG 就绪 + EVAL_REAL_API=1）
+# EvalCase 全链路质量门禁（另需 PG 就绪 + EVAL_REAL_API=1）
 EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
 ```
 
-EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 条、覆盖 12 类场景。EC-001～EC-020 保留评估模块的场景；主线原 EC-011/012 回炉恢复场景迁为 EC-021/022，原 EC-013/014 预算边缘场景迁为 EC-023/024。编号调整不改写已冻结的历史批次及其用例正文。
-
-评测与日常规划共用需求工作流、任务登记、路线规划及审核流程。JSON 契约 `itinerary_draft.json` 优先，文本评分使用其中的 `markdownBody`；仅本轮成功写入并明确关联的产物可以作为最终行程，保留旧 Markdown 兼容。FIXTURE 只替换外部数据源，继续执行本地检索编排、路线算法和契约校验；工具顺序缺少真实事件证据时标记无法判断。未启用真实 API 门控时，相关集成测试自动跳过。
+EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 条、覆盖 12 类场景（多城市/亲子/严格预算/地点不存在/路线过密等）。评测与日常规划共用需求工作流、任务登记、路线规划及审核流程。JSON 契约 `itinerary_draft.json` 优先，文本评分使用其中的 `markdownBody`。未启用真实 API 门控时，相关集成测试自动跳过。
 
 ## 📁 项目结构
 
@@ -211,51 +228,62 @@ EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 
 TravelScope/
 ├── pom.xml                          # Java 21 + Spring Boot 3.3.5 + AgentScope 2.0.3
 ├── docker-compose.yml               # Redis 7 + MinIO + Elasticsearch 编排
-├── .env.example                     # API Key 模板
+├── dev.cmd                          # Windows 一键打包启动（npm run dev）
 ├── frontend/                        # React 19 + Vite + TS（登录 / 聊天 / 管理端）
 └── src/
     ├── main/java/com/travelscope/
-    │   ├── agent/                   # 6 个 Agent（SYS_PROMPT 契约）
-    │   │   ├── ItineraryAgent.java          # planning-agent：按段回炉路由提示词
-    │   │   ├── ReviewerAgent.java           # reviewer-agent：三段审核契约
-    │   │   ├── TravelMasterAgent.java       # travel-master：编排与汇报
-    │   │   ├── *Middleware.java             # 意图路由 / 委派门禁 / 回炉保险丝
-    │   │   └── tools/                       # @Tool 工具面（天气/酒店/交通/RAG/任务容器）
-    │   ├── service/                 # ChatService / LlmGateway / TaskResultCache / RAG…
-    │   ├── controller/  repository/  entity/  dto/  config/  common/
-    └── test/java/com/travelscope/
-        ├── agent/                   # B1/B2/B3 真实链路门控测试 + 中间件单测
-        ├── eval/                    # EvalCase 用例库 + 双轨评分 + Runner
-        └── ...                      # 40+ 测试类（工具/服务/网关/评估）
+    │   ├── agent/                   # 三 Agent + 中间件 + 网关模型
+    │   │   ├── TravelMasterAgent.java       # travel-master：单点查询接待员
+    │   │   ├── ItineraryAgent.java          # planning-agent：五步规划 SYS_PROMPT
+    │   │   ├── ReviewerAgent.java           # reviewer-agent：定向修订
+    │   │   ├── IntentCascadeRouter.java     # 意图 L0~L3 级联
+    │   │   ├── ReviewerRetryMiddleware.java # 回炉保险丝（≤2 次代码硬拦）
+    │   │   ├── BookkeepingMiddleware.java   # 记账零 LLM（工具事件→缓存+任务状态）
+    │   │   ├── LlmGatewayModel.java         # 主备 + 熔断 + 首包闸门
+    │   │   └── tools/                       # @Tool 工具面（天气/酒店/景点/车票/机票/RAG/协作文件）
+    │   ├── collab/                  # 工作区 JSON 契约五件套（9 DTO + Schema 校验 + 原子写）
+    │   ├── service/                 # ChatService 五步编排 / LlmGateway / TaskResultCache /
+    │   │   │                        # RuleReviewService 规则质检 / ItineraryAssembler /
+    │   │   │                        # TaskResultFormatter / RAG 双路…
+    │   │   ├── route/               # VRPTW 求解（通勤矩阵 / 分日 / 2-opt / 时间线）
+    │   │   ├── retrieval/           # POI 检索（变体扩展 / 双路 / RRF）
+    │   │   └── workflow/            # 需求采集状态机 + 任务清单规划
+    │   ├── eval/                    # EvalCase 双轨评分
+    │   ├── assessment/              # 评估采集与批次
+    │   └── controller/  repository/  entity/  dto/  config/  security/  common/
+    └── test/java/com/travelscope/   # 93 个测试类（含 4 个真实链路门控测试）
 ```
 
 ## 📊 可观测性
 
 - **Tracing**：Micrometer + OpenTelemetry → Jaeger；业务 span：`chat-turn`（整轮）、`task-cache`（缓存命中）、`review-attempt`（送审计数 + 结论 + 分数）、`task-backlog` 等
 - **日志锚点**（可 grep / 可断言）：`cache_hit={taskType}`、`cache_miss`、`review_retry count=N`、`cascade_hit=L0|L1|L2|L3`、`task_result_registered`
-- **SSE 事件协议**：`intent`（意图结论）→ `agent_status`（Agent 活动流，前端气泡下方实时渲染）→ `clarify_question`（反问卡片）→ `review_report`（质检评分明细折叠区）→ `done` / `error`
+- **SSE 事件协议**：`intent`（意图结论）→ `delta`（流式正文）→ `agent_status`（Agent 活动流，前端气泡下方实时渲染）→ `requirement_form`（需求补全卡片）→ `clarify_question`（反问）→ `review_report`（质检评分明细折叠区）→ `done` / `error`
 
 ## 🗺️ Roadmap
 
-- [ ] FR-S10 三级记忆分层（滚动摘要长期记忆增强）
-- [ ] FR-A 管理端：Token 用量 / 用户管理 / 3A 评估看板
-- [ ] FR-S13 Prompter 闭环（提示词版本管理与效果回归）
-- [x] PLANNING 慢泳道预算复核 → 已完成（2026-10-04 上调 300→420s：回炉全链实测 274~320s 触顶，且须 ≥ master 同步等待上限 420s）
+- [ ] **v5 韧性增强**（方案已定稿 [docs/TravelScope改造计划-v5.md](docs/TravelScope改造计划-v5.md)）：F1 断线重连（turnId 幂等 + 执行与 SSE 解耦）· F2 飞猪图片透传 · F3 多模型熔断池（CHAT 4+1 / EMBEDDING 2）· F4 用户端中英切换 · F5 拍照识景讲解员
+- [ ] **v6 回炉链路与生产化**（[docs/TravelScope改造计划-v6.md](docs/TravelScope改造计划-v6.md)）：质检 HARD/SOFT 分级 · 增量重组装 · 轮次合并与上下文瘦身 · 流式逐天输出
 - [ ] 意图例句向量相似度（pgvector 余弦 top1）替换 L2 轻量分类
 
 ## 🧭 核心代码导航
 
 | 想了解 | 看这里 |
 |---|---|
-| 六 Agent 编排与模型分流 | `src/main/java/com/travelscope/config/AgentConfig.java`（buildPlannerAgent：声明式子 Agent + modelResolver） |
-| 按段回炉路由契约 | `src/main/java/com/travelscope/agent/ItineraryAgent.java`（SYS_PROMPT 第 4 步） |
-| 三段审核与 REVIEW_RESULT 标记契约 | `src/main/java/com/travelscope/agent/ReviewerAgent.java` |
-| 回炉保险丝（≤2 次硬拦截） | `src/main/java/com/travelscope/agent/ReviewerRetryMiddleware.java` |
-| 任务结果缓存（FR-S14） | `src/main/java/com/travelscope/service/TaskResultCache.java` + `agent/tools/PoiRagTools.java` |
-| SSE 事件协议与流式编排 | `src/main/java/com/travelscope/service/ChatService.java` |
-| 意图三层级联路由 | `src/main/java/com/travelscope/agent/IntentCascadeRouter.java` |
-| 真实链路验收测试（门控） | `src/test/java/com/travelscope/agent/PlannerSegmentReworkRealApiTest.java`、`ReworkCostBenchmarkRealApiTest.java` |
-| EvalCase 双轨质量门禁 | `src/main/java/com/travelscope/eval/` + `src/main/resources/evalcases/` + `src/test/java/com/travelscope/eval/` |
+| PLANNING 五步编排 | `src/main/java/com/travelscope/service/ChatService.java` |
+| planner 五步与工具纪律 | `src/main/java/com/travelscope/agent/ItineraryAgent.java`（SYS_PROMPT） |
+| 规则质检三段规则 | `src/main/java/com/travelscope/service/RuleReviewService.java` |
+| 工作区 JSON 契约 | `src/main/java/com/travelscope/collab/`（PoiShortlist / RoutePlan / ItineraryDraft / …） |
+| VRPTW 路线求解 | `src/main/java/com/travelscope/service/route/RoutePlannerServiceImpl.java` |
+| POI 双路检索 | `src/main/java/com/travelscope/service/retrieval/PoiRetrievalService.java` |
+| 意图级联路由 | `src/main/java/com/travelscope/agent/IntentCascadeRouter.java` |
+| 记账中间件（零 LLM） | `src/main/java/com/travelscope/agent/BookkeepingMiddleware.java` |
+| 任务结果缓存 | `src/main/java/com/travelscope/service/TaskResultCache.java` |
+| LLM 网关（限流/熔断/泳道） | `src/main/java/com/travelscope/service/LlmGateway.java` + `agent/LlmGatewayModel.java` |
+| 回炉保险丝 | `src/main/java/com/travelscope/agent/ReviewerRetryMiddleware.java` |
+| 规划链路流程图（时序+文件流转） | `docs/PLANNING链路流程图.md` |
+| 真实链路验收测试（门控） | `src/test/java/com/travelscope/agent/`（*RealApiTest） |
+| EvalCase 双轨质量门禁 | `src/main/java/com/travelscope/eval/` + `src/main/resources/evalcases/` |
 
 ---
 

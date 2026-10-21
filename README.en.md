@@ -1,12 +1,10 @@
-> ⚠️ **Under v4 refactoring**: The project is undergoing a major architecture refactor (six agents → three, JSON contract communication, code-based route computation). This document still describes v3 and will be rewritten; the authoritative plan is [docs/TravelScope重构计划-v4.md](docs/TravelScope重构计划-v4.md).
-
 <div align="center">
 
 # 🧭 TravelScope
 
 **An AI multi-agent travel planning system: from a one-sentence request to a ready-to-execute itinerary**
 
-Six-agent orchestration · Segmented review with rework routing · Task-result cache reuse · End-to-end observability
+Three agents + code orchestration · JSON-contract-driven · Rule-based review with zero LLM cost · Task-result cache reuse · End-to-end observability
 
 [Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [glm-5-3-260814 / deepseek-v4-flash-0731](https://img.shields.io/badge/LLM-glm--5.3%20%2F%20ds--flash-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
 
@@ -17,11 +15,13 @@ Six-agent orchestration · Segmented review with rework routing · Task-result c
 ---
 
 > You say: "**Plan a 2-day Hangzhou + Shanghai trip, budget ¥700, into nature and history**" —
-> the intake agent asks clarifying questions to fill in the gaps, the researcher searches POIs
-> via dual-path retrieval, the route optimizer iterates pairwise commute times, and the reviewer
-> (dedicated reviewer model) audits the itinerary in three segments. If a segment fails, **only that segment's
-> subtask is redone** — everything else is reused from cache — and the final itinerary, complete
-> with timeline, budget breakdown, and alternatives, is streamed to your browser.
+> the orchestration layer collects requirements in code, registers tasks, and pre-checks the cache;
+> the planning agent fetches weather, hotels, round-trip train tickets, and the POI candidate pool
+> in one parallel first round, finalizes POIs via a name-list tool, then code solves the day-by-day
+> routes and assembles the itinerary draft automatically. Rule-based review scores it in under a
+> second with zero LLM calls — only a hard failure wakes the reviewer agent for targeted revision —
+> and the final itinerary, complete with timeline, budget breakdown, and provenance tags, is
+> streamed to your browser.
 
 ## 📸 Screenshots
 
@@ -33,85 +33,105 @@ Six-agent orchestration · Segmented review with rework routing · Task-result c
 <p align="center">
   <img src="assets/admin-console.png" width="920" alt="Admin console: user management / token usage / document upload"/>
 </p>
-<p align="center"><b>🛠️ Admin</b> — user management · token usage stats · knowledge document upload</p>
+<p align="center"><b>🛠️ Admin</b> — user management · invitation codes · token usage stats · knowledge document upload · evaluation center</p>
 
-**⚡ At a glance**: **6** agents orchestrated across **3** delegation levels · rework LLM calls measured **↓33%** (best round **↓50%**) · intent routing serves ~**60%** of traffic at **0** LLM cost · **10** EvalCase dual-track quality gates · **40+** test classes
+**⚡ At a glance**: LLM keeps only **2** irreplaceable jobs across the whole chain (POI preference filtering, draft structural-field generation) · review LLM 258s → rules **<1s** · happy-path end-to-end **131s** (fastest **63.9s** for the same request after optimization) · intent routing serves ~**60%** of traffic at **0** LLM cost · **24** EvalCase dual-track quality gates · **93** test classes
 
 ## ✨ Key Features
 
-- 🤖 **Six-agent orchestration** — `travel-master` (intent routing + orchestration) → `intake-agent` (requirement state machine, ≤3 rounds of clarifying questions) → `planning-agent` (second-level orchestrator, calls real-time data tools directly) → the `poi-research` / `route-optimizer` / `reviewer-agent` trio; delegation depth of 3 with code-level gates and fuses
+- 🤖 **Three agents + five-step code orchestration** — `travel-master` (single-point query receptionist, direct tool calls, no delegation) / `planning-agent` (planning execution) / `reviewer-agent` (review fallback); the PLANNING chain is orchestrated by `ChatService` code: requirement collection → task registration + cache pre-check → delegation → rule review + rendering, on a 600s slow lane
+- 🧠 **LLM does only two things** — after the planner's parallel first round fetches all data, POI preference filtering (name-list tool) and draft structural-field generation are the only LLM decision points; retrieval, route solving, assembly, review, and bookkeeping are all code (the OpenAI Agents SDK "LLM produces structured JSON → code executes" pattern). A happy path takes only 5~7 LLM calls end to end
+- 📜 **JSON-contract-driven collaboration** — six contract files (`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`) plus the collab five-piece set (9 DTOs + schema validation + atomic writes + TaskWorkspace + TaskRegistry); the tool surface is fenced in: `write_collab_file` is the only persistence gate — `edit_file` / `write_file` / `web_search` / `web_fetch` have been removed from the planner's toolkit
+- ✅ **Rule-based review + targeted revision** — `RuleReviewService` checks three rule segments (essentials / timeline consistency / budget & preference + anti-hallucination) in <1s with zero LLM; all-pass delivers directly, a hard failure wakes the reviewer for name-list revision via `revise_poi_selection` (code fills hard fields → re-runs routes → re-assembles), capped at 2 revisions by a middleware fuse enforced in code
 - 🧭 **Three-tier cascaded intent routing** — L0 session continuity (Redis last-intent + short follow-up detection, zero compute) → L1 rule table (~60% of traffic) → L2 deepseek-v4-flash-0731 lightweight classification (with result caching) → L3 main-chain model fallback; upper layers short-circuit on hit
-- 🔍 **Dual-path RAG retrieval** — pgvector semantic search + Elasticsearch BM25 keyword search, fused with RRF ranking; results carry `RAG / ES / RAG+ES` provenance tags for poi-research's multi-round re-querying
-- ✅ **Segmented review + segment-routed rework (v3.2 flagship)** — a single LLM call audits three segments in order (POI validity / route coherence / budget & preference fit); on failure, only the failed segment's subtask is rerun — **all other results are reused**, full redo is explicitly forbidden
-- ⚡ **Task-result cache (FR-S14)** — Redis `taskresult:{userId}:{sessionId}:{taskType}`; POI/route/hotel TTL 30min, weather 10min; rework and re-planning check the cache first, reusing on hit (log anchor `cache_hit=poi`)
-- 🛡️ **LLM Gateway** — global concurrency Semaphore(200) → global QPS 100/s → per-user concurrency 2, all via fast-fail `tryAcquire`; the 300s PLANNING slow lane is isolated from the query fast lane, with four levels of user-readable degradation copy pushed straight to SSE on overload
-- 📡 **End-to-end observability** — OpenTelemetry instrumentation (chat-turn / task-cache / review-attempt spans and log anchors like `review_retry count=N`) exported to Jaeger; an SSE protocol that separates process from result (`agent_status` activity stream + a dedicated final-answer event)
-- 🧪 **Dual-track quality gate** — 10 real-chain EvalCases (multi-city / family / strict budget / nonexistent place / over-dense route); verdicts combine deterministic rule assertions with a reviewer-model 3-dimension rubric; any rule FAIL or a total score below 80 fails the gate, with results (including trace_id) persisted to `evaluation_records`
+- 🔍 **Dual-path RAG retrieval** — pgvector semantic search + Elasticsearch BM25 keyword search fused with RRF ranking, evidence gating + query expansion (3~5 variants in parallel); the semantic path degrades to ES full-text automatically when unavailable (`mode=fulltext`)
+- ⚡ **Task-result cache** — Redis `taskresult:{userId}:{sessionId}:{taskType}` with TTL tiered by data freshness (weather 10min, POI/hotel/route 30min); **pre-checking hoisted to the orchestration layer**: code checks the cache before delegation and inlines hits into the task brief; successful tool calls are auto-registered by a bookkeeping middleware with zero LLM cost, with append semantics for round-trip tickets to prevent overwrites
+- 🛡️ **LLM Gateway** — global concurrency Semaphore(200) → global QPS 100/s → per-user concurrency 2, all via fast-fail `tryAcquire`; the 600s PLANNING slow lane is isolated from the 25s query fast lane; primary/backup models (glm-5-3-260814 → deepseek-v4-flash-0731) with circuit breaking, a first-packet timeout gate, and sticky failback
+- 📡 **End-to-end observability** — OpenTelemetry instrumentation (chat-turn / task-cache / review-attempt spans) exported to Jaeger; an SSE protocol that separates process from result (`agent_status` activity stream + a dedicated final-answer event)
+- 🧪 **Dual-track quality gate** — 24 real-chain EvalCases (12 scenario classes); verdicts combine deterministic rule assertions with a reviewer-model 3-dimension rubric; any rule FAIL or a total score below 80 fails the gate, with results (including trace_id) persisted
 
 ## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
-    U["💻 User · React 19 frontend (SSE streaming)"] --> M
+    U["💻 User · React 19 frontend (SSE streaming)"] --> IR{"Cascaded intent routing<br/>L0 session continuity · L1 rule table · L2 lightweight · L3 fallback"}
 
-    subgraph MAST ["travel-master primary agent (main-chain model)"]
-        M["Cascaded intent routing + task decomposition"]
-        M -.-> MW["Middleware chain:<br/>IntentRouterMiddleware (route instruction injection)<br/>PlanningGateMiddleware (delegation gate)<br/>ReviewerRetryMiddleware (rework fuse ≤2)"]
+    IR -->|"CHAT / TOOL_CALL / RAG"| M["🛎️ travel-master<br/>single-point query receptionist<br/>direct weather/hotel/POI/ticket/flight tools"]
+
+    IR -->|"PLANNING (600s slow lane)"| CS
+
+    subgraph CS ["⚙️ ChatService code orchestration (five steps)"]
+        S1["step1 requirement workflow<br/>zero LLM · missing fields push a requirement_form card"]
+        S2["step2 register tasks T1~T5 + cache pre-check<br/>hits inlined into the brief · marked DONE"]
+        S34["step3~4 delegate to planning-agent and wait"]
+        S5["step5 rule review + rendering<br/>reads itinerary_draft.json markdownBody"]
+        S1 --> S2 --> S34 --> S5
     end
 
-    M -->|PLANNING intent| I["🛎️ intake-agent<br/>requirement state machine<br/>≤3 clarifying rounds → intake_done.md"]
-    I --> P["🗺️ planning-agent (2nd-level orchestrator)<br/>direct weather/hotel/ticket/geo tool calls<br/>assembles itinerary_draft.md"]
-    P --> POI["🔍 poi-research<br/>RAG+ES dual-path retrieval<br/>→ poi_shortlist.md"]
-    P --> RT["🛣️ route-optimizer<br/>pairwise commute optimization<br/>→ route_plan.md"]
-    P --> RV["🕵️ reviewer-agent (reviewer model)<br/>3-segment review + 5-dimension scoring<br/>REVIEW_RESULT: PASS|FAIL failed_segment=1|2|3"]
-    RV -->|"FAIL failed_segment"| P
-    RV -->|"PASS"| OUT["✅ review_passed.md → master integrates the answer"]
+    subgraph PA ["🗺️ planning-agent (LLM decides only)"]
+        direction TB
+        P1["① First round: parallel full data fetch<br/>weather / hotels / round-trip tickets / POI candidates"]
+        P2["② POI filtering (name-list)<br/>passes names+durations+reasons; code verifies & fills fields"]
+        P3["③ Routes: plan_route<br/>VRPTW solved in code (zero LLM)<br/>no unplaced → auto-chains into assembly"]
+        P4["④ Assembly: assemble_itinerary<br/>LLM yields structural fields · code renders markdownBody"]
+        P1 --> P2 --> P3 --> P4
+    end
 
-    P -.->|get_cached_task_result / register| C[("⚡ TaskResultCache<br/>Redis task-result cache")]
-    M -.->|CHAT / TOOL_CALL / RAG intents| T["🛠️ Direct tool calls / knowledge-base retrieval<br/>weather · hotels · trains (12306 MCP) · flights (variflight MCP)"]
+    CS -->|"Brief inlines: backlog + intake + cache-hit section"| PA
+
+    PA -.->|"zero-LLM code services"| SVC["RoutePlannerService commute matrix · 2-opt · timeline<br/>PoiRetrievalService variants · RAG+ES · RRF<br/>ItineraryAssembler + TaskResultFormatter"]
+    PA -.->|"successful tools auto-registered (bookkeeping middleware, zero LLM)"| TC[("⚡ TaskResultCache<br/>Redis · tiered TTL · ticket append")]
+    TC -.->|"re-planning/revision reuse on pre-check hit"| CS
+
+    S5 -->|"all rules pass (<1s, zero LLM)"| OUT["✅ review_passed → done event (itinerary + score)"]
+    S5 -->|"rules fail → targeted revision ≤2 (fuse-enforced)"| RV["🕵️ reviewer-agent<br/>revise_poi_selection name-list revision"]
+
+    OUT --> U
 ```
 
-**Review-to-rework routing (the core loop, FR-S08 v3.2 + FR-S14):**
+**Review & revision loop (rules are the first gate; the LLM reviewer only backstops):**
 
-| Failed segment | Audit item | Rework action | Reuse strategy |
-|---|---|---|---|
-| Segment 1 | POI validity | Rerun only `poi-research` to swap POIs | Route/hotel/weather reused via `get_cached_task_result` |
-| Segment 2 | Route coherence + time density | Rerun only `route-optimizer` | POI pool from cache (`cache_hit=poi`); rerunning poi-research is **forbidden** |
-| Segment 3 | Budget + preference fit | Planner **re-assembles** / swaps hotels itself | Zero sub-agent reruns; POIs and routes kept as-is |
-| Multiple segments | — | Process segments in ascending order | All non-failed results reused |
-
-Rework is capped at 2 rounds; the 3rd review submission is hard-blocked by the `ReviewerRetryMiddleware` fuse (no reliance on model self-discipline), and the loop ends with a "best-effort current version" wrap-up.
-
-**Measured rework cost** (real main-chain model, qwen-plus era, segment-2 failure, 2 samples per path):
-
-| Path | Elapsed (mean) | LLM calls (mean) |
+| Rule review result | Action | LLM cost |
 |---|---|---|
-| Full redo (v3.1 semantics, cache cleared) | 275.1 s | 47 |
-| **Segment-routed rework (this project)** | **180 s (↓ 35%)** | **31.5 (↓ 33%, best round ↓ 50%)** |
+| All three segments pass (total ≥80, each ≥12) | `review_passed.json` persisted, render and deliver | 0 (<1s) |
+| Segment 1 essentials fail (days/destination/origin/unplaced overflow) | Wake the reviewer for targeted revision; the revision brief inlines intake + draft | 1~2 rounds |
+| Segment 2 timeline overlap / Segment 3 budget·preference·anti-hallucination fail | Reviewer revises via `revise_poi_selection` (passes only POI names to add/remove; code fills hard fields → re-runs routes → re-assembles) | 1~2 rounds |
+| Rules re-run after revision | Converged → deliver; otherwise continue | capped at 2; a 3rd attempt is hard-blocked by the `ReviewerRetryMiddleware` fuse, ending with "best current version (best effort)" |
 
-The poi-research branch is eliminated entirely (6 calls → 0) and all four cache types hit; wall-clock savings depend on the weight of the failed segment's subtask (a segment-3 failure, handled purely by the planner, is the best case).
+**Latency evolution (same "Xi'an 4-day" request, real-chain measurements):**
 
-## 🧠 Engineering Judgement: Key Decisions and Trade-offs
+| Stage | End-to-end | Key change |
+|---|---|---|
+| v3.2 segment-routed rework baseline | 273~320s | reviewer LLM review 258s; planner hand-wrote the full draft |
+| v4 refactor + five optimization cards | 169.5s | reviewer tool re-verification cut to 25.8s; assembly codified to 10.7s; preference hard constraints |
+| Rule-based review | 131s | rules pass in <1s, zero reviewer (100/100) |
+| Name-list + auto-chained assembly | **63.9s** | planner down to 4 rounds / 28.2s model time (measured on a cache-retained round) |
+
+## 🧠 Engineering Mindset: Key Design Decisions
 
 | Decision | Why |
 |---|---|
-| **Prompt-driven with code-level guardrails** | Agent behavior is constrained by SYS_PROMPT contracts, but critical invariants never rely on model discipline: `PlanningGateMiddleware` enforces task-backlog registration before delegation, `ReviewerRetryMiddleware` hard-caps review submissions (log anchor `review_retry count=N`), and hotel budget filtering lives in code for zero hallucination |
-| **Tiered model strategy** | All chat models go through a self-hosted OpenAI-compatible gateway (migrated 2026-10-05): quality-sensitive review runs on a separately configured reviewer model (routed per sub-agent name via modelResolver — the framework's first name-based resolver), the main chain on glm-5-3-260814, L2 intent classification on deepseek-v4-flash-0731; embeddings remain on DashScope |
-| **Intent cascade instead of one big LLM call** | Intent classification is a classification problem, not an agent problem: L0 session continuity costs nothing → L1 rules absorb ~60% of traffic → L2 lightweight model + Redis result cache → L3 fallback; upper layers short-circuit, so classification cost adapts to traffic |
-| **Designed for failure** | Redis down → task cache / agent state degrade to in-process memory; RAG unavailable → poi-research falls back to direct AMAP search; lane timeout → user-readable degradation copy pushed to SSE; review verification tools failing → conservative scoring without breaking the flow |
-| **Observability as contract** | Log anchors (`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`) double as ops grep points and acceptance-test assertions; OTel spans (chat-turn / task-cache / review-attempt) make every rework traceable |
-| **Cache and cost coupled** | TTLs tiered by data freshness (weather 10min, POI/route/hotel 30min); rework checks the cache first and reuses on hit, while failed segments rerun and overwrite — explicitly avoiding the trap of reusing a cached result that *is* the failure |
+| **Decisions to the LLM, assembly to code** | Retrieval, route solving, assembly, review, and bookkeeping are all code; the LLM keeps only its two irreplaceable jobs — POI preference filtering and draft structural fields — yielding 5~7 calls per happy path and 63.9s end to end |
+| **Contracts as guardrails** | All artifacts persist only through `write_collab_file` / `assemble_itinerary` (schema validation + atomic write); free-form file tools are fenced out of the toolkit — to change the route, the LLM must re-call `plan_route`, never hand-edit contract artifacts |
+| **Prompt-driven with code-level backstops** | Agent behavior is constrained by SYS_PROMPT contracts, but key invariants never rely on model discipline: revision caps are middleware-enforced, the name-list tool verifies against the live POI store to prevent hallucination, and assembly failures retry inside the tool instead of burning a whole planner round |
+| **Tiered model strategy** | Quality-sensitive review runs on an independently configured reviewer-model (modelResolver routes by sub-agent name), the main chain uses glm-5-3-260814, and L2 intent classification uses deepseek-v4-flash-0731 — layered by task nature for cost and quality |
+| **Cascaded intent, not one big LLM** | Intent recognition is a classification problem, not an agent problem: L0 zero compute → L1 rules take ~60% of traffic → L2 lightweight model + Redis caching → L3 fallback; upper layers short-circuit on hit |
+| **Designed for failure** | Redis down → task cache/agent state degrade to in-process memory; RAG semantic path down → ES full-text fallback; lane timeout → user-readable degradation copy pushed straight to SSE; assembly LLM failure → one in-tool code retry |
+| **Cache economics** | TTLs tiered by freshness; pre-checking hoisted to the orchestration layer (code checks the cache before delegation, inlining hits to save a round); requirement changes (destination/dates) auto-invalidate the session cache, avoiding the "cache stores the failed result" trap |
+| **Observability as contract** | Log anchors (`cache_hit=poi` / `review_retry count=N` / `cascade_hit=L0..L3`) double as ops grep points and acceptance-test assertions; OTel spans (chat-turn / task-cache / review-attempt) make every revision traceable |
 
-### 🐛 Found by real runs — issues unit tests couldn't catch
+### 🐛 Measured, not assumed: issues only real-chain runs expose
 
-Every feature ships with an env-gated real-chain acceptance test (B1 segmented-review contract / B2 segment-routed rework / B3 cost benchmark). All four issues below were surfaced by real runs, root-caused, then fixed — the most direct argument for measurement-driven development:
+Every feature ships with environment-gated real-chain acceptance tests. The issues below were all found in real runs, root-caused, and fixed:
 
 | Symptom | Root cause | Fix |
 |---|---|---|
-| Planner truncated before review submission | `MAX_ITERS=12` couldn't finish the full "first review + rework + re-review" loop (measured 26–30 rounds needed) | Iteration budget recalibrated to 28 from measurement, with the round-by-round breakdown documented in comments |
-| Sub-agent conclusion lost forever | `agent_spawn` was passed `timeout_seconds=0`, went async/background; the planner ended its turn with a plain-text "waiting…" message | Sync delegation discipline (explicit 300s) + repeated `wait_async_results` after background promotion + no plain-text turn-ending without a conclusion |
-| Final report for a Hangzhou trip was Beijing boilerplate | With all four caches hit, the model took a shortcut and **copied the system-prompt example verbatim** as its final reply | Examples rewritten as placeholder templates + a "complete the loop" rule (cache hits don't exempt the review step) |
-| Review report never written to disk | The reviewer burned its 6 iterations on path discovery and was forced to output a verdict before writing review_report.md — the very file the planner's routing depends on | Reviewer budget 6→10 + review task text now includes the draft's full path |
+| Name-list tool dead-looped | The candidate-pool validation gate hit "thin pools" (the knowledge base is Hangzhou-seeded; target POIs absent), so the model retried endlessly with different names | The gate now verifies existence against the live POI store via searchPois and fills hard fields; the candidate pool is only used for source-tag inheritance |
+| Raw cached JSON leaked onto the user's screen | After de-LLM-ing bookkeeping, the cache payload changed from "LLM digests" to "raw tool JSON", and assembly pasted intermediate metadata headers into the draft | A unified `TaskResultFormatter` at the assembly egress strips all metadata headers |
+| Return-trip tickets overwrote outbound ones in the cache | The cache stores one value per taskType, so the two registrations clobbered each other | Append + content dedup, so both legs coexist |
+| The planner spent 15 rounds on compensating re-checks (135.7s) | De-LLM-ing bookkeeping removed the model's "acknowledgment" signal, so it spontaneously re-read files and re-queried data | Equivalent confirmation restored on the deterministic path (the assembly summary is the check basis + one-line closeout discipline); planner segment 75.1s |
+
+> Lesson: **de-LLM-ing cannot just remove signals — restore an equivalent confirmation on the deterministic path**, or the model will spend more rounds finding it back.
 
 ## 🚀 Quick Start
 
@@ -121,17 +141,17 @@ Every feature ships with an env-gated real-chain acceptance test (B1 segmented-r
 |---|---|---|
 | JDK | 21+ | |
 | Maven | 3.9+ | |
-| Node.js | 18+ | Frontend build |
-| PostgreSQL | 14+ | Local install with the [pgvector](https://github.com/pgvector/pgvector) extension |
-| Docker | — | Orchestrates Redis / MinIO / Elasticsearch |
+| Node.js | 18+ | frontend build |
+| PostgreSQL | 14+ | local install with the [pgvector](https://github.com/pgvector/pgvector) extension |
+| Docker | — | orchestrates Redis / MinIO / Elasticsearch |
 
-### 2. Infrastructure & database
+### 2. Start infrastructure and create the database
 
 ```bash
 # Redis + MinIO + Elasticsearch (PostgreSQL uses a local instance)
 docker-compose up -d
 
-# Create database + extension + schema
+# Create DB + extension + tables
 psql -U root -d postgres -c "CREATE DATABASE travelscope;"
 psql -U root -d travelscope -c "CREATE EXTENSION IF NOT EXISTS vector;"
 psql -U root -d travelscope -f src/main/resources/schema.sql
@@ -143,44 +163,62 @@ psql -U root -d travelscope -f src/main/resources/schema.sql
 cp .env.example .env   # fill in the keys below
 ```
 
-| Env var | Description | Get it at |
+| Env var | Description | Where to get it |
 |---|---|---|
-| `media_model_gateway_api_key` | Model-gateway API key (all chat models: glm-5-3-260814 / deepseek-v4-flash-0731; gateway base URL in `application.yml` under `travelscope.model-gateway.base-url`) | Self-hosted gateway |
-| `API_KEY` | Qwen DashScope API key (embedding text-embedding-v3 only) | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
-| `AMAP_WEB_API_KEY` | AMAP (Amap) Web API key | [lbs.amap.com](https://lbs.amap.com/) |
-| `WEATHER_API_HOST` | Qweather API host (no https:// prefix) | [dev.qweather.com](https://dev.qweather.com/) |
-| `WEATHER_API_KEY` | Qweather API key | [dev.qweather.com](https://dev.qweather.com/) |
+| `media_model_gateway_api_key` | Model gateway API key (all chat models: glm-5-3-260814 / deepseek-v4-flash-0731; gateway URL in `application.yml` under `travelscope.model-gateway.base-url`) | self-hosted gateway |
+| `API_KEY` | Alibaba DashScope API key (Embedding text-embedding-v3 only) | [console.aliyun.com](https://dashscope.console.aliyun.com/apiKey) |
+| `AMAP_WEB_API_KEY` | Amap (Gaode) Web API key | [lbs.amap.com](https://lbs.amap.com/) |
+| `WEATHER_API_HOST` | QWeather API host (no https:// prefix) | [dev.qweather.com](https://www.qweather.com/en/) |
+| `WEATHER_API_KEY` | QWeather API key | [dev.qweather.com](https://www.qweather.com/en/) |
+| `FLYAI_API_KEY` | Fliggy flyai CLI key (optional; the Fliggy source for hotels/POIs/train tickets; empty runs the CLI in keyless trial mode) | Fliggy open platform |
 
-> Train/flight lookups go through MCP tools (`mcp__c12306__*` / `mcp__variflight__*`), launched by the framework via npx; the first run downloads the corresponding MCP server.
+### 4. Start backend and frontend
 
-### 4. Start backend & frontend
+On Windows, start the backend (port 8080) from the project root with one command:
+
+```powershell
+npm run dev
+```
+
+The command goes through the root `package.json` to `dev.cmd` — no `npm install` needed at the root. It first runs the Maven package step (tests skipped), then starts the backend; it stops if packaging fails. Requires Node.js/npm, Java 21, and Maven on `PATH`; press `Ctrl+C` to stop. Every run re-packages, so the same command applies after code or config changes. Run `npm run dev` inside `frontend/` to start the frontend instead.
+
+Or manually:
 
 ```bash
-# Backend (default 8080)
-mvn spring-boot:run
+# Backend (port 8080) — java -jar recommended (boot jar has the full classpath)
+mvn package -DskipTests
+java -jar target/TravelScope-1.0-SNAPSHOT.jar
 
-# Frontend (separate terminal, default 3000, /api → 8080 proxy pre-configured)
+# Alternative: mvn spring-boot:run (some Maven distributions fork a classpath that misses
+# agentscope dependencies and throws ClassNotFoundException — use java -jar above if so)
+
+# Frontend (new terminal, port 3000, /api proxied to 8080)
 cd frontend && npm install && npm run dev
 ```
 
 Open `http://localhost:3000` to start chatting. Health check: `http://localhost:8080/api/actuator/health`.
 
-## 🧪 Testing & Quality Gates
+After signing in as admin, visit `http://localhost:3000/admin/assessment` for the evaluation center. First-time setup requires running `src/main/resources/assessment-upgrade.sql`; collection and batch toggles live under `travelscope.assessment`.
+
+> Accounts: schema.sql seeds an admin `admin / admin123`; **new users currently register by invitation code only** (codes are issued by admins on the 🎫 Invitation Codes page). Chats deduct points by intent (normal chat 50 / trip planning 200); **every new user gets 500 initial points on registration**, and admins can adjust balances inline on the 👥 Users page.
+
+## 🧪 Tests & Quality Gates
 
 ```bash
-# Unit / contract tests (no external API needed, 40+ test classes)
+# Unit / contract tests (no external APIs needed, 93 test classes)
 mvn test
 
 # Real-chain acceptance tests (requires export media_model_gateway_api_key=...)
-mvn test -Dtest=ReviewerSegmentedReviewRealApiTest      # B1: reviewer segmented-review contract
-mvn test -Dtest=PlannerSegmentReworkRealApiTest         # B2: planner segment-routed rework (2 scenarios)
-mvn test -Dtest=ReworkCostBenchmarkRealApiTest          # B3: rework cost benchmark
+mvn test -Dtest=ReviewerSegmentedReviewRealApiTest   # reviewer segmented review contract
+mvn test -Dtest=RoutePlannerRealApiTest              # VRPTW route solving, real chain
+mvn test -Dtest=IntentCascadeRealApiTest             # cascaded intent routing
+mvn test -Dtest=LlmGatewayRealApiTest                # gateway primary/backup & circuit breaking
 
-# EvalCase end-to-end quality gate (FR-S15; also needs PG up + EVAL_REAL_API=1)
+# EvalCase full-chain quality gate (also needs PG ready + EVAL_REAL_API=1)
 EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
 ```
 
-The EvalCase suite lives in `src/test/resources/evalcases/` (EC-001~010), covering multi-city / family trips / strict budgets / nonexistent places / over-dense routes. It runs the full multi-agent chain for real and applies the dual-track verdict; without the env vars set it self-skips and never affects `mvn test`.
+The EvalCase library lives in `src/main/resources/evalcases/`, packaged into the JAR — 24 cases across 12 scenario classes (multi-city / family / strict budget / nonexistent place / over-dense route, etc.). Evaluation shares the requirement workflow, task registration, route planning, and review flow with daily planning. The `itinerary_draft.json` contract takes priority, with `markdownBody` used for text scoring. Real-API-gated integration tests skip automatically when the gate is off.
 
 ## 📁 Project Structure
 
@@ -188,57 +226,68 @@ The EvalCase suite lives in `src/test/resources/evalcases/` (EC-001~010), coveri
 TravelScope/
 ├── pom.xml                          # Java 21 + Spring Boot 3.3.5 + AgentScope 2.0.3
 ├── docker-compose.yml               # Redis 7 + MinIO + Elasticsearch
-├── .env.example                     # API key template
+├── dev.cmd                          # Windows one-command packaging & startup (npm run dev)
 ├── frontend/                        # React 19 + Vite + TS (login / chat / admin)
 └── src/
     ├── main/java/com/travelscope/
-    │   ├── agent/                   # 6 agents (SYS_PROMPT contracts)
-    │   │   ├── ItineraryAgent.java          # planning-agent: segment-routed rework prompt
-    │   │   ├── ReviewerAgent.java           # reviewer-agent: 3-segment review contract
-    │   │   ├── TravelMasterAgent.java       # travel-master: orchestration & reporting
-    │   │   ├── *Middleware.java             # intent routing / delegation gate / rework fuse
-    │   │   └── tools/                       # @Tool surface (weather/hotel/transport/RAG/task registry)
-    │   ├── service/                 # ChatService / LlmGateway / TaskResultCache / RAG…
-    │   ├── controller/  repository/  entity/  dto/  config/  common/
-    └── test/java/com/travelscope/
-        ├── agent/                   # B1/B2/B3 gated real-chain tests + middleware unit tests
-        ├── eval/                    # EvalCase suite + dual-track scoring + runner
-        └── ...                      # 40+ test classes (tools/services/gateway/eval)
+    │   ├── agent/                   # three agents + middleware + gateway model
+    │   │   ├── TravelMasterAgent.java       # travel-master: single-point query receptionist
+    │   │   ├── ItineraryAgent.java          # planning-agent: five-step SYS_PROMPT
+    │   │   ├── ReviewerAgent.java           # reviewer-agent: targeted revision
+    │   │   ├── IntentCascadeRouter.java     # intent L0~L3 cascade
+    │   │   ├── ReviewerRetryMiddleware.java # revision fuse (≤2, code-enforced)
+    │   │   ├── BookkeepingMiddleware.java   # zero-LLM bookkeeping (tool events → cache + task status)
+    │   │   ├── LlmGatewayModel.java         # primary/backup + circuit breaking + first-packet gate
+    │   │   └── tools/                       # @Tool surface (weather/hotel/POI/ticket/flight/RAG/collab files)
+    │   ├── collab/                  # workspace JSON contract five-piece set (9 DTOs + schema + atomic writes)
+    │   ├── service/                 # ChatService five-step orchestration / LlmGateway / TaskResultCache /
+    │   │   │                        # RuleReviewService / ItineraryAssembler /
+    │   │   │                        # TaskResultFormatter / dual-path RAG…
+    │   │   ├── route/               # VRPTW solving (commute matrix / day split / 2-opt / timeline)
+    │   │   ├── retrieval/           # POI retrieval (query variants / dual path / RRF)
+    │   │   └── workflow/            # requirement state machine + task backlog planning
+    │   ├── eval/                    # EvalCase dual-track scoring
+    │   ├── assessment/              # evaluation collection & batches
+    │   └── controller/  repository/  entity/  dto/  config/  security/  common/
+    └── test/java/com/travelscope/   # 93 test classes (incl. 4 real-chain gated tests)
 ```
 
 ## 📊 Observability
 
-- **Tracing**: Micrometer + OpenTelemetry → Jaeger; business spans: `chat-turn` (whole turn), `task-cache` (cache hit), `review-attempt` (submission count + verdict + score), `task-backlog`, etc.
-- **Log anchors** (grep-able and assert-able): `cache_hit={taskType}`, `cache_miss`, `review_retry count=N`, `cascade_hit=L0|L1|L2|L3`, `task_result_registered`
-- **SSE event protocol**: `intent` (verdict) → `agent_status` (agent activity stream, rendered live under chat bubbles) → `clarify_question` (question card) → `review_report` (collapsible scoring details) → `done` / `error`
+- **Tracing**: Micrometer + OpenTelemetry → Jaeger; business spans: `chat-turn` (whole turn), `task-cache` (cache hit), `review-attempt` (review count + verdict + score), `task-backlog`, etc.
+- **Log anchors** (greppable / assertable): `cache_hit={taskType}`, `cache_miss`, `review_retry count=N`, `cascade_hit=L0|L1|L2|L3`, `task_result_registered`
+- **SSE event protocol**: `intent` (verdict) → `delta` (streaming body) → `agent_status` (agent activity stream, rendered live under bubbles) → `requirement_form` (requirement form card) → `clarify_question` (follow-up question) → `review_report` (score details, collapsed) → `done` / `error`
 
 ## 🗺️ Roadmap
 
-- [ ] FR-S10 three-tier memory (rolling-summary long-term memory)
-- [ ] FR-A admin console: token usage / user management / 3A evaluation dashboard
-- [ ] FR-S13 prompter loop (prompt versioning + effect regression)
-- [ ] PLANNING slow-lane budget review (full-redo chain measured at 275s, close to the 300s cap)
+- [ ] **v5 resilience** (plan finalized in [docs/TravelScope改造计划-v5.md](docs/TravelScope改造计划-v5.md), Chinese): F1 reconnect (turnId idempotency + decoupling execution from SSE) · F2 Fliggy image passthrough · F3 multi-model circuit-breaker pool (CHAT 4+1 / EMBEDDING 2) · F4 chat-side zh/en switching · F5 photo-based AI guide
+- [ ] **v6 rework chain & production hardening** ([docs/TravelScope改造计划-v6.md](docs/TravelScope改造计划-v6.md), Chinese): HARD/SOFT review grading · incremental re-assembly · round merging & context slimming · day-by-day streaming output
 - [ ] Replace L2 lightweight classification with intent-example vector similarity (pgvector cosine top-1)
 
 ## 🧭 Code Navigation
 
-| Want to understand | Read this |
+| Want to understand | Look at |
 |---|---|
-| Six-agent orchestration & model routing | `src/main/java/com/travelscope/config/AgentConfig.java` (buildPlannerAgent: declarative sub-agents + modelResolver) |
-| Segment-routed rework contract | `src/main/java/com/travelscope/agent/ItineraryAgent.java` (SYS_PROMPT step 4) |
-| 3-segment review & REVIEW_RESULT marker contract | `src/main/java/com/travelscope/agent/ReviewerAgent.java` |
-| Rework fuse (≤2 hard cap) | `src/main/java/com/travelscope/agent/ReviewerRetryMiddleware.java` |
-| Task-result cache (FR-S14) | `src/main/java/com/travelscope/service/TaskResultCache.java` + `agent/tools/PoiRagTools.java` |
-| SSE event protocol & streaming orchestration | `src/main/java/com/travelscope/service/ChatService.java` |
-| Three-tier intent cascade | `src/main/java/com/travelscope/agent/IntentCascadeRouter.java` |
-| Gated real-chain acceptance tests | `src/test/java/com/travelscope/agent/PlannerSegmentReworkRealApiTest.java`, `ReworkCostBenchmarkRealApiTest.java` |
-| EvalCase dual-track quality gate | `src/test/java/com/travelscope/eval/` + `src/test/resources/evalcases/` |
+| PLANNING five-step orchestration | `src/main/java/com/travelscope/service/ChatService.java` |
+| Planner five steps & tool discipline | `src/main/java/com/travelscope/agent/ItineraryAgent.java` (SYS_PROMPT) |
+| Rule review, three segments | `src/main/java/com/travelscope/service/RuleReviewService.java` |
+| Workspace JSON contracts | `src/main/java/com/travelscope/collab/` (PoiShortlist / RoutePlan / ItineraryDraft / …) |
+| VRPTW route solving | `src/main/java/com/travelscope/service/route/RoutePlannerServiceImpl.java` |
+| Dual-path POI retrieval | `src/main/java/com/travelscope/service/retrieval/PoiRetrievalService.java` |
+| Cascaded intent routing | `src/main/java/com/travelscope/agent/IntentCascadeRouter.java` |
+| Bookkeeping middleware (zero LLM) | `src/main/java/com/travelscope/agent/BookkeepingMiddleware.java` |
+| Task-result cache | `src/main/java/com/travelscope/service/TaskResultCache.java` |
+| LLM gateway (limits / circuit / lanes) | `src/main/java/com/travelscope/service/LlmGateway.java` + `agent/LlmGatewayModel.java` |
+| Revision fuse | `src/main/java/com/travelscope/agent/ReviewerRetryMiddleware.java` |
+| Planning-chain flow diagrams | `docs/PLANNING链路流程图.md` |
+| Real-chain acceptance tests (gated) | `src/test/java/com/travelscope/agent/` (*RealApiTest) |
+| EvalCase dual-track quality gate | `src/main/java/com/travelscope/eval/` + `src/main/resources/evalcases/` |
 
 ---
 
 <div align="center">
 
-**TravelScope** — a personal learning / portfolio project; code is for study and exchange only
+**TravelScope** — personal learning / portfolio project, code for learning and exchange only
 
 If this project helps you, a ⭐ Star is appreciated
 
