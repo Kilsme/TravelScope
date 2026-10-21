@@ -3,5 +3,12 @@
   "total": 85,
   "minDimension": 15,
   "verified": ["调 getTransitRoute 重算西湖→灵隐寺通勤，实测 38 分钟与草案一致"],
+  "warnings": [
+    {
+      "rule": "BUDGET_DEVIATION",
+      "detail": "预算超支：估算 1658 vs 预算上限 1500（偏差 10%）",
+      "suggestion": "偏差在 10%~15% 贴线区间，可按当前预算交付或让规划调整住宿/交通档位"
+    }
+  ],
   "passedAt": "2026-10-15 21:42:00"
 }

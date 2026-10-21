@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -33,8 +34,11 @@ import java.util.regex.Pattern;
  * ——与 reviewer-agent 同契约，下游消费方（reviewAnnotation / readReviewPayload）零改动。
  * </p>
  * <p>
- * 通过标准与 reviewer 对齐：总分 ≥80 且单维 ≥12 且三段全 pass。
- * 规则不通过时由编排层唤起 reviewer-agent 做定向修订（兜底闭环保留），修订收敛后重跑本服务。
+ * R1 质检分级（v6）：规则违例分 HARD / SOFT 两级，裁决三级——
+ * PASS（全清）/ PASS_WITH_WARNINGS（仅 SOFT：不回炉，软提示随 review_passed.json 落盘带
+ * warning 交付）/ FAIL（任一 HARD：走既有 reviewer 定向修订链路，修订收敛后重跑本服务）。
+ * 评分照常计算并落产物（供展示与 eval 回归），但不再作为回炉门控——门控只看违例级别
+ * （「无违例必高分」由各维满分 20、扣分必伴随违例保证）。
  * </p>
  */
 @Service
@@ -42,14 +46,23 @@ public class RuleReviewService {
 
     private static final Logger log = LoggerFactory.getLogger(RuleReviewService.class);
 
-    /** 通过阈值（与 ReviewerAgent.PASS_TOTAL_SCORE / PASS_MIN_DIMENSION 对齐） */
-    private static final int PASS_TOTAL = 80;
-    private static final int PASS_MIN_DIM = 12;
-
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /** 预算数字提取：取文本中的全部数字（"约 763 元/人"、"¥950–1100" 均可） */
     private static final Pattern NUMBER = Pattern.compile("\\d+(?:\\.\\d{1,2})?");
+
+    // ---------- R1 规则名（warnings 载荷与日志的稳定标识） ----------
+    private static final String RULE_DAYS_MISMATCH = "DAYS_MISMATCH";
+    private static final String RULE_DESTINATION_MISSING = "DESTINATION_MISSING";
+    private static final String RULE_FROM_CITY_MISSING = "FROM_CITY_MISSING";
+    private static final String RULE_POI_HALLUCINATION = "POI_HALLUCINATION";
+    private static final String RULE_TIMELINE_OVERLAP = "TIMELINE_OVERLAP";
+    private static final String RULE_UNPLACED_OVERFLOW = "UNPLACED_OVERFLOW";
+    private static final String RULE_UNPLACED_TRADEOFF = "UNPLACED_TRADEOFF";
+    private static final String RULE_BUDGET_DEVIATION = "BUDGET_DEVIATION";
+    private static final String RULE_BUDGET_UNPARSEABLE = "BUDGET_UNPARSEABLE";
+    private static final String RULE_PREFERENCE_COVERAGE = "PREFERENCE_COVERAGE";
+    private static final String RULE_ROUTE_PLAN_MISSING = "ROUTE_PLAN_MISSING";
 
     private final TaskWorkspace taskWorkspace;
 
@@ -57,23 +70,54 @@ public class RuleReviewService {
         this.taskWorkspace = taskWorkspace;
     }
 
+    /** 违例级别：HARD=硬伤（回炉），SOFT=软问题（带 warning 交付，零回炉） */
+    enum Severity { HARD, SOFT }
+
     /**
-     * 质检结论：passed + 各段问题 + 给 reviewer 的定向修订任务文本。
-     * revisionTaskText 仅规则失败时非空（在 check() 失败分支一次性生成，
-     * 内联 intake/草案 JSON 正文——reviewer 首轮免 read_file；修订后重读由提示词约束）。
+     * 分级违例（R1）：severity 决定回炉路由；detail 进 warning 载荷 / 修订任务；
+     * suggestion 可空（并非每条规则都有可执行建议）。
      */
-    public record Outcome(boolean passed, List<String> issues, String revisionTaskText) {
+    record Violation(String rule, int segment, Severity severity, String detail, String suggestion) {
     }
 
     /**
-     * 执行规则质检：读契约文件 → 三段检查 → 评分 → 落产物。
-     * review_passed.json 一旦存在不被覆盖（粘滞语义，与 ReviewerRetryMiddleware 重置锚点一致）。
+     * 质检结论：三级裁决 + 各段问题 + 软提示 + 给 reviewer 的定向修订任务文本。
+     * revisionTaskText 仅 FAIL 时非空（在 check() 失败分支一次性生成，
+     * 内联 intake/草案 JSON 正文——reviewer 首轮免 read_file；修订后重读由提示词约束）。
+     */
+    public record Outcome(Verdict verdict, List<String> issues,
+                          List<ReviewPassed.ReviewWarning> warnings, String revisionTaskText) {
+
+        /** 三级裁决：PASS 全过；PASS_WITH_WARNINGS 仅软问题（带 warning 交付）；FAIL 含硬伤（回炉） */
+        public enum Verdict { PASS, PASS_WITH_WARNINGS, FAIL }
+
+        public Outcome {
+            issues = List.copyOf(Objects.requireNonNull(issues, "issues"));
+            warnings = List.copyOf(Objects.requireNonNull(warnings, "warnings"));
+        }
+
+        /** 非 FAIL 即视为通过（编排层据此决定是否唤起 reviewer；SOFT 不占用回炉额度） */
+        public boolean passed() {
+            return verdict != Verdict.FAIL;
+        }
+
+        /** 兼容构造（布尔视角）：true→PASS / false→FAIL，无软提示——既有打桩与测试零改动 */
+        public Outcome(boolean passed, List<String> issues, String revisionTaskText) {
+            this(passed ? Verdict.PASS : Verdict.FAIL, issues, List.of(), revisionTaskText);
+        }
+    }
+
+    /**
+     * 执行规则质检：读契约文件 → 三段检查（逐条分级）→ 评分 → 落产物。
+     * PASS / PASS_WITH_WARNINGS 写 review_passed.json（后者带 warnings）；
+     * FAIL 写 review_report.json。review_passed.json 一旦存在不被 FAIL 覆盖
+     * （粘滞语义，与 ReviewerRetryMiddleware 重置锚点一致）。
      */
     public Outcome check(String userId, String sessionId) {
         Optional<ItineraryDraft> draftOpt = taskWorkspace.readItineraryDraft(userId, sessionId);
         if (draftOpt.isEmpty()) {
             log.info("规则质检跳过（无行程草案产物）: 用户={}, 会话={}", userId, sessionId);
-            return new Outcome(true, List.of(), null);
+            return new Outcome(Outcome.Verdict.PASS, List.of(), List.of(), null);
         }
         ItineraryDraft draft = draftOpt.get();
         Optional<IntakeResult> intakeOpt = taskWorkspace.readIntakeResult(userId, sessionId);
@@ -84,8 +128,9 @@ public class RuleReviewService {
         List<String> seg2Issues = new ArrayList<>();
         List<String> seg3Issues = new ArrayList<>();
         List<String> verified = new ArrayList<>();
+        List<Violation> violations = new ArrayList<>();
 
-        // ---------- 段1：基本要素（天数 / 目的地 / 出发地） ----------
+        // ---------- 段1：基本要素（天数 / 目的地 / 出发地）——均为 HARD ----------
         int completeness = 20;
         if (intakeOpt.isPresent()) {
             IntakeResult intake = intakeOpt.get();
@@ -97,6 +142,8 @@ public class RuleReviewService {
                         verified.add("天数=" + expected + " 与 intake 一致");
                     } else {
                         seg1Issues.add("天数不符：intake 要求 " + expected + " 天，草案实际 " + draft.days().size() + " 天");
+                        violations.add(new Violation(RULE_DAYS_MISMATCH, 1, Severity.HARD,
+                                "天数不符：intake 要求 " + expected + " 天，草案实际 " + draft.days().size() + " 天", null));
                         completeness = 0;
                     }
                 } catch (NumberFormatException e) {
@@ -109,6 +156,8 @@ public class RuleReviewService {
                     verified.add("目的地「" + destination + "」在草案中体现");
                 } else {
                     seg1Issues.add("目的地不符：intake 要求「" + destination + "」，草案全文未提及");
+                    violations.add(new Violation(RULE_DESTINATION_MISSING, 1, Severity.HARD,
+                            "目的地不符：intake 要求「" + destination + "」，草案全文未提及", null));
                     completeness = Math.min(completeness, 12);
                 }
             }
@@ -118,21 +167,25 @@ public class RuleReviewService {
                     verified.add("出发地「" + fromCity + "」在草案中体现");
                 } else {
                     seg1Issues.add("出发地未体现：intake 要求从「" + fromCity + "」出发，草案全文未提及");
+                    violations.add(new Violation(RULE_FROM_CITY_MISSING, 1, Severity.HARD,
+                            "出发地未体现：intake 要求从「" + fromCity + "」出发，草案全文未提及", null));
                     completeness = Math.min(completeness, 12);
                 }
             }
         }
 
-        // ---------- 段2：时间线自洽（结构字段级区间重叠） ----------
+        // ---------- 段2：时间线自洽（结构字段级区间重叠）——HARD ----------
         List<String> overlaps = findTimelineOverlaps(draft);
         int timeConflict = Math.max(0, 20 - 5 * overlaps.size());
         if (overlaps.isEmpty()) {
             verified.add("时间线自洽：各日时段无重叠");
         } else {
             seg2Issues.addAll(overlaps);
+            overlaps.forEach(o -> violations.add(
+                    new Violation(RULE_TIMELINE_OVERLAP, 2, Severity.HARD, o, null)));
         }
 
-        // ---------- 段3：预算 + 偏好 + 防幻觉 ----------
+        // ---------- 段3：预算 + 偏好（预算贴线/偏好部分覆盖为 SOFT，其余 HARD） ----------
         int costBudget = 20;
         if (intakeOpt.isPresent() && draft.budget() != null) {
             String budgetLimit = valueOf(intakeOpt.get().fields().budget());
@@ -140,15 +193,25 @@ public class RuleReviewService {
             Double limit = maxNumber(budgetLimit);
             Double est = maxNumber(estimate);
             if (limit == null || est == null || limit <= 0) {
-                verified.add("预算无法解析为数值（limit=" + budgetLimit + ", estimate=" + estimate + "），按 UNKNOWN 保守放行");
+                // R1：预算无法核对从「静默保守放行」改为可见软提示
+                violations.add(new Violation(RULE_BUDGET_UNPARSEABLE, 3, Severity.SOFT,
+                        "预算无法核对（limit=" + budgetLimit + ", estimate=" + estimate + "），按保守分放行",
+                        "可让规划重新产出带数字的预算汇总"));
                 costBudget = 12;
             } else {
                 double deviation = Math.abs(est - limit) / limit;
                 if (deviation <= 0.10) {
                     verified.add("总费用 " + est + " vs 预算 " + limit + "，偏差在 ±10% 内");
                 } else {
-                    seg3Issues.add("预算超支：估算 " + est + " vs 预算上限 " + limit
-                            + "（偏差 " + (int) (deviation * 100) + "%）");
+                    String issueText = "预算超支：估算 " + est + " vs 预算上限 " + limit
+                            + "（偏差 " + (int) (deviation * 100) + "%）";
+                    seg3Issues.add(issueText);
+                    if (deviation > 0.15) {
+                        violations.add(new Violation(RULE_BUDGET_DEVIATION, 3, Severity.HARD, issueText, null));
+                    } else {
+                        violations.add(new Violation(RULE_BUDGET_DEVIATION, 3, Severity.SOFT, issueText,
+                                "偏差在 10%~15% 贴线区间，可按当前预算交付或让规划调整住宿/交通档位"));
+                    }
                     costBudget = deviation <= 0.25 ? 10 : 0;
                 }
             }
@@ -160,32 +223,58 @@ public class RuleReviewService {
             if (!prefs.isEmpty()) {
                 String haystack = draftText(draft);
                 int covered = 0;
+                List<String> uncovered = new ArrayList<>();
                 for (String pref : prefs) {
                     if (ItineraryAssembler.preferenceCovered(pref, haystack)) {
                         covered++;
                         verified.add("偏好「" + pref + "」已被行程覆盖");
                     } else {
                         seg3Issues.add("偏好「" + pref + "」未在行程中体现（未覆盖且未显式披露取舍）");
+                        uncovered.add(pref);
                     }
                 }
                 poiReasonableness = 20 * covered / prefs.size();
+                if (!uncovered.isEmpty()) {
+                    if (covered == 0) {
+                        violations.add(new Violation(RULE_PREFERENCE_COVERAGE, 3, Severity.HARD,
+                                "全部 " + prefs.size() + " 项偏好均未覆盖：" + String.join("、", uncovered), null));
+                    } else {
+                        violations.add(new Violation(RULE_PREFERENCE_COVERAGE, 3, Severity.SOFT,
+                                "偏好部分未覆盖：" + String.join("、", uncovered),
+                                "可在后续轮次让规划补排对应类型景点"));
+                    }
+                }
             }
         }
 
+        // ---------- 可行性：unplaced 溢出（≥2 HARD；=1 带取舍说明 SOFT）+ 防幻觉（HARD） ----------
         int feasibility = 20;
         if (routePlanOpt.isPresent()) {
-            int unplaced = routePlanOpt.get().solverMeta().unplaced() == null
-                    ? 0 : routePlanOpt.get().solverMeta().unplaced().size();
+            List<RoutePlan.UnplacedPoi> unplacedList = routePlanOpt.get().solverMeta().unplaced();
+            int unplaced = unplacedList == null ? 0 : unplacedList.size();
             feasibility = Math.max(0, 20 - 4 * unplaced);
             if (unplaced == 0) {
                 verified.add("路线求解无溢出（全部 POI 排入）");
             } else {
                 seg1Issues.add("路线求解有 " + unplaced + " 个 POI 未排入（unplaced 溢出）");
+                if (unplaced >= 2) {
+                    violations.add(new Violation(RULE_UNPLACED_OVERFLOW, 1, Severity.HARD,
+                            unplaced + " 个 POI 未排入路线，容量硬伤", null));
+                } else {
+                    RoutePlan.UnplacedPoi p = unplacedList.get(0);
+                    String reason = p.reason() == null || p.reason().isBlank() ? "未说明" : p.reason();
+                    violations.add(new Violation(RULE_UNPLACED_TRADEOFF, 1, Severity.SOFT,
+                            "「" + p.name() + "」未排入路线（" + reason + "），按取舍交付",
+                            "如需纳入可让规划调整候选或延长行程"));
+                }
             }
         } else {
             feasibility = 12;
+            // R1：路线产物缺失从「静默保守分」改为可见软提示
+            violations.add(new Violation(RULE_ROUTE_PLAN_MISSING, 1, Severity.SOFT,
+                    "路线产物缺失，可行性按保守分 12/20 评估", null));
         }
-        // 防幻觉（报告模式）：候选池外 POI 检出即扣可行性 + 记段1
+        // 防幻觉（报告模式）：候选池外 POI 检出即扣可行性 + 记段1（HARD：事实错误，交付即欺诈）
         if (shortlistOpt.isPresent()) {
             Set<String> known = new HashSet<>();
             shortlistOpt.get().pois().forEach(p -> known.add(p.name()));
@@ -194,8 +283,11 @@ public class RuleReviewService {
                     for (DraftItem item : day.items()) {
                         if (!ItineraryAssembler.isNonPoiItem(item)
                                 && !ItineraryAssembler.poiMentioned(item, known)) {
-                            seg1Issues.add("Day" + day.day() + "「" + item.activity() + "/" + item.location()
-                                    + "」不在已核验 POI 清单（疑似幻觉）");
+                            String issueText = "Day" + day.day() + "「" + item.activity() + "/" + item.location()
+                                    + "」不在已核验 POI 清单（疑似幻觉）";
+                            seg1Issues.add(issueText);
+                            violations.add(new Violation(RULE_POI_HALLUCINATION, 1, Severity.HARD,
+                                    issueText, null));
                             feasibility = Math.max(0, feasibility - 5);
                         }
                     }
@@ -206,15 +298,21 @@ public class RuleReviewService {
             }
         }
 
-        // ---------- 汇总评分与通过判定 ----------
+        // ---------- R1 三级裁决（评分照常计算落产物，门控只看违例级别） ----------
+        boolean anyHard = violations.stream().anyMatch(v -> v.severity() == Severity.HARD);
+        Outcome.Verdict verdict = anyHard ? Outcome.Verdict.FAIL
+                : violations.isEmpty() ? Outcome.Verdict.PASS : Outcome.Verdict.PASS_WITH_WARNINGS;
+        List<ReviewPassed.ReviewWarning> warnings = violations.stream()
+                .filter(v -> v.severity() == Severity.SOFT)
+                .map(v -> new ReviewPassed.ReviewWarning(v.rule(), v.detail(), v.suggestion()))
+                .toList();
+
         boolean seg1Pass = seg1Issues.isEmpty();
         boolean seg2Pass = seg2Issues.isEmpty();
         boolean seg3Pass = seg3Issues.isEmpty();
         int total = completeness + feasibility + timeConflict + costBudget + poiReasonableness;
         int minDim = Math.min(completeness, Math.min(feasibility,
                 Math.min(timeConflict, Math.min(costBudget, poiReasonableness))));
-        boolean passed = total >= PASS_TOTAL && minDim >= PASS_MIN_DIM
-                && seg1Pass && seg2Pass && seg3Pass;
 
         String now = java.time.LocalDateTime.now().format(FMT);
         List<String> issues = new ArrayList<>();
@@ -222,15 +320,22 @@ public class RuleReviewService {
         issues.addAll(seg2Issues);
         issues.addAll(seg3Issues);
 
-        if (passed) {
+        if (verdict != Outcome.Verdict.FAIL) {
+            // PASS / PASS_WITH_WARNINGS 均写 review_passed（「存在即通过」不变量），后者带软提示
             taskWorkspace.writeReviewPassed(userId, sessionId,
-                    new ReviewPassed(total, minDim, verified, now));
-            log.info("规则质检通过: 用户={}, 会话={}, 总分={}, 检查项={}", userId, sessionId, total, verified.size());
+                    new ReviewPassed(total, minDim, verified, warnings, now));
+            if (verdict == Outcome.Verdict.PASS_WITH_WARNINGS) {
+                log.info("规则质检通过（含软提示，带 warning 交付零回炉）: 用户={}, 会话={}, 总分={}, 软提示={}",
+                        userId, sessionId, total,
+                        warnings.stream().map(ReviewPassed.ReviewWarning::rule).toList());
+            } else {
+                log.info("规则质检通过: 用户={}, 会话={}, 总分={}, 检查项={}", userId, sessionId, total, verified.size());
+            }
         } else {
             // review_passed.json 粘滞：已被通过的产物不被规则失败覆盖
             if (taskWorkspace.readReviewPassed(userId, sessionId).isPresent()) {
                 log.info("规则质检未通过但 review_passed.json 已存在（粘滞保留）: 用户={}, 会话={}", userId, sessionId);
-                return new Outcome(true, List.of(), null);
+                return new Outcome(Outcome.Verdict.PASS, List.of(), List.of(), null);
             }
             ReviewReport.ReviewScores scores = new ReviewReport.ReviewScores(
                     completeness, feasibility, timeConflict, costBudget, poiReasonableness);
@@ -245,8 +350,9 @@ public class RuleReviewService {
                     scores, total, suggestions, now));
             log.info("规则质检未通过: 用户={}, 会话={}, 总分={}, 问题数={}", userId, sessionId, total, issues.size());
         }
-        return new Outcome(passed, issues,
-                passed ? null : buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft));
+        return new Outcome(verdict, issues, warnings,
+                verdict == Outcome.Verdict.FAIL
+                        ? buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft) : null);
     }
 
     /** 规则失败时给 reviewer 的定向修订任务文本（内联 intake/草案正文，首轮免 read_file） */

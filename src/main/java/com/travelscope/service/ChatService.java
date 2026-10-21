@@ -418,6 +418,8 @@ public class ChatService {
                 return;
             }
             RuleReviewService.Outcome outcome = ruleReviewService.check(userId, sessionId);
+            // R1 质检分级：PASS / PASS_WITH_WARNINGS（仅软问题）均不唤起 reviewer——
+            // 软提示已随 review_passed.json 落盘并经 review_report 事件下发，带 warning 交付零回炉
             if (outcome.passed()) {
                 return;
             }
@@ -474,7 +476,13 @@ public class ChatService {
             java.util.Optional<com.travelscope.collab.ReviewPassed> passedJson =
                     taskWorkspaceService.readReviewPassed(userId, sessionId);
             if (passedJson.isPresent()) {
-                return "\n\n✅ 已通过质量审阅（评分 " + passedJson.get().total() + "/100）";
+                com.travelscope.collab.ReviewPassed p = passedJson.get();
+                // R1 质检分级：带软提示的通过（SOFT 违例零回炉交付），提示数指向质检明细折叠区
+                if (!p.warnings().isEmpty()) {
+                    return "\n\n✅ 已通过质量审阅（评分 " + p.total() + "/100，另有 "
+                            + p.warnings().size() + " 项提示，详见质检明细）";
+                }
+                return "\n\n✅ 已通过质量审阅（评分 " + p.total() + "/100）";
             }
             java.util.Optional<com.travelscope.collab.ReviewReport> reportJson =
                     taskWorkspaceService.readReviewReport(userId, sessionId);
@@ -1353,6 +1361,18 @@ public class ChatService {
             payload.put("passed", true);
             payload.put("total", passed.get().total());
             payload.put("segments", java.util.List.of());
+            // R1 质检分级：SOFT 软提示随事件下发（前端质检明细折叠区逐条渲染 ⚠️）
+            if (!passed.get().warnings().isEmpty()) {
+                payload.put("warnings", passed.get().warnings().stream().map(w -> {
+                    JSONObject o = new JSONObject();
+                    o.put("rule", w.rule());
+                    o.put("detail", w.detail());
+                    if (w.suggestion() != null) {
+                        o.put("suggestion", w.suggestion());
+                    }
+                    return o;
+                }).toList());
+            }
             return payload.toJSONString();
         }
         java.util.Optional<com.travelscope.collab.ReviewReport> report =

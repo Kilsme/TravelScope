@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm'
 import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
 import RequirementFormCard from '../components/RequirementFormCard'
+import ReviewReportCard from '../components/ReviewReportCard'
 import type {
   AgentActivity,
   ChatMessage,
@@ -412,14 +413,7 @@ function ChatPage() {
                     onAction={submitForm}
                   />
                 )}
-                {msg.reviewReport && (
-                  <details className="review-report">
-                    <summary>📋 质检评分明细</summary>
-                    <div className="review-report-body">
-                      <Md text={msg.reviewReport} />
-                    </div>
-                  </details>
-                )}
+                {msg.reviewReport && <ReviewReportCard raw={msg.reviewReport} />}
               </div>
               {msg.role === 'assistant' && msg.activities && msg.activities.length > 0 && (
                 <div className="activity-wrap">

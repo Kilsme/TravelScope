@@ -14,7 +14,7 @@ export interface ChatMessage {
   activities?: AgentActivity[]
   /** 前端临时状态：意图分类结果 */
   intent?: string
-  /** 前端临时状态：质检报告 markdown（review_report SSE 事件，折叠区渲染） */
+  /** 前端临时状态：质检结论载荷 JSON（review_report SSE 事件；R1 分级渲染：passed/total/segments/warnings） */
   reviewReport?: string
   /** 前端临时状态：需求清单卡片（requirement_form SSE 事件；重推即原地刷新） */
   requirementForm?: RequirementFormPayload

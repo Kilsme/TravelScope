@@ -164,6 +164,9 @@ class CollabDtoRoundTripTest {
     private static ReviewPassed reviewPassed() {
         return new ReviewPassed(85, 15,
                 List.of("调 getTransitRoute 重算西湖→灵隐寺通勤，实测 38 分钟与草案一致"),
+                List.of(new ReviewPassed.ReviewWarning("BUDGET_DEVIATION",
+                        "预算超支：估算 1658 vs 预算上限 1500（偏差 10%）",
+                        "偏差在 10%~15% 贴线区间，可按当前预算交付或让规划调整住宿/交通档位")),
                 "2026-10-15 21:42:00");
     }
 

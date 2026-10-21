@@ -252,4 +252,113 @@ class RuleReviewServiceTest {
                 .contains("苏州").contains("拙政园").contains("天数不符")
                 .contains("内联草案即过期");
     }
+
+    // ---------- R1 质检分级：HARD 回炉 / SOFT 带 warning 交付 ----------
+
+    /** 全净草案条目（出发地+园林覆盖，预算贴线可控） */
+    private static List<DraftItem> cleanItems() {
+        return List.of(
+                new DraftItem("08:00-08:40", "上海出发 乘高铁至苏州", "上海虹桥站", "¥39", null),
+                new DraftItem("09:00-11:30", "游览拙政园", "拙政园", "¥80", null));
+    }
+
+    @Test
+    @DisplayName("R1 预算贴线 12% → PASS_WITH_WARNINGS：零回炉、review_passed 带 warnings、不写 review_report")
+    void budgetEdgeDeliversWithWarnings() {
+        seedAll(draft(cleanItems(), "约 1344 元", List.of(), List.of())); // 预算 1200，偏差 12%
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS);
+        assertThat(outcome.passed()).isTrue();
+        assertThat(outcome.warnings()).singleElement().satisfies(w -> {
+            assertThat(w.rule()).isEqualTo("BUDGET_DEVIATION");
+            assertThat(w.detail()).contains("12%");
+            assertThat(w.suggestion()).isNotBlank();
+        });
+        var passed = workspace.readReviewPassed("u1", "conv-r");
+        assertThat(passed).isPresent();
+        assertThat(passed.get().warnings()).hasSize(1);
+        assertThat(passed.get().warnings().get(0).rule()).isEqualTo("BUDGET_DEVIATION");
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("R1 偏好部分覆盖（园林覆盖、古镇未覆盖）→ PASS_WITH_WARNINGS，warning 列未覆盖词")
+    void partialPreferenceCoverageWarns() {
+        workspace.writeIntakeResult("u1", "conv-r", intake("1", "苏州", "上海", "1200", "园林、古镇"));
+        workspace.writeItineraryDraft("u1", "conv-r", draft(cleanItems(), "约 1100 元", List.of(), List.of()));
+        workspace.writePoiShortlist("u1", "conv-r", shortlist());
+        workspace.writeRoutePlan("u1", "conv-r", cleanRoutePlan());
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS);
+        assertThat(outcome.warnings()).singleElement().satisfies(w -> {
+            assertThat(w.rule()).isEqualTo("PREFERENCE_COVERAGE");
+            assertThat(w.detail()).contains("古镇");
+        });
+        assertThat(workspace.readReviewPassed("u1", "conv-r")).isPresent();
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("R1 unplaced=1（带 reason）→ SOFT 带 warning 交付，不写 review_report")
+    void singleUnplacedDeliversWithWarning() {
+        seedAll(draft(cleanItems(), "约 1100 元", List.of(), List.of()));
+        workspace.writeRoutePlan("u1", "conv-r", new RoutePlan(List.of(),
+                new RoutePlan.SolverMeta("NN+2opt", "amap", 27,
+                        List.of(new RoutePlan.UnplacedPoi("周庄古镇", "COMMUTE_OVERFLOW")))));
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS);
+        assertThat(outcome.warnings()).singleElement().satisfies(w -> {
+            assertThat(w.rule()).isEqualTo("UNPLACED_TRADEOFF");
+            assertThat(w.detail()).contains("周庄古镇").contains("COMMUTE_OVERFLOW");
+        });
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("R1 unplaced≥2 → HARD 回炉（FAIL，revisionTaskText 生成）")
+    void multipleUnplacedFails() {
+        seedAll(draft(cleanItems(), "约 1100 元", List.of(), List.of()));
+        workspace.writeRoutePlan("u1", "conv-r", new RoutePlan(List.of(),
+                new RoutePlan.SolverMeta("NN+2opt", "amap", 27, List.of(
+                        new RoutePlan.UnplacedPoi("周庄古镇", "COMMUTE_OVERFLOW"),
+                        new RoutePlan.UnplacedPoi("同里古镇", "TIME_WINDOW_MISS")))));
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.FAIL);
+        assertThat(outcome.revisionTaskText()).isNotNull();
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isPresent();
+    }
+
+    @Test
+    @DisplayName("R1 预算无法解析 → 从静默保守放行改为可见软提示（PASS_WITH_WARNINGS）")
+    void unparseableBudgetWarns() {
+        seedAll(draft(cleanItems(), "按实际行程灵活安排", List.of(), List.of())); // 估算无数字
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS);
+        assertThat(outcome.warnings()).singleElement()
+                .satisfies(w -> assertThat(w.rule()).isEqualTo("BUDGET_UNPARSEABLE"));
+    }
+
+    @Test
+    @DisplayName("R1 混合违例（预算贴线 SOFT + 幻觉 HARD）→ FAIL 走回炉，软提示保留在 Outcome")
+    void mixedHardAndSoftFails() {
+        seedAll(draft(List.of(
+                new DraftItem("09:00-11:30", "游览幽灵古镇", "幽灵古镇", "¥80", null)), // 候选池没有 → HARD
+                "约 1344 元", List.of(), List.of())); // 预算偏差 12% → SOFT
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.FAIL);
+        assertThat(outcome.warnings()).isNotEmpty(); // 软提示仍生成（reviewer 修订收敛后复检会落盘）
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isPresent();
+    }
 }

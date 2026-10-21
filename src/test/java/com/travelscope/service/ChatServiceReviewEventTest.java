@@ -143,6 +143,44 @@ class ChatServiceReviewEventTest {
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案");
     }
 
+    // ---------- 用例 3：R1 PASS_WITH_WARNINGS → 载荷带 warnings，done 标注含提示数 ----------
+
+    @Test
+    @DisplayName("R1 软提示交付 → review_report 载荷含 warnings 数组，done 标注「另有 N 项提示」")
+    void warningsPayloadEmitted() throws Exception {
+        seedPlanningChain();
+        com.travelscope.collab.ReviewPassed.ReviewWarning warning =
+                new com.travelscope.collab.ReviewPassed.ReviewWarning("BUDGET_DEVIATION",
+                        "预算超支：估算 1344 vs 预算上限 1200（偏差 12%）",
+                        "偏差在 10%~15% 贴线区间，可按当前预算交付");
+        RuleReviewService stub = mock(RuleReviewService.class);
+        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
+            // 对齐真实链路：规则质检写带 warnings 的 review_passed，编排层零回炉直接交付
+            workspace.writeReviewPassed(inv.getArgument(0), inv.getArgument(1),
+                    new com.travelscope.collab.ReviewPassed(88, 16, List.of("核验一致"),
+                            List.of(warning), "2026-10-21 12:00:00"));
+            return new RuleReviewService.Outcome(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS,
+                    List.of("预算超支：估算 1344 vs 预算上限 1200（偏差 12%）"),
+                    List.of(warning), null);
+        });
+        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+
+        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        List<String> items = awaitEvent(emitter, "done");
+
+        assertThat(eventNames(items)).contains("review_report");
+        JSONObject payload = JSON.parseObject(payloadOf(items, "review_report"));
+        assertThat(payload.getBooleanValue("passed")).isTrue();
+        assertThat(payload.getIntValue("total")).isEqualTo(88);
+        assertThat(payload.getJSONArray("warnings")).hasSize(1);
+        assertThat(payload.getJSONArray("warnings").getJSONObject(0).getString("rule"))
+                .isEqualTo("BUDGET_DEVIATION");
+        assertThat(payload.getJSONArray("warnings").getJSONObject(0).getString("suggestion"))
+                .isNotBlank();
+        assertThat(payloadOf(items, "done"))
+                .contains("✅ 已通过质量审阅（评分 88/100，另有 1 项提示，详见质检明细）");
+    }
+
     // ---------- 公共打桩与 SSE 捕获（与 ChatServicePlanningOrchestrationTest 同款） ----------
 
     /** PLANNING 编排链打桩 + 预置 intake_result.json / itinerary_draft.md（不含 review 产物） */

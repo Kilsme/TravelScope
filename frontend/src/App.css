@@ -371,6 +371,27 @@
   padding: 3px 10px;
 }
 
+/* R1 质检分级：结论徽标 + 分段清单 + 软提示（SOFT 违例零回炉，带 warning 交付） */
+.review-verdict {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.review-verdict.pass { color: #16a34a; }
+.review-verdict.fail { color: #dc2626; }
+.review-segments,
+.review-warnings {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.review-segments li,
+.review-warnings li {
+  margin: 3px 0;
+  line-height: 1.5;
+}
+.review-warning-suggestion {
+  color: #8a6d3b;
+}
+
 /* ==================== 登录页 / 管理端 ==================== */
 .login-page {
   display: flex; align-items: center; justify-content: center; height: 100vh; background: #f5f6fa;
