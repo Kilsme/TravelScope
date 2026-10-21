@@ -379,17 +379,23 @@
 .review-verdict.pass { color: #16a34a; }
 .review-verdict.fail { color: #dc2626; }
 .review-segments,
-.review-warnings {
+.review-warnings,
+.review-issues {
   margin: 6px 0 0;
   padding-left: 18px;
 }
 .review-segments li,
-.review-warnings li {
+.review-warnings li,
+.review-issues li {
   margin: 3px 0;
   line-height: 1.5;
 }
 .review-warning-suggestion {
   color: #8a6d3b;
+}
+/* R4 降级交付：未解决问题清单（回炉上限 1 超限，带问题交付） */
+.review-issues li {
+  color: #b91c1c;
 }
 
 /* R3② 流式行程预览（骨架先行 + 逐天填充，done 全文为终稿） */

@@ -32,11 +32,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * ReviewerRetryMiddleware 保险丝单元测试（卡 B：拦 reviewer 修订轮次，上限 2 次）
+ * ReviewerRetryMiddleware 保险丝单元测试（R4：拦 reviewer 修订轮次，上限 1 次）
  * <p>
  * 卡 B 起回炉闭环移入 reviewer 内部，保险丝从「拦 planner 第 3+ 次 spawn」改为
- * 「拦 reviewer 第 3+ 次写 itinerary_draft.json」。用 mock Agent 名 + write_collab_file
- * 调用模拟 reviewer 修订；Fake next 记录放行/拦截。
+ * 「拦 reviewer 第 2+ 次 revise_poi_selection」（R4 上限 2→1：R1 分级后回炉只被
+ * HARD 问题消耗，一次修订不收敛即 DEGRADED 带问题交付）。
+ * 用 mock Agent 名 + revise_poi_selection 调用模拟 reviewer 修订；Fake next 记录放行/拦截。
  * </p>
  */
 class ReviewerRetryMiddlewareTest {
@@ -83,28 +84,24 @@ class ReviewerRetryMiddlewareTest {
     // ==================== 修订计次与拦截 ====================
 
     @Test
-    @DisplayName("第 1/2 次修订放行（≤2 次上限内）")
-    void testFirstTwoRevisionsPassThrough() {
-        for (int i = 1; i <= 2; i++) {
-            Recorder r = new Recorder();
-            middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
-            assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
-                    "第 " + i + " 次修订应放行");
-        }
+    @DisplayName("第 1 次修订放行（R4 上限 1 次内）")
+    void testFirstRevisionPassesThrough() {
+        Recorder r = new Recorder();
+        middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
+        assertEquals("revise_poi_selection", r.last.get().toolCalls().get(0).getName(),
+                "第 1 次修订应放行");
     }
 
     @Test
-    @DisplayName("第 3 次修订被保险丝拦截，改写为 review_retry_hint")
-    void testThirdRevisionIntercepted() {
-        for (int i = 0; i < 2; i++) {
-            middleware.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
-        }
+    @DisplayName("第 2 次修订被保险丝拦截，改写为 review_retry_hint（R4 上限 1）")
+    void testSecondRevisionIntercepted() {
+        middleware.onActing(reviewerAgent, ctx(), reviseCall(), input -> Flux.empty());
         Recorder r = new Recorder();
         middleware.onActing(reviewerAgent, ctx(), reviseCall(), r::pass);
 
         ToolUseBlock rewritten = r.last.get().toolCalls().get(0);
         assertEquals(ReviewerRetryMiddleware.RETRY_HINT_TOOL, rewritten.getName(),
-                "第 3 次应被改写为 hint 工具");
+                "第 2 次应被改写为 hint 工具");
         assertEquals("id-1", rewritten.getId(), "保持 tool_use id 配对");
         String reason = String.valueOf(rewritten.getInput().get("reason"));
         assertTrue(reason.contains("RETRY_LIMIT_REACHED") && reason.contains("已尽力"),

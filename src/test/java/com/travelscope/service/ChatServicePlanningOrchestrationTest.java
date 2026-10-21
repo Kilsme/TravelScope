@@ -164,7 +164,7 @@ class ChatServicePlanningOrchestrationTest {
         assertThat(report.getIntValue("total")).isEqualTo(91);
     }
 
-    // ---------- 用例 3：无 review_passed（回炉超限）→ 方案带「⚠️ 当前最佳版本（已尽力）」标注 ----------
+    // ---------- 用例 3：无 review_passed（回炉超限）→ R4 降级交付：⚠️ 标注带未解决数、载荷 DEGRADED ----------
     @Test
     void missingReviewPassedAnnotatesBestEffort() throws Exception {
         seedIntakeAndArtifacts(false);
@@ -179,13 +179,16 @@ class ChatServicePlanningOrchestrationTest {
         SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
+        // R4：终检 FAIL → 编排层标记 DEGRADED，标注升级为「评分 + 未解决问题数」指针
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
-                .contains("⚠️ 当前最佳版本（已尽力，评分 72/100）");
-        // S3.1：回炉超限场景载荷 passed=false，分段明细带 pass 标志
+                .contains("⚠️ 当前最佳版本（已尽力，评分 72/100，1 项未解决问题，详见质检明细）");
+        // S3.1：回炉超限场景载荷 passed=false，分段明细带 pass 标志；R4 增 deliveryMode+issues
         com.alibaba.fastjson2.JSONObject report = com.alibaba.fastjson2.JSON
                 .parseObject(payloadOf(items, "review_report"));
         assertThat(report.getBooleanValue("passed")).isFalse();
         assertThat(report.getIntValue("total")).isEqualTo(72);
+        assertThat(report.getString("deliveryMode")).isEqualTo("DEGRADED");
+        assertThat(report.getJSONArray("issues")).hasSize(1);
         assertThat(report.getJSONArray("segments")).hasSize(3)
                 .anySatisfy(s -> {
                     com.alibaba.fastjson2.JSONObject seg = (com.alibaba.fastjson2.JSONObject) s;

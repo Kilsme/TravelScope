@@ -1,6 +1,7 @@
 /**
- * 质检明细折叠区（FR-S08 review_report 事件 + R1 质检分级）。
+ * 质检明细折叠区（FR-S08 review_report 事件 + R1 质检分级 + R4 降级交付）。
  * 事件载荷为 JSON 字符串：结构化渲染结论徽标 + 评分 + 分段 pass/fail + SOFT 软提示清单；
+ * R4：DEGRADED 交付（回炉上限 1 超限）渲染可展开的未解决问题清单。
  * 解析失败（旧格式/异常载荷）回退原文展示，与历史行为一致。
  */
 
@@ -15,6 +16,10 @@ interface ReviewReportPayload {
   total: number
   segments?: { segment: number; pass: boolean }[]
   warnings?: ReviewWarningPayload[]
+  /** R4：NORMAL | DEGRADED（缺省视为 NORMAL，旧载荷无此键） */
+  deliveryMode?: string
+  /** R4 DEGRADED：未解决问题清单（可展开渲染，「失败时向用户交回控制权」） */
+  issues?: string[]
 }
 
 export default function ReviewReportCard({ raw }: { raw: string }) {
@@ -36,14 +41,26 @@ export default function ReviewReportCard({ raw }: { raw: string }) {
     )
   }
   const warnings = payload.warnings ?? []
+  const issues = payload.issues ?? []
+  const degraded = payload.deliveryMode === 'DEGRADED'
   return (
     <details className="review-report">
       <summary>
-        📋 质检评分明细{warnings.length > 0 ? `（${warnings.length} 项提示）` : ''}
+        📋 质检评分明细
+        {degraded && issues.length > 0
+          ? `（${issues.length} 项未解决）`
+          : warnings.length > 0
+            ? `（${warnings.length} 项提示）`
+            : ''}
       </summary>
       <div className="review-report-body">
         <div className={payload.passed ? 'review-verdict pass' : 'review-verdict fail'}>
-          {payload.passed ? '✅ 质检通过' : '⚠️ 质检未通过'}（评分 {payload.total}/100）
+          {payload.passed
+            ? '✅ 质检通过'
+            : degraded
+              ? '⚠️ 当前最佳版本（已尽力）'
+              : '⚠️ 质检未通过'}
+          （评分 {payload.total}/100）
         </div>
         {(payload.segments?.length ?? 0) > 0 && (
           <ul className="review-segments">
@@ -51,6 +68,13 @@ export default function ReviewReportCard({ raw }: { raw: string }) {
               <li key={s.segment}>
                 段{s.segment}（{['基本要素', '时间线', '预算偏好'][s.segment - 1] ?? '检查'}）{s.pass ? '✅' : '❌'}
               </li>
+            ))}
+          </ul>
+        )}
+        {issues.length > 0 && (
+          <ul className="review-issues">
+            {issues.map((issue, i) => (
+              <li key={`issue-${i}`}>❌ {issue}</li>
             ))}
           </ul>
         )}

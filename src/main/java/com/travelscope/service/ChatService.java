@@ -346,9 +346,12 @@ public class ChatService {
         return Flux.concat(
                 Flux.just(milestoneStatus("任务清单已登记（" + backlog.tasks().size() + " 项），开始行程规划")),
                 plannerFlow,
-                // ---------- step5：规则质检（零 LLM）→ 修订差量重推 → 渲染收尾 ----------
+                // ---------- step5：规则质检（零 LLM）→ 降级交付标记 → 修订差量重推 → 渲染收尾 ----------
                 Flux.defer(() -> {
                     runRuleReview(userIdStr, sessionId, observation);
+                    // R4：终检仍未通过（回炉上限 1 拦第 2 次修订）→ 契约标记 DEGRADED+未解决清单，
+                    // 后续 ⚠️ 标注与 review_report 事件载荷据此携带可展开问题清单
+                    markDegradedDeliveryIfNeeded(userIdStr, sessionId);
                     // R3②：reviewer 修订流不经 planner 事件流——质检/修订完成后差量补推
                     // （变化天 version+1；骨架如重排亦重发），在 done 全文之前到达前端
                     List<ChatEvent> updates = progress.emit(taskWorkspaceService, userIdStr, sessionId);
@@ -456,6 +459,42 @@ public class ChatService {
     }
 
     /**
+     * R4 降级交付标记（编排层路由，LangGraph「错误信息存 state、由编排层路由」形态）：
+     * 质检/修订收敛后，review_passed 缺失且 review_report 在 → 本轮为带问题交付，
+     * 把 review_report.json 重写为 deliveryMode=DEGRADED + unresolvedIssues（失败段问题清单）。
+     * 幂等（已 DEGRADED 不重写）；任何异常只记日志，绝不影响 step5 渲染。
+     */
+    private void markDegradedDeliveryIfNeeded(String userId, String sessionId) {
+        try {
+            if (taskWorkspaceService.readReviewPassed(userId, sessionId).isPresent()) {
+                return;
+            }
+            java.util.Optional<com.travelscope.collab.ReviewReport> reportOpt =
+                    taskWorkspaceService.readReviewReport(userId, sessionId);
+            if (reportOpt.isEmpty()) {
+                return;
+            }
+            com.travelscope.collab.ReviewReport report = reportOpt.get();
+            if (com.travelscope.collab.ReviewReport.DELIVERY_DEGRADED.equals(report.deliveryMode())) {
+                return;
+            }
+            List<String> unresolved = report.segments().stream()
+                    .filter(s -> !s.pass())
+                    .flatMap(s -> s.issues().stream())
+                    .toList();
+            taskWorkspaceService.writeReviewReport(userId, sessionId,
+                    new com.travelscope.collab.ReviewReport(
+                            report.segments(), report.scores(), report.total(),
+                            report.suggestionsBySegment(), report.reviewedAt(),
+                            com.travelscope.collab.ReviewReport.DELIVERY_DEGRADED, unresolved));
+            log.warn("本轮带问题交付（deliveryMode=DEGRADED）: 用户={}, 会话={}, 总分={}, 未解决问题={} 项",
+                    userId, sessionId, report.total(), unresolved.size());
+        } catch (Exception e) {
+            log.warn("降级交付标记失败（不影响方案渲染）: 会话={}, 原因={}", sessionId, e.getMessage());
+        }
+    }
+
+    /**
      * step5 渲染收尾（编排路径）：读协作目录方案文件 → 追加代码生成的质检标注写入 replyBuf。
      * review_report 事件不在此发——handleComplete 的标记驱动逻辑（回复含「已通过质量审阅」/
      * 「已尽力」→ 读对应 review 文件推送）对标注文本天然生效。无产物文件时保持 replyBuf
@@ -473,7 +512,8 @@ public class ChatService {
 
     /**
      * 质检标注（代码版 v3 文案规则）：质检通过 →「✅ 已通过质量审阅（评分 x/100）」；
-     * 未通过（回炉超限）→「⚠️ 当前最佳版本（已尽力，评分 x/100）」；未走到质检 → 空串。
+     * 未通过 →「⚠️ 当前最佳版本（已尽力，评分 x/100）」，R4 起 DEGRADED 交付追加
+     * 「N 项未解决问题，详见质检明细」（前端折叠区渲染可展开清单）；未走到质检 → 空串。
      * S2.7 起 JSON 契约优先（typed total）；旧 .md 产物正则兜底（v3 存量会话目录）。
      */
     private String reviewAnnotation(String userId, String sessionId) {
@@ -492,7 +532,14 @@ public class ChatService {
             java.util.Optional<com.travelscope.collab.ReviewReport> reportJson =
                     taskWorkspaceService.readReviewReport(userId, sessionId);
             if (reportJson.isPresent()) {
-                return "\n\n⚠️ 当前最佳版本（已尽力，评分 " + reportJson.get().total() + "/100）";
+                com.travelscope.collab.ReviewReport r = reportJson.get();
+                // R4 降级交付：一句话升级为「评分 + 未解决问题数」指针，清单在质检明细折叠区
+                if (com.travelscope.collab.ReviewReport.DELIVERY_DEGRADED.equals(r.deliveryMode())
+                        && !r.unresolvedIssues().isEmpty()) {
+                    return "\n\n⚠️ 当前最佳版本（已尽力，评分 " + r.total() + "/100，"
+                            + r.unresolvedIssues().size() + " 项未解决问题，详见质检明细）";
+                }
+                return "\n\n⚠️ 当前最佳版本（已尽力，评分 " + r.total() + "/100）";
             }
             // 旧版 .md 兜底
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
@@ -1424,6 +1471,11 @@ public class ChatService {
                         return seg;
                     })
                     .toList());
+            // R4 降级交付：未解决问题清单随事件下发（前端折叠区可展开渲染）
+            payload.put("deliveryMode", report.get().deliveryMode());
+            if (!report.get().unresolvedIssues().isEmpty()) {
+                payload.put("issues", report.get().unresolvedIssues());
+            }
             return payload.toJSONString();
         }
         log.warn("review 产物缺失（review_passed.json / review_report.json 均不存在），"

@@ -28,17 +28,23 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Reviewer 回炉保险丝（卡 B：拦 reviewer 的修订轮次，上限 2 次）
+ * Reviewer 回炉保险丝（R4：拦 reviewer 的修订轮次，上限 1 次）
  * <p>
  * 卡 B 起回炉闭环移入 reviewer 内部（评审→修订→复审，不再经 planner 重送审）。
  * planner 每轮规划只 spawn reviewer 一次，旧的「拦 planner 第 3+ 次 spawn」保险丝不再触发，
- * 新的保险丝落在 reviewer 自己的工具链上：拦「reviewer 第 3+ 次写 itinerary_draft.json」。
+ * 新的保险丝落在 reviewer 自己的工具链上：拦「reviewer 第 2+ 次 revise_poi_selection」。
+ * </p>
+ * <p>
+ * R4（v6）：上限 2→1——R1 质检分级后能走到回炉的都是 HARD 问题，软问题已不占回炉额度，
+ * 一次修订不收敛即带问题交付（DEGRADED 三件套：ERROR 锚点 review_retry_exceeded /
+ * review_report.json 标记 deliveryMode=DEGRADED+未解决清单 / done 载荷 caveat，
+ * 契约标记由编排层 ChatService step5 落，本中间件只负责拦截与锚点日志）。
  * </p>
  * <p>
  * 挂载方式：本中间件加在 buildPlannerAgent 的 plannerMiddlewares（挂在 planner 上）；
  * 框架 buildDeclaredFactory 会把父 agent 的 middlewares 列表 copy 给 spawn 出的子 agent
  * （reviewer），故本中间件自动生效于 reviewer 的 onActing——onActing 里用
- * {@code agent.getName()} 过滤，只拦 reviewer-agent 的 write_collab_file(itinerary_draft)。
+ * {@code agent.getName()} 过滤，只拦 reviewer-agent 的 revise_poi_selection。
  * 计次键同旧版 userId:sessionId（reviewer 与 planner 共享 RuntimeContext）。
  * </p>
  */
@@ -46,8 +52,8 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(ReviewerRetryMiddleware.class);
 
-    /** 回炉（修订）上限（卡 B：reviewer 首次评审 + 最多 2 次修订重写草案） */
-    public static final int MAX_REVIEW_RETRIES = 2;
+    /** 回炉（修订）上限（R4：reviewer 首次评审 + 最多 1 次修订重写草案） */
+    public static final int MAX_REVIEW_RETRIES = 1;
 
     /** 被拦截时替换执行的工具名（必须在 Toolkit 中真实注册，见 TaskTools.reviewRetryHint） */
     public static final String RETRY_HINT_TOOL = "review_retry_hint";
@@ -102,10 +108,15 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
             return next.apply(input);
         }
 
-        // 超限：第 3+ 次修订 → 改写为 hint 工具，拦这次 POI 重选
-        log.warn("review_retry 保险丝拦截: 修订尝试 {} 次超过上限 {}，"
-                        + "本次 revise_poi_selection 已替换为 {}，用户={}, 会话={}",
-                attempt, MAX_REVIEW_RETRIES, RETRY_HINT_TOOL, userId, sessionId);
+        // 超限：第 2+ 次修订 → 改写为 hint 工具，拦这次 POI 重选
+        // R4 ERROR 锚点（旧版仅 warn 静默粘滞收尾）：交付降级为「当前最佳版本（已尽力）」
+        // 必须可 grep、可告警；附带最近一轮评审摘要（result/score）
+        Map<String, String> lastOutcome = new HashMap<>();
+        readLatestReviewOutcome(userId, sessionId, lastOutcome);
+        log.error("review_retry_exceeded: 修订尝试 {} 次超过上限 {}（R4），本次 revise_poi_selection 已拦截，"
+                        + "本轮将按当前最佳版本带问题交付（DEGRADED）: 用户={}, 会话={}, 最近评审={}/{}",
+                attempt, MAX_REVIEW_RETRIES, userId, sessionId,
+                lastOutcome.getOrDefault("result", "?"), lastOutcome.getOrDefault("score", "?"));
         String hint = "RETRY_LIMIT_REACHED: 修订已达上限（" + MAX_REVIEW_RETRIES
                 + " 次），本次 POI 修订已被系统拦截未执行。"
                 + "请立即停止修订，按当前最佳版本收尾：写 review_report.json（若尚无）"

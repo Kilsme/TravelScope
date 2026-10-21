@@ -126,6 +126,27 @@ class CollabDtoShapeTest {
     }
 
     @Test
+    void reviewReportMissingR4KeysDefaultsToNormal() {
+        // R4 前旧产物（无 deliveryMode / unresolvedIssues 键）→ 归一化 NORMAL + 空清单
+        String legacyJson = """
+                {"schemaVersion":4,
+                 "segments":[{"segment":2,"pass":false,"issues":["第 2 天通勤 100 分钟超限"]}],
+                 "scores":{"completeness":18,"feasibility":16,"timeConflict":11,
+                           "costBudget":18,"poiReasonableness":17},
+                 "total":80,"suggestionsBySegment":{"2":["第 2 天拆出 1 个 POI 到第 3 天"]},
+                 "reviewedAt":"2026-10-15T21:40:00"}""";
+        ReviewReport report = JSON.parseObject(legacyJson, ReviewReport.class);
+        assertThat(report.deliveryMode()).isEqualTo(ReviewReport.DELIVERY_NORMAL);
+        assertThat(report.unresolvedIssues()).isEmpty();
+
+        // 非法 deliveryMode 值快速失败（契约防御）
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> JSON.parseObject(
+                legacyJson.replace("\"total\":80", "\"total\":80,\"deliveryMode\":\"PARTIAL\""),
+                ReviewReport.class))
+                .hasRootCauseInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void legacySchemaVersionIsRejected() {
         String legacyJson = """
                 {"schemaVersion":3,"sessionId":"conv-1","status":"DONE","clarifyCycles":0,

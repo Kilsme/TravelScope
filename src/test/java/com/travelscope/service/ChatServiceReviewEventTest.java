@@ -219,6 +219,52 @@ class ChatServiceReviewEventTest {
         assertThat(day.getString("markdown")).startsWith("## Day 1");
     }
 
+    // ---------- 用例 5：R4 降级交付 → 契约标记 DEGRADED + 未解决清单随事件与标注下发 ----------
+
+    @Test
+    @DisplayName("R4 终检 FAIL → review_report.json 重写 DEGRADED+未解决清单，载荷/标注同源")
+    void degradedDeliveryMarkedAndEmitted() throws Exception {
+        seedPlanningChain();
+        // 规则质检打桩：终检仍 FAIL（reviewer 修订上限 1 已耗尽或未收敛），写 NORMAL 态 FAIL 报告
+        // ——编排层 markDegradedDeliveryIfNeeded 应重写为 DEGRADED 并汇总失败段问题
+        RuleReviewService stub = mock(RuleReviewService.class);
+        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
+            workspace.writeReviewReport(inv.getArgument(0), inv.getArgument(1),
+                    new com.travelscope.collab.ReviewReport(
+                            List.of(new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
+                                    new com.travelscope.collab.ReviewReport.ReviewSegment(2, false,
+                                            List.of("Day1 第2项「灵隐寺」开始(11:30) 早于上一项「西湖游船」结束(12:00)")),
+                                    new com.travelscope.collab.ReviewReport.ReviewSegment(3, false,
+                                            List.of("预算超支：估算 1500 vs 预算上限 1200（偏差 25%）"))),
+                            new com.travelscope.collab.ReviewReport.ReviewScores(18, 14, 10, 12, 16),
+                            70, java.util.Map.of("2", List.of("调整 Day1 顺序"), "3", List.of("换经济酒店")),
+                            "2026-10-21 12:00:00"));
+            return new RuleReviewService.Outcome(RuleReviewService.Outcome.Verdict.FAIL,
+                    List.of("时间线重叠", "预算超支"), List.of(), "修订任务（测试桩不会消费）");
+        });
+        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+
+        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        List<String> items = awaitEvent(emitter, "done");
+
+        // ① 契约标记落盘：deliveryMode=DEGRADED + 未解决清单=两失败段 issues 汇总
+        com.travelscope.collab.ReviewReport patched =
+                workspace.readReviewReport("1", "conv-13").orElseThrow();
+        assertThat(patched.deliveryMode())
+                .isEqualTo(com.travelscope.collab.ReviewReport.DELIVERY_DEGRADED);
+        assertThat(patched.unresolvedIssues()).hasSize(2)
+                .anySatisfy(i -> assertThat(i).contains("早于上一项"))
+                .anySatisfy(i -> assertThat(i).contains("预算超支"));
+        // ② review_report 事件载荷同源（前端可展开清单的数据源）
+        JSONObject payload = JSON.parseObject(payloadOf(items, "review_report"));
+        assertThat(payload.getBooleanValue("passed")).isFalse();
+        assertThat(payload.getString("deliveryMode")).isEqualTo("DEGRADED");
+        assertThat(payload.getJSONArray("issues")).hasSize(2);
+        // ③ done 标注：一句话升级为「评分 + 未解决问题数」指针
+        assertThat(payloadOf(items, "done"))
+                .contains("⚠️ 当前最佳版本（已尽力，评分 70/100，2 项未解决问题，详见质检明细）");
+    }
+
     // ---------- 公共打桩与 SSE 捕获（与 ChatServicePlanningOrchestrationTest 同款） ----------
 
     /** PLANNING 编排链打桩 + 预置 intake_result.json / itinerary_draft.md（不含 review 产物） */
