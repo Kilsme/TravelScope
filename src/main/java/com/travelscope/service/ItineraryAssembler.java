@@ -73,7 +73,15 @@ public class ItineraryAssembler {
 
         ItineraryDraft cleaned = new ItineraryDraft(cleanedDays, skeleton.budget(),
                 skeleton.notes(), pending, skeleton.markdownBody());
-        String markdown = renderMarkdown(cleaned, routePlan, weatherSummary, hotelSummary, trainSummary);
+        // 分段化组合（v6 阶段五）：标题 + Σ 逐天节 + 全局节——与原 renderMarkdown 逐字节等价
+        StringBuilder sb = new StringBuilder();
+        sb.append("# ").append(cleaned.days().isEmpty() ? "行程方案"
+                : "行程方案（" + cleaned.days().size() + " 天）").append("\n\n");
+        for (DraftDay day : cleaned.days()) {
+            sb.append(renderDaySection(day));
+        }
+        sb.append(renderGlobalSections(cleaned, weatherSummary, hotelSummary, trainSummary));
+        String markdown = sb.toString();
 
         List<String> notes = new ArrayList<>(cleaned.notes());
         for (String h : hallucinations) {
@@ -204,41 +212,60 @@ public class ItineraryAssembler {
         return false;
     }
 
-    /** 按结构字段渲染 markdown 正文 */
-    private String renderMarkdown(ItineraryDraft skeleton,
-                                  RoutePlan routePlan,
-                                  String weatherSummary,
-                                  String hotelSummary,
-                                  String trainSummary) {
-        StringBuilder sb = new StringBuilder();
-        // 标题：取第一天的主题或通用标题
-        String title = skeleton.days().isEmpty() ? "行程方案"
-                : "行程方案（" + skeleton.days().size() + " 天）";
-        sb.append("# ").append(title).append("\n\n");
+    // ==================== 渲染分段化（v6 阶段五）：骨架/逐天/全局三个出口 ====================
 
-        for (DraftDay day : skeleton.days()) {
-            sb.append("## Day ").append(day.day());
-            if (day.date() != null && !day.date().isBlank()) {
-                sb.append("（").append(day.date()).append("）");
-            }
-            if (day.theme() != null && !day.theme().isBlank()) {
-                sb.append(" ").append(day.theme());
-            }
-            sb.append("\n\n");
-            sb.append("| 时间 | 活动 | 地点 | 费用 |\n");
-            sb.append("| --- | --- | --- | --- |\n");
-            for (DraftItem item : day.items()) {
-                sb.append("| ").append(nvl(item.time())).append(" | ")
-                        .append(nvl(item.activity())).append(" | ")
-                        .append(nvl(item.location())).append(" | ")
-                        .append(item.cost() == null ? "—" : item.cost()).append(" |\n");
-                if (item.note() != null && !item.note().isBlank()) {
-                    sb.append("| | ↳ ").append(item.note()).append(" | | |\n");
-                }
-            }
-            sb.append("\n");
+    /**
+     * 骨架渲染出口（零 LLM）：RouteDay → DraftDay 结构直出——item 的
+     * time/location/activity 全由 route_plan 生成（LLM 原本只是誊写，P3 实证）。
+     * 供组装编排（CollabTools）与流式进度（ItineraryProgress）共用。
+     */
+    public static DraftDay skeletonDay(RoutePlan.RouteDay routeDay) {
+        List<DraftItem> items = new ArrayList<>();
+        for (RoutePlan.RoutePoi p : routeDay.pois()) {
+            items.add(new DraftItem(
+                    (p.startTime() == null ? "" : p.startTime()) + "-" + (p.endTime() == null ? "" : p.endTime()),
+                    p.name(), p.name(), null, null));
         }
+        return new DraftDay(routeDay.day(), routeDay.date(), null, items);
+    }
 
+    /**
+     * 逐天渲染出口：单天 markdown 节（## Day N（date）theme 标题 + 时间线表格 + ↳ note 行，
+     * 末尾一个空行）。与 assemble 组合的拼接序逐字节等价于原 renderMarkdown 天循环体；
+     * ItineraryProgress 以它做逐天事件的精确按构造渲染（替代正则切分）。
+     */
+    public String renderDaySection(DraftDay day) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("## Day ").append(day.day());
+        if (day.date() != null && !day.date().isBlank()) {
+            sb.append("（").append(day.date()).append("）");
+        }
+        if (day.theme() != null && !day.theme().isBlank()) {
+            sb.append(" ").append(day.theme());
+        }
+        sb.append("\n\n");
+        sb.append("| 时间 | 活动 | 地点 | 费用 |\n");
+        sb.append("| --- | --- | --- | --- |\n");
+        for (DraftItem item : day.items()) {
+            sb.append("| ").append(nvl(item.time())).append(" | ")
+                    .append(nvl(item.activity())).append(" | ")
+                    .append(nvl(item.location())).append(" | ")
+                    .append(item.cost() == null ? "—" : item.cost()).append(" |\n");
+            if (item.note() != null && !item.note().isBlank()) {
+                sb.append("| | ↳ ").append(item.note()).append(" | | |\n");
+            }
+        }
+        sb.append("\n");
+        return sb.toString();
+    }
+
+    /**
+     * 全局节渲染出口：大交通/住宿/天气（缓存摘要）+ 预算汇总 + 待确认 + 注意事项。
+     * 逐天事件不携带这些节（随 done 全文交付）。
+     */
+    public String renderGlobalSections(ItineraryDraft skeleton, String weatherSummary,
+                                       String hotelSummary, String trainSummary) {
+        StringBuilder sb = new StringBuilder();
         // 交通/住宿/天气块（代码按缓存数据插入，来源标注保留）
         if (trainSummary != null && !trainSummary.isBlank()) {
             sb.append("## 大交通\n\n").append(trainSummary).append("\n\n");

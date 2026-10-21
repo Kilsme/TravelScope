@@ -52,6 +52,8 @@ export type ChatEventType =
 export interface ItinerarySkeleton {
   dayCount: number
   days: { day: number; poiNames: string[] }[]
+  /** 轮级单调事件序号（v5-F1 断线重连幂等位预留，当前可忽略） */
+  seq?: number
 }
 
 /** R3② 逐天正文预览（itinerary_day 事件载荷；修订轮变化天 version+1 重推） */
@@ -59,6 +61,8 @@ export interface ItineraryDaySection {
   day: number
   version: number
   markdown: string
+  /** 轮级单调事件序号（v5-F1 断线重连幂等位预留，当前可忽略） */
+  seq?: number
 }
 
 export interface ChatEvent {

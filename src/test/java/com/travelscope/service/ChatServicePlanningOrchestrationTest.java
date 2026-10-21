@@ -151,7 +151,10 @@ class ChatServicePlanningOrchestrationTest {
         order.verify(itineraryPlanningAgent).streamEvents(any(UserMessage.class), any(RuntimeContext.class));
         verifyNoInteractions(travelMasterAgent);
 
-        assertThat(eventNames(items)).containsExactly("intent", "agent_status", "review_report", "done");
+        // 渲染分段化（v6 阶段五）：种子草案有 days 结构 → step5 补推两条逐天事件
+        // （旧正则路径在该无「## Day」标题的正文上切不出节，零事件）
+        assertThat(eventNames(items)).containsExactly("intent", "agent_status",
+                "itinerary_day", "itinerary_day", "review_report", "done");
         // step2 里程碑由编排代码显式发射（卡片点 4）
         assertThat(payloadOf(items, "agent_status")).contains("任务清单已登记").contains("5 项");
         // step5：渲染 itinerary_draft.md + 代码生成质检标注

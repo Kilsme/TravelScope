@@ -46,6 +46,19 @@ public class ItineraryProgress {
     private final Map<Integer, String> emittedDayMarkdown = new LinkedHashMap<>();
     /** 各天当前版本号（从 1 起，重推 +1） */
     private final Map<Integer, Integer> dayVersions = new HashMap<>();
+    /** 全局事件序号（从 1 轮级单调递增；v5-F1 断线重连幂等位的协议预留，前端可忽略） */
+    private final java.util.concurrent.atomic.AtomicInteger seq =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** 渲染分段化（v6 阶段五）：逐天出口来自 ItineraryAssembler */
+    private final ItineraryAssembler assembler;
+
+    public ItineraryProgress() {
+        this(new ItineraryAssembler());
+    }
+
+    public ItineraryProgress(ItineraryAssembler assembler) {
+        this.assembler = assembler;
+    }
 
     /**
      * 读工作区产物 → 产出增量进度事件（骨架首推/变化重推 + 变化天版本递增）。
@@ -58,7 +71,7 @@ public class ItineraryProgress {
                 String key = skeletonKey(plan);
                 if (!key.equals(lastSkeletonKey)) {
                     lastSkeletonKey = key;
-                    events.add(skeletonEvent(plan));
+                    events.add(skeletonEvent(plan, seq.incrementAndGet()));
                 }
             });
             workspace.readItineraryDraft(userId, sessionId).ifPresent(draft ->
@@ -69,17 +82,25 @@ public class ItineraryProgress {
         return events;
     }
 
-    /** 草案逐天差量：按「## Day N」节切分 markdownBody，内容变化的天以 version+1 重推 */
+    /**
+     * 草案逐天差量。渲染分段化（v6 阶段五）：主路径=按 days 结构经 ItineraryAssembler
+     * 逐天出口精确渲染（构造精确，正则边界问题整体消灭）；days 空而正文有 Day 节的
+     * 极端产物（外部手写等）回退「## Day N」正则切分。内容变化的天以 version+1 重推。
+     */
     private List<ChatEvent> dayEventsFor(ItineraryDraft draft) {
         List<ChatEvent> events = new ArrayList<>();
-        if (draft.markdownBody() == null || draft.markdownBody().isBlank()) {
+        if (draft.days().isEmpty()
+                && (draft.markdownBody() == null || draft.markdownBody().isBlank())) {
             return events;
         }
-        splitDaySections(draft.markdownBody()).forEach((day, markdown) -> {
+        Map<Integer, String> sections = !draft.days().isEmpty()
+                ? renderDaySections(draft)
+                : splitDaySections(draft.markdownBody());
+        sections.forEach((day, markdown) -> {
             if (!markdown.equals(emittedDayMarkdown.get(day))) {
                 emittedDayMarkdown.put(day, markdown);
                 int version = dayVersions.merge(day, 1, Integer::sum);
-                events.add(dayEvent(day, version, markdown));
+                events.add(dayEvent(day, version, markdown, seq.incrementAndGet()));
             }
         });
         return events;
@@ -96,7 +117,16 @@ public class ItineraryProgress {
         return sb.toString();
     }
 
-    static ChatEvent skeletonEvent(RoutePlan plan) {
+    /** 逐天结构化渲染（渲染分段化主路径；strip 对齐旧正则切分的节语义，事件载荷兼容） */
+    private Map<Integer, String> renderDaySections(ItineraryDraft draft) {
+        Map<Integer, String> sections = new LinkedHashMap<>();
+        for (ItineraryDraft.DraftDay day : draft.days()) {
+            sections.put(day.day(), assembler.renderDaySection(day).strip());
+        }
+        return sections;
+    }
+
+    static ChatEvent skeletonEvent(RoutePlan plan, int seq) {
         List<JSONObject> days = new ArrayList<>();
         plan.days().forEach(d -> {
             JSONObject o = new JSONObject();
@@ -107,14 +137,16 @@ public class ItineraryProgress {
         JSONObject payload = new JSONObject();
         payload.put("dayCount", plan.days().size());
         payload.put("days", days);
+        payload.put("seq", seq);
         return ChatEvent.of(ChatEvent.TYPE_ITINERARY_SKELETON, payload.toJSONString());
     }
 
-    static ChatEvent dayEvent(int day, int version, String markdown) {
+    static ChatEvent dayEvent(int day, int version, String markdown, int seq) {
         JSONObject payload = new JSONObject();
         payload.put("day", day);
         payload.put("version", version);
         payload.put("markdown", markdown);
+        payload.put("seq", seq);
         return ChatEvent.of(ChatEvent.TYPE_ITINERARY_DAY, payload.toJSONString());
     }
 

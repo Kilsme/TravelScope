@@ -684,7 +684,7 @@ public class CollabTools {
         long t0 = System.nanoTime();
         // 变化天：结构代码直出 + 文案并行（关思考，单天重试+降级）
         List<ItineraryDraft.DraftDay> skeletonDays =
-                changedRoute.stream().map(CollabTools::codeBuildDaySkeleton).toList();
+                changedRoute.stream().map(com.travelscope.service.ItineraryAssembler::skeletonDay).toList();
         String intakeView = compactIntakeView(intake);
         List<DayCopy> copies = produceDayCopiesParallel(changedRoute, intakeView);
         List<ItineraryDraft.DraftDay> days = new ArrayList<>();
@@ -983,16 +983,7 @@ public class CollabTools {
     java.util.function.BiFunction<String, String, DayCopy> dayCopyWriter = this::callDayCopyLlm;
     java.util.function.BiFunction<String, String, GlobalCopy> globalCopyWriter = this::callGlobalCopyLlm;
 
-    /** P3① 结构代码直出（零 LLM）：item 的 time/location/activity 全部由 route_plan 直出——LLM 原本只是誊写 */
-    static com.travelscope.collab.ItineraryDraft.DraftDay codeBuildDaySkeleton(RoutePlan.RouteDay routeDay) {
-        List<com.travelscope.collab.ItineraryDraft.DraftItem> items = new ArrayList<>();
-        for (RoutePlan.RoutePoi p : routeDay.pois()) {
-            items.add(new com.travelscope.collab.ItineraryDraft.DraftItem(
-                    (p.startTime() == null ? "" : p.startTime()) + "-" + (p.endTime() == null ? "" : p.endTime()),
-                    p.name(), p.name(), null, null));
-        }
-        return new com.travelscope.collab.ItineraryDraft.DraftDay(routeDay.day(), routeDay.date(), null, items);
-    }
+    /** P3① 结构代码直出（零 LLM）出口已迁 ItineraryAssembler.skeletonDay（渲染分段化，v6 阶段五） */
 
     /**
      * P3 文案合并护栏：LLM 文案只进 theme / item.note / item.cost——不回写 item.activity/location
@@ -1156,7 +1147,7 @@ public class CollabTools {
         long t0 = System.nanoTime();
         // ① 结构代码直出
         List<com.travelscope.collab.ItineraryDraft.DraftDay> skeletonDays =
-                routePlan.days().stream().map(CollabTools::codeBuildDaySkeleton).toList();
+                routePlan.days().stream().map(com.travelscope.service.ItineraryAssembler::skeletonDay).toList();
         // ② 每日文案并行（保序；null=该天降级）
         String intakeView = compactIntakeView(intake);
         List<DayCopy> copies = produceDayCopiesParallel(routePlan.days(), intakeView);
