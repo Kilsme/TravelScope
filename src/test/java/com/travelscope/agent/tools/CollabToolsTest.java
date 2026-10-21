@@ -394,12 +394,143 @@ class CollabToolsTest {
         assertThat(root.getJSONObject("stats").getIntValue("variantCount")).isEqualTo(2);
     }
 
+    // ---------- P3 组装重构：结构代码直出 + 文案并行 + 合并护栏 ----------
+
+    /** 双日路线落盘（Day1 两 POI、Day2 一 POI；shortlist 同名——防幻觉过滤器按名匹配） */
+    private void seedTwoDayRoute() {
+        workspace.writeRoutePlan("u1", "conv-1", new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, "2026-10-24", List.of(
+                        new RoutePlan.RoutePoi("西湖", 120.15, 30.24, "09:00", "11:00", null, null),
+                        new RoutePlan.RoutePoi("灵隐寺", 120.10, 30.24, "13:30", "16:00", "公交", 40)), 40),
+                new RoutePlan.RouteDay(2, "2026-10-25", List.of(
+                        new RoutePlan.RoutePoi("雷峰塔", 120.14, 30.23, "09:00", "11:00", null, null)), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of())));
+        workspace.writePoiShortlist("u1", "conv-1", new PoiShortlist("杭州", "测试清单",
+                List.of(new PoiShortlist.PoiItem("西湖", null, null, null, null, 120, "RAG", null),
+                        new PoiShortlist.PoiItem("灵隐寺", null, null, null, null, 120, "RAG", null),
+                        new PoiShortlist.PoiItem("雷峰塔", null, null, null, null, 120, "RAG", null))));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubCopyWriters(Object dayStub, Object globalStub) {
+        org.springframework.test.util.ReflectionTestUtils.setField(tools, "dayCopyWriter", dayStub);
+        org.springframework.test.util.ReflectionTestUtils.setField(tools, "globalCopyWriter", globalStub);
+    }
+
+    @Test
+    void p3StructureCodeBuiltAndCopyMerged() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        seedTwoDayRoute();
+        stubCopyWriters(
+                (java.util.function.BiFunction<String, String, CollabTools.DayCopy>) (dayView, intakeView) ->
+                        dayView.contains("\"day\":1")
+                                ? new CollabTools.DayCopy("园林禅意日",
+                                        List.of("环湖漫步", "千年古刹"), List.of("免费", "¥30"))
+                                : new CollabTools.DayCopy("登塔远眺", List.of("俯瞰西湖"), List.of("¥40")),
+                (java.util.function.BiFunction<String, String, CollabTools.GlobalCopy>) (d, i) ->
+                        new CollabTools.GlobalCopy(
+                                new com.travelscope.collab.ItineraryDraft.Budget("CNY", "约 1000 元",
+                                        List.of(new com.travelscope.collab.ItineraryDraft.BudgetItem(
+                                                "门票", "约 70", "两人"))),
+                                List.of("注意防晒"), List.of("预算为估算待确认")));
+
+        String result = tools.assemble_itinerary("conv-1", ctx);
+
+        assertThat(result).startsWith("已组装并写入");
+        var draft = workspace.readItineraryDraft("u1", "conv-1").orElseThrow();
+        var day1 = draft.days().get(0);
+        assertThat(day1.theme()).isEqualTo("园林禅意日");
+        // P3 护栏：time/location/activity 由 route_plan 结构直出，LLM 文案只进 theme/note/cost
+        assertThat(day1.items().get(0).time()).isEqualTo("09:00-11:00");
+        assertThat(day1.items().get(0).activity()).isEqualTo("西湖");
+        assertThat(day1.items().get(0).location()).isEqualTo("西湖");
+        assertThat(day1.items().get(0).note()).isEqualTo("环湖漫步");
+        assertThat(day1.items().get(0).cost()).isEqualTo("免费");
+        assertThat(day1.items().get(1).cost()).isEqualTo("¥30");
+        assertThat(draft.days().get(1).theme()).isEqualTo("登塔远眺");
+        assertThat(draft.budget().totalEstimate()).isEqualTo("约 1000 元");
+        assertThat(draft.notes()).contains("注意防晒");
+        assertThat(draft.pendingConfirm()).contains("预算为估算待确认");
+        assertThat(draft.markdownBody()).contains("## Day 1").contains("园林禅意日").contains("环湖漫步");
+    }
+
+    @Test
+    void p3DayCopiesParallelOrderAndDegradation() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        workspace.writeRoutePlan("u1", "conv-1", new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, "2026-10-24", List.of(
+                        new RoutePlan.RoutePoi("西湖", 120.15, 30.24, "09:00", "11:00", null, null)), 0),
+                new RoutePlan.RouteDay(2, "2026-10-25", List.of(
+                        new RoutePlan.RoutePoi("灵隐寺", 120.10, 30.24, "09:00", "11:00", null, null)), 0),
+                new RoutePlan.RouteDay(3, "2026-10-26", List.of(
+                        new RoutePlan.RoutePoi("雷峰塔", 120.14, 30.23, "09:00", "11:00", null, null)), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of())));
+        workspace.writePoiShortlist("u1", "conv-1", new PoiShortlist("杭州", "测试清单",
+                List.of(new PoiShortlist.PoiItem("西湖", null, null, null, null, 120, "RAG", null),
+                        new PoiShortlist.PoiItem("灵隐寺", null, null, null, null, 120, "RAG", null),
+                        new PoiShortlist.PoiItem("雷峰塔", null, null, null, null, 120, "RAG", null))));
+        java.util.concurrent.atomic.AtomicInteger day3Calls = new java.util.concurrent.atomic.AtomicInteger();
+        stubCopyWriters(
+                (java.util.function.BiFunction<String, String, CollabTools.DayCopy>) (dayView, intakeView) -> {
+                    try {
+                        Thread.sleep(400); // 模拟文案轮 IO
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    if (dayView.contains("\"day\":2")) {
+                        return null; // 恒失败 → 重试一次仍败 → 该天降级
+                    }
+                    if (dayView.contains("\"day\":3") && day3Calls.incrementAndGet() == 1) {
+                        return null; // 首次失败，重试成功
+                    }
+                    return new CollabTools.DayCopy("主题三", List.of(), List.of());
+                },
+                (java.util.function.BiFunction<String, String, CollabTools.GlobalCopy>) (d, i) ->
+                        new CollabTools.GlobalCopy(null, List.of(), List.of()));
+
+        long t0 = System.nanoTime();
+        String result = tools.assemble_itinerary("conv-1", ctx);
+        long wallMs = (System.nanoTime() - t0) / 1_000_000;
+
+        assertThat(result).startsWith("已组装并写入");
+        // 并行墙钟：day1=400ms / day2=2×400 / day3=2×400 → 并行 ≈800ms；串行 ≥2000ms
+        assertThat(wallMs).as("N 路并行墙钟 ≈ 最慢一天（重试后）").isLessThan(1500);
+        var draft = workspace.readItineraryDraft("u1", "conv-1").orElseThrow();
+        assertThat(draft.days())
+                .extracting(com.travelscope.collab.ItineraryDraft.DraftDay::day)
+                .containsExactly(1, 2, 3);
+        assertThat(draft.days().get(1).theme()).as("day2 降级无主题").isNull();
+        assertThat(draft.days().get(1).items().get(0).activity()).as("降级天 activity=POI 名直出")
+                .isEqualTo("灵隐寺");
+        assertThat(draft.notes()).as("降级注记进 notes").anySatisfy(
+                n -> assertThat(n).contains("第 2 天文案生成失败"));
+    }
+
+    @Test
+    void p3AllDegradedReturnsErrorWithWholeRetry() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        seedTwoDayRoute();
+        stubCopyWriters(
+                (java.util.function.BiFunction<String, String, CollabTools.DayCopy>) (d, i) -> null,
+                (java.util.function.BiFunction<String, String, CollabTools.GlobalCopy>) (d, i) -> null);
+
+        String result = tools.assemble_itinerary("conv-1", ctx);
+
+        assertThat(result).startsWith("ERROR").contains("草案结构字段生成失败").contains("已自动重试 1 次");
+    }
+
     // ==================== plan_route 无 unplaced 自动链 ====================
 
     @Test
     void planRouteAutoChainsAssemblyWhenNoUnplaced() {
         workspace.writeIntakeResult("u1", "conv-1", intake());
         seedShortlist();
+        // P3 测试接缝：文案/全局段注入空桩（mock Model 走真实 ReActAgent 路径会慢且不可控），
+        // 使骨架编排确定性地整体降级 → doAssembleItinerary 返回 ERROR → 自动链走降级分支
+        org.springframework.test.util.ReflectionTestUtils.setField(tools, "dayCopyWriter",
+                (java.util.function.BiFunction<String, String, CollabTools.DayCopy>) (d, i) -> null);
+        org.springframework.test.util.ReflectionTestUtils.setField(tools, "globalCopyWriter",
+                (java.util.function.BiFunction<String, String, CollabTools.GlobalCopy>) (d, i) -> null);
         // commuteMinutesTotal=0：桩要经得起 writeRoutePlan 的 Schema 校验（0 ≤ 各段之和(0)+1）
         RoutePlan stub = new RoutePlan(List.of(new RoutePlan.RouteDay(1, null, List.of(), 0)),
                 new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
@@ -412,9 +543,8 @@ class CollabToolsTest {
 
         String result = tools.plan_route("conv-1", null, null, ctx);
 
-        // 无 unplaced → 自动链触发；组装内部 LLM 在单测中是 mock（产不出有效结构）→ 优雅降级：
+        // 无 unplaced → 自动链触发；全部文案降级 → 组装 ERROR → 优雅降级：
         // 成功级结果内嵌的失败原因必须剥掉 ERROR 前缀（防下游误判失败），并提示手动组装。
-        // （自动链成功路径由真实链路验证；中间件侧的 ITINERARY 登记见 BookkeepingMiddlewareTest）
         assertThat(result).contains("NN+2opt");
         assertThat(result).contains("自动组装未完成").contains("assemble_itinerary");
         assertThat(result).doesNotContain("ERROR");

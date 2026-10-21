@@ -526,8 +526,9 @@ public class CollabTools {
                 return "ERROR: 会话目录缺 intake_result.json";
             }
 
-            // ① LLM 产结构字段（不含 markdownBody）；失败代码内自动重试 1 次——
-            // 惊动 planner 层重试要烧一整个 agent 轮次（conv-46 实测 ~20s），代码内重试只付模型时延
+            // ① P3 骨架编排：结构代码直出 + 每日文案并行 + 全局段（内部已含单天/全局各一次重试与降级）；
+            // 返回 null 仅当 LLM 完全不可用（全部降级）——代码内整体重试 1 次（粒度兜底，
+            // 惊动 planner 层重试要烧一整个 agent 轮次，conv-46 实测 ~20s）
             com.travelscope.collab.ItineraryDraft skeleton = produceDraftSkeleton(
                     userId, sessionId, routePlan.get(), intake.get());
             if (skeleton == null) {
@@ -668,56 +669,46 @@ public class CollabTools {
                 partial.pendingConfirm(), partial.markdownBody());
     }
 
-    /** R2 增量骨架：LLM 只产变化天的 days 结构 + 全局 budget/notes/pendingConfirm */
+    /**
+     * R2 增量骨架（P3 同构改造，v6 阶段三）：只对变化天做「结构直出 + 文案并行」，
+     * 全局段（budget/notes/pendingConfirm）仍一次小调用（budget 按全部天估算）。
+     * 返回的 partial 只含变化天（未变天由 mergeIncrementalSkeleton 代码级合并）；
+     * 全部变化天文案降级且全局段也降级 → null（调用方走重试→全量兜底链）。
+     */
     private ItineraryDraft produceDraftSkeletonIncremental(String userId, String sessionId,
                                                            RoutePlan routePlan, IntakeResult intake,
                                                            Set<Integer> changedDays,
                                                            ItineraryDraft oldDraft) {
         List<RoutePlan.RouteDay> changedRoute = routePlan.days().stream()
                 .filter(d -> changedDays.contains(d.day())).toList();
-        List<ItineraryDraft.DraftDay> keptOldDays = oldDraft.days().stream()
-                .filter(d -> !changedDays.contains(d.day())).toList();
-        String prompt = "行程草案增量修订：部分天的路线已更新，只重新生成指定天的结构字段。\n\n"
-                + "【需重新生成的天（新路线，紧凑视图）】\n" + compactRouteDaysView(changedRoute)
-                + "\n\n【保持不变的天的既有草案条目（仅供预算与连贯性参考，禁止改动、禁止输出这些天）】\n"
-                + JSON.toJSONString(keptOldDays)
-                + "\n\n【用户需求】\n" + compactIntakeView(intake)
-                + "\n\n输出 ItineraryDraft 结构字段：days 数组只包含需重新生成的天"
-                + "（day 字段用对应天号，每项含 time（形如 09:00-11:30）/activity/location/theme），"
-                + "外加全局 budget（须按全部天数估算）、notes、pendingConfirm。"
-                + "名称/时间/价格必须与输入一致，不编造；markdownBody 填占位「组装中」。";
-        RuntimeContext callCtx = RuntimeContext.builder()
-                .userId("itinerary-assembler").sessionId("itinerary-assemble-" + sessionId).build();
-        var agent = io.agentscope.core.ReActAgent.builder()
-                .name("itinerary-assembler")
-                .sysPrompt("你是行程结构整理器（增量模式）。只为指定天生成结构字段，"
-                        + "budget 需覆盖参考条目在内的全部天数；不要输出未变化的天。"
-                        + "markdownBody 填占位「组装中」。")
-                .model(chatModel)
-                .maxIters(2)
-                .build();
-        try {
-            var reply = agent.call(prompt, ItineraryDraft.class, callCtx)
-                    .block(java.time.Duration.ofSeconds(60));
-            if (reply == null) {
-                return null;
+        long t0 = System.nanoTime();
+        // 变化天：结构代码直出 + 文案并行（关思考，单天重试+降级）
+        List<ItineraryDraft.DraftDay> skeletonDays =
+                changedRoute.stream().map(CollabTools::codeBuildDaySkeleton).toList();
+        String intakeView = compactIntakeView(intake);
+        List<DayCopy> copies = produceDayCopiesParallel(changedRoute, intakeView);
+        List<ItineraryDraft.DraftDay> days = new ArrayList<>();
+        List<String> degradeNotes = new ArrayList<>();
+        for (int i = 0; i < skeletonDays.size(); i++) {
+            DayCopy copy = copies.get(i);
+            if (copy == null) {
+                degradeNotes.add("第 " + skeletonDays.get(i).day() + " 天文案生成失败，该天以 POI 名直出");
             }
-            try {
-                return reply.getStructuredData(ItineraryDraft.class);
-            } catch (Exception ignored) {
-                String text = reply.getTextContent();
-                if (text != null && text.contains("\"days\"")) {
-                    com.alibaba.fastjson2.JSONObject json = com.alibaba.fastjson2.JSON.parseObject(
-                            text.replaceAll("(?s).*?(\\{.*\\}).*", "$1"));
-                    json.putIfAbsent("markdownBody", "组装中");
-                    json.putIfAbsent("schemaVersion", 4);
-                    return json.toJavaObject(ItineraryDraft.class);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("增量骨架生成异常: {}", e.getMessage());
+            days.add(mergeDayCopy(skeletonDays.get(i), copy));
         }
-        return null;
+        // 全局段（全部天视图进 prompt，预算覆盖未变天）
+        GlobalCopy global = invokeGlobalWithRetry(routePlan, intakeView);
+        boolean allDegraded = copies.stream().allMatch(java.util.Objects::isNull);
+        if (allDegraded && global == null) {
+            log.info("P3 增量骨架产出失败（全部变化天降级且全局段降级）: 用户={}, 会话={}", userId, sessionId);
+            return null;
+        }
+        List<String> notes = new ArrayList<>(global == null ? List.of() : global.notes());
+        notes.addAll(degradeNotes);
+        log.info("P3 增量骨架产出: 用户={}, 会话={}, 变化天 {} 个并行, 降级 {} 天, 耗时 {}ms",
+                userId, sessionId, days.size(), degradeNotes.size(), (System.nanoTime() - t0) / 1_000_000);
+        return new ItineraryDraft(days, global == null ? null : global.budget(), notes,
+                global == null ? List.of() : global.pendingConfirm(), "组装中");
     }
 
     /** 天号集合拼接（升序、「、」分隔），revise 返回与日志披露用 */
@@ -958,50 +949,241 @@ public class CollabTools {
         }
     }
 
-    private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(
-            String userId, String sessionId,
-            com.travelscope.collab.RoutePlan routePlan,
-            com.travelscope.collab.IntakeResult intake) {
-        // L2① 消化结果代码化：routePlan/intake 以紧凑视图进 prompt（渲染无关字段不过 LLM）
-        String prompt = "基于以下分日路线生成行程草案的结构字段（days/items 的 time/activity/location、"
-                + "每日主题 theme、预算 budget、注意事项 notes、待确认 pendingConfirm）。"
-                + "不要写 markdown 正文，只产结构字段。\n\n分日路线：\n"
-                + compactRoutePlanView(routePlan)
-                + "\n\n用户需求：\n" + compactIntakeView(intake);
-        RuntimeContext callCtx = RuntimeContext.builder()
-                .userId("itinerary-assembler").sessionId("itinerary-assemble-" + sessionId).build();
-        var agent = io.agentscope.core.ReActAgent.builder()
-                .name("itinerary-assembler")
-                .sysPrompt("你是行程结构整理器。根据分日路线输出 ItineraryDraft 的结构字段："
-                        + "days（每项 time 形如 09:00-11:30、activity、location）、"
-                        + "budget（currency=CNY、totalEstimate、breakdown）、notes、pendingConfirm。"
-                        + "名称/时间/价格必须与输入一致，不编造。markdownBody 填占位「组装中」。")
-                .model(chatModel)
-                .maxIters(2)
-                .build();
+    // ==================== P3 组装重构（v6 阶段三）：结构代码直出 + 每日文案 N 路并行 ====================
+
+    /**
+     * R3①（v6）：组装/修订文案轮永远关思考。网关 thinking 参数透传已 curl 实证
+     * （enabled 带 reasoning_content / disabled 无）；官方「工具循环中处理工具结果的
+     * 后续轮可跳过思考」——文案轮产出为格式化文本而非推理决策。显式注入锁定：
+     * 全局 thinking-enabled 开关只影响规划/质检主链路，组装轮不受其拖累。
+     */
+    private static final io.agentscope.core.model.GenerateOptions ASSEMBLER_NO_THINKING =
+            io.agentscope.core.model.GenerateOptions.builder()
+                    .additionalBodyParam("thinking", Map.of("type", "disabled"))
+                    .build();
+
+    /** P3 每日文案：theme 进 Day 标题；notes/costs 与该天 POI 顺序一一对应（null=该条无说明/无价） */
+    public record DayCopy(String theme, List<String> notes, List<String> costs) {
+        public DayCopy {
+            notes = notes == null ? List.of() : List.copyOf(notes);
+            costs = costs == null ? List.of() : List.copyOf(costs);
+        }
+    }
+
+    /** P3 全局段：budget + notes + pendingConfirm（一次小调用产出；budget 可空） */
+    public record GlobalCopy(com.travelscope.collab.ItineraryDraft.Budget budget,
+                             List<String> notes, List<String> pendingConfirm) {
+        public GlobalCopy {
+            notes = notes == null ? List.of() : List.copyOf(notes);
+            pendingConfirm = pendingConfirm == null ? List.of() : List.copyOf(pendingConfirm);
+        }
+    }
+
+    // P3 测试接缝（行为桩注入，生产默认走真实 LLM 调用）
+    java.util.function.BiFunction<String, String, DayCopy> dayCopyWriter = this::callDayCopyLlm;
+    java.util.function.BiFunction<String, String, GlobalCopy> globalCopyWriter = this::callGlobalCopyLlm;
+
+    /** P3① 结构代码直出（零 LLM）：item 的 time/location/activity 全部由 route_plan 直出——LLM 原本只是誊写 */
+    static com.travelscope.collab.ItineraryDraft.DraftDay codeBuildDaySkeleton(RoutePlan.RouteDay routeDay) {
+        List<com.travelscope.collab.ItineraryDraft.DraftItem> items = new ArrayList<>();
+        for (RoutePlan.RoutePoi p : routeDay.pois()) {
+            items.add(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                    (p.startTime() == null ? "" : p.startTime()) + "-" + (p.endTime() == null ? "" : p.endTime()),
+                    p.name(), p.name(), null, null));
+        }
+        return new com.travelscope.collab.ItineraryDraft.DraftDay(routeDay.day(), routeDay.date(), null, items);
+    }
+
+    /**
+     * P3 文案合并护栏：LLM 文案只进 theme / item.note / item.cost——不回写 item.activity/location
+     * （防幻觉过滤器按 activity/location 匹配 shortlist，自由文案会破坏校验；time 由结构直出锁定）。
+     */
+    static com.travelscope.collab.ItineraryDraft.DraftDay mergeDayCopy(
+            com.travelscope.collab.ItineraryDraft.DraftDay skeleton, DayCopy copy) {
+        if (copy == null) {
+            return skeleton;
+        }
+        List<com.travelscope.collab.ItineraryDraft.DraftItem> items = new ArrayList<>();
+        for (int i = 0; i < skeleton.items().size(); i++) {
+            var it = skeleton.items().get(i);
+            String note = i < copy.notes().size() ? copy.notes().get(i) : null;
+            String cost = i < copy.costs().size() ? copy.costs().get(i) : null;
+            items.add(new com.travelscope.collab.ItineraryDraft.DraftItem(
+                    it.time(), it.activity(), it.location(),
+                    cost == null || cost.isBlank() || "null".equals(cost) ? it.cost() : cost,
+                    note == null || note.isBlank() ? it.note() : note));
+        }
+        String theme = copy.theme() == null || copy.theme().isBlank() ? skeleton.theme() : copy.theme();
+        return new com.travelscope.collab.ItineraryDraft.DraftDay(skeleton.day(), skeleton.date(), theme, items);
+    }
+
+    /**
+     * P3② 每日文案 N 路并行：虚拟线程 fan-out（IO 密集按项目约定）+ 按天序 join 保序
+     * （对齐 LangGraph Send+reducer / OpenAI fan-out-fan-in / Anthropic sectioning）。
+     * 单天失败重试一次（粒度比旧「整体重试」细）；再败该天降级（null，调用方记降级注记）。
+     * 返回表与 days 同序，元素恒不为异常（invoke 内部全捕获）。
+     */
+    List<DayCopy> produceDayCopiesParallel(List<RoutePlan.RouteDay> days, String intakeView) {
+        try (java.util.concurrent.ExecutorService executor =
+                     java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            List<java.util.concurrent.CompletableFuture<DayCopy>> futures = new ArrayList<>();
+            for (RoutePlan.RouteDay d : days) {
+                final String dayView = compactRouteDaysView(List.of(d));
+                futures.add(java.util.concurrent.CompletableFuture.supplyAsync(
+                        () -> invokeWithRetry(() -> dayCopyWriter.apply(dayView, intakeView),
+                                "每日文案 day=" + d.day()), executor));
+            }
+            return futures.stream().map(java.util.concurrent.CompletableFuture::join).toList();
+        }
+    }
+
+    /** 单元调用重试一次（首次 null/异常→再来一次；再败返回 null 交由调用方降级） */
+    private <T> T invokeWithRetry(java.util.function.Supplier<T> call, String what) {
+        T first = null;
         try {
-            var reply = agent.call(prompt, com.travelscope.collab.ItineraryDraft.class, callCtx)
-                    .block(java.time.Duration.ofSeconds(60));
+            first = call.get();
+        } catch (Exception e) {
+            log.info("{} 首次调用异常（重试一次）: {}", what, e.getMessage());
+        }
+        if (first != null) {
+            return first;
+        }
+        try {
+            return call.get();
+        } catch (Exception e) {
+            log.info("{} 重试仍异常（降级）: {}", what, e.getMessage());
+        }
+        return null;
+    }
+
+    /** P3④ 全局段（budget/notes/pendingConfirm）一次小调用，重试一次；失败降级 null */
+    private GlobalCopy invokeGlobalWithRetry(RoutePlan routePlan, String intakeView) {
+        String allDaysView = compactRoutePlanView(routePlan);
+        return invokeWithRetry(() -> globalCopyWriter.apply(allDaysView, intakeView), "全局段");
+    }
+
+    /** P3② 真实调用：单天文案（关思考）；结构化失败回退纯文本 JSON 解析 */
+    private DayCopy callDayCopyLlm(String dayView, String intakeView) {
+        String prompt = "为以下一天的行程生成展示文案：theme（当日主题，≤12 字）、notes（与 POI 顺序一一对应的"
+                + "一句话游玩说明，每条 ≤40 字）、costs（与 POI 顺序一一对应的参考花费，如「¥60」「免费」，"
+                + "不确定填 null）。说明将作为备注行展示，不得编造新地点，不重复罗列时间。\n\n当日行程：\n"
+                + dayView + "\n\n用户需求：\n" + intakeView;
+        RuntimeContext callCtx = RuntimeContext.builder()
+                .userId("itinerary-assembler").sessionId("itinerary-daycopy").build();
+        try {
+            var agent = io.agentscope.core.ReActAgent.builder()
+                    .name("itinerary-daycopy")
+                    .sysPrompt("你是行程文案撰写器。只输出给定结构（theme/notes/costs），说明简短自然，不编造。")
+                    .model(chatModel)
+                    .maxIters(1)
+                    .generateOptions(ASSEMBLER_NO_THINKING)
+                    .build();
+            var reply = agent.call(prompt, DayCopy.class, callCtx)
+                    .block(java.time.Duration.ofSeconds(45));
             if (reply == null) {
                 return null;
             }
             try {
-                return reply.getStructuredData(com.travelscope.collab.ItineraryDraft.class);
+                return reply.getStructuredData(DayCopy.class);
             } catch (Exception ignored) {
-                // 结构化元数据缺失 → 纯文本兜底解析
-                String text = reply.getTextContent();
-                if (text != null && text.contains("\"days\"")) {
-                    com.alibaba.fastjson2.JSONObject json = com.alibaba.fastjson2.JSON.parseObject(
-                            text.replaceAll("(?s).*?(\\{.*\\}).*", "$1"));
-                    json.putIfAbsent("markdownBody", "组装中");
-                    json.putIfAbsent("schemaVersion", 4);
-                    return json.toJavaObject(com.travelscope.collab.ItineraryDraft.class);
-                }
+                return parseTextReply(reply.getTextContent(), DayCopy.class);
             }
         } catch (Exception e) {
-            log.warn("草案结构字段生成异常: {}", e.getMessage());
+            log.info("每日文案调用失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** P3④ 真实调用：全局 budget/notes/pendingConfirm（关思考；budget 按全部天估算） */
+    private GlobalCopy callGlobalCopyLlm(String allDaysView, String intakeView) {
+        String prompt = "基于以下全部天的行程与用户需求，输出全局段：budget（currency=CNY、totalEstimate 字符串、"
+                + "breakdown 分项含 category/amount/note，按 门票/交通/住宿/餐饮 估算）、notes（注意事项）、"
+                + "pendingConfirm（待确认事项）。金额为估算，注明「约」。\n\n全部行程：\n"
+                + allDaysView + "\n\n用户需求：\n" + intakeView;
+        RuntimeContext callCtx = RuntimeContext.builder()
+                .userId("itinerary-assembler").sessionId("itinerary-globalcopy").build();
+        try {
+            var agent = io.agentscope.core.ReActAgent.builder()
+                    .name("itinerary-globalcopy")
+                    .sysPrompt("你是行程全局段整理器。只输出给定结构（budget/notes/pendingConfirm），不编造。")
+                    .model(chatModel)
+                    .maxIters(1)
+                    .generateOptions(ASSEMBLER_NO_THINKING)
+                    .build();
+            var reply = agent.call(prompt, GlobalCopy.class, callCtx)
+                    .block(java.time.Duration.ofSeconds(45));
+            if (reply == null) {
+                return null;
+            }
+            try {
+                return reply.getStructuredData(GlobalCopy.class);
+            } catch (Exception ignored) {
+                return parseTextReply(reply.getTextContent(), GlobalCopy.class);
+            }
+        } catch (Exception e) {
+            log.info("全局段调用失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 纯文本兜底：剥围栏取首个 JSON 对象反序列化（与旧骨架解析同套路） */
+    private static <T> T parseTextReply(String text, Class<T> type) {
+        if (text == null) {
+            return null;
+        }
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?s).*?(\\{.*\\}).*").matcher(text);
+            if (m.matches()) {
+                return com.alibaba.fastjson2.JSON.parseObject(m.group(1), type);
+            }
+        } catch (Exception ignored) {
+            // 解析失败按 null 降级
         }
         return null;
+    }
+
+    /**
+     * P3 骨架编排（v6 阶段三，替代旧单次大调用）：
+     * ①结构代码直出（零 LLM）→ ②每日文案 N 路并行（关思考，单天重试+降级）→
+     * ③全局段一次小调用（重试+降级）→ 合并为 ItineraryDraft 骨架。
+     * 返回 null 仅当「全部天文案降级且全局段也降级」（LLM 完全不可用时不产出劣质草案，
+     * 交由 doAssembleItinerary 的整体重试/ERROR 语义兜底）。
+     */
+    private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(
+            String userId, String sessionId,
+            com.travelscope.collab.RoutePlan routePlan,
+            com.travelscope.collab.IntakeResult intake) {
+        long t0 = System.nanoTime();
+        // ① 结构代码直出
+        List<com.travelscope.collab.ItineraryDraft.DraftDay> skeletonDays =
+                routePlan.days().stream().map(CollabTools::codeBuildDaySkeleton).toList();
+        // ② 每日文案并行（保序；null=该天降级）
+        String intakeView = compactIntakeView(intake);
+        List<DayCopy> copies = produceDayCopiesParallel(routePlan.days(), intakeView);
+        List<com.travelscope.collab.ItineraryDraft.DraftDay> days = new ArrayList<>();
+        List<String> degradeNotes = new ArrayList<>();
+        for (int i = 0; i < skeletonDays.size(); i++) {
+            DayCopy copy = copies.get(i);
+            if (copy == null) {
+                degradeNotes.add("第 " + skeletonDays.get(i).day() + " 天文案生成失败，该天以 POI 名直出");
+            }
+            days.add(mergeDayCopy(skeletonDays.get(i), copy));
+        }
+        // ③ 全局段（budget/notes/pendingConfirm）
+        GlobalCopy global = invokeGlobalWithRetry(routePlan, intakeView);
+        boolean allDaysDegraded = copies.stream().allMatch(java.util.Objects::isNull);
+        if (allDaysDegraded && global == null) {
+            log.info("P3 骨架产出失败（全部文案降级且全局段降级）: 用户={}, 会话={}", userId, sessionId);
+            return null;
+        }
+        List<String> notes = new ArrayList<>(global == null ? List.of() : global.notes());
+        notes.addAll(degradeNotes);
+        log.info("P3 骨架产出: 用户={}, 会话={}, {} 天文案并行, 降级 {} 天, 全局段{}, 耗时 {}ms",
+                userId, sessionId, days.size(), degradeNotes.size(), global == null ? "(降级)" : "",
+                (System.nanoTime() - t0) / 1_000_000);
+        return new com.travelscope.collab.ItineraryDraft(days,
+                global == null ? null : global.budget(), notes,
+                global == null ? List.of() : global.pendingConfirm(), "组装中");
     }
 
     /**
