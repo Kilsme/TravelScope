@@ -177,6 +177,10 @@ public class CollabTools {
             // 池薄是常态），防幻觉硬锁改为「实时 POI 库实证存在」——每个名字调 searchPois
             // （高德/飞猪）验证并补硬字段（lng/lat/openHours/rating，路线求解要坐标）；
             // 池内命中 → source 沿用候选池来源标记；查无此地 → 真幻觉，拒绝。
+            // L1a（v6 轮次合并）：实证解析并行化——resolvePoiItem 内部 = flyai CLI 子进程
+            // + 高德 HTTP（IO 密集按约定走虚拟线程），按提交序 join 保序；
+            // 失败拒绝语义不变（任一实证失败该名整体拒绝、零落盘）
+            List<com.travelscope.collab.PoiShortlist.PoiItem> resolved = resolveNamesParallel(destination, selected);
             List<String> rejected = new ArrayList<>();
             List<com.travelscope.collab.PoiShortlist.PoiItem> items = new ArrayList<>();
             for (int i = 0; i < selected.size(); i++) {
@@ -184,18 +188,18 @@ public class CollabTools {
                 var inPool = pool.candidates().stream()
                         .filter(c -> c.content() != null && c.content().contains(name))
                         .findFirst();
-                com.travelscope.collab.PoiShortlist.PoiItem resolved = resolvePoiItem(destination, name);
-                if (resolved == null) {
+                com.travelscope.collab.PoiShortlist.PoiItem r = resolved.get(i);
+                if (r == null) {
                     rejected.add(name);
                     continue;
                 }
                 Integer dur = i < durations.size() ? durations.get(i) : null;
                 String reason = i < reasonList.size() ? reasonList.get(i) : null;
                 items.add(new com.travelscope.collab.PoiShortlist.PoiItem(
-                        resolved.name(), resolved.lng(), resolved.lat(), resolved.rating(),
-                        resolved.openHours(), dur == null ? 120 : dur,
-                        inPool.map(c -> c.source()).orElse(resolved.source()),
-                        reason == null ? resolved.reason() : reason));
+                        r.name(), r.lng(), r.lat(), r.rating(),
+                        r.openHours(), dur == null ? 120 : dur,
+                        inPool.map(c -> c.source()).orElse(r.source()),
+                        reason == null ? r.reason() : reason));
             }
             // 防幻觉锁：池外名单整体拒绝，不部分落盘
             if (!rejected.isEmpty()) {
@@ -217,6 +221,63 @@ public class CollabTools {
         } catch (Exception e) {
             log.warn("select_poi_shortlist 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: POI 筛选落盘失败: " + e.getMessage();
+        }
+    }
+
+    /**
+     * L1c 收尾轮消除（v6·保守方案）：自动链成功返回文本末尾附终止指令与成品一行——
+     * 模型零决策照抄即结束，省一整轮 LLM 调用（实测 ~4.4s）。
+     * 标记消费方均 contains(AUTO_ASSEMBLED_MARKER) 判定，尾部追加零影响。
+     * 抽为包私有静态：成功路径的文本契约（终止指令 + N 天 N 景）单测直接锚定。
+     */
+    static String autoChainSuccessText(String routeJson, String assembled, RoutePlan plan) {
+        int poiTotal = plan.days().stream().mapToInt(d -> d.pois().size()).sum();
+        return routeJson + "\n\n" + AUTO_ASSEMBLED_MARKER + "：" + assembled
+                + "\n\n【系统终止指令】路线与草案均已落盘，流程已完成——请原样回复以下一行"
+                + "（不得增删任何字符，无需再调任何工具）：行程草案已生成："
+                + plan.days().size() + " 天 " + poiTotal + " 景";
+    }
+
+    /** L1a 实证解析并发上限（高德 /place/text 个人 key ~3/s，CommuteMatrixBuilder 同款限流先例） */
+    private static final int RESOLVE_MAX_PARALLEL = 3;
+
+    /**
+     * L1a 名单实证并行解析（IO 密集按项目约定走虚拟线程）：每名单独 supplyAsync，
+     * 按提交序 join 保序返回（与 selected 同序；null = 实证失败，由调用方整体拒绝）。
+     */
+    private List<com.travelscope.collab.PoiShortlist.PoiItem> resolveNamesParallel(
+            String destination, List<String> selected) {
+        java.util.concurrent.Semaphore permits = new java.util.concurrent.Semaphore(RESOLVE_MAX_PARALLEL);
+        try (java.util.concurrent.ExecutorService executor =
+                     java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            List<java.util.concurrent.CompletableFuture<com.travelscope.collab.PoiShortlist.PoiItem>> futures =
+                    selected.stream().map(name -> java.util.concurrent.CompletableFuture.supplyAsync(
+                            () -> resolveWithRetry(destination, name, permits), executor)).toList();
+            return futures.stream().map(java.util.concurrent.CompletableFuture::join).toList();
+        }
+    }
+
+    /**
+     * 单名实证：Semaphore 限并发（防并行放大高德 QPS 抖动成整批拒绝）；
+     * null 结果（多为限流/网络抖动）等待 600ms 整单重试一次——对齐 CommuteMatrixBuilder 修复先例。
+     */
+    private com.travelscope.collab.PoiShortlist.PoiItem resolveWithRetry(
+            String destination, String name, java.util.concurrent.Semaphore permits) {
+        try {
+            permits.acquire();
+            try {
+                com.travelscope.collab.PoiShortlist.PoiItem r = resolvePoiItem(destination, name);
+                if (r != null) {
+                    return r;
+                }
+            } finally {
+                permits.release();
+            }
+            Thread.sleep(600);
+            return resolvePoiItem(destination, name);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return resolvePoiItem(destination, name);
         }
     }
 
@@ -307,8 +368,7 @@ public class CollabTools {
                 String assembled = doAssembleItinerary(sessionId, ctx);
                 if (!assembled.startsWith("ERROR")) {
                     log.info("plan_route 无溢出，自动链进组装: 用户={}, 会话={}", prep.userId(), sessionId);
-                    return routeJson + "\n\n" + AUTO_ASSEMBLED_MARKER + "：" + assembled
-                            + "（路线与草案均已落盘，请直接进入第 5 步一行收尾）";
+                    return autoChainSuccessText(routeJson, assembled, plan);
                 }
                 log.warn("plan_route 自动链组装失败（降级为提示手动组装）: 用户={}, 会话={}, 原因={}",
                         prep.userId(), sessionId, assembled);

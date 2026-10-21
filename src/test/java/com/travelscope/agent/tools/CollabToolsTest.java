@@ -231,6 +231,75 @@ class CollabToolsTest {
         assertThat(back.get().pois().get(0).lng()).isEqualTo(120.629);
     }
 
+    // ---------- L1a 名单实证并行化：保序 + 并发真实发生 + 抖动重试 ----------
+
+    @Test
+    void selectShortlistResolvesInParallelPreservingOrder() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        java.util.concurrent.atomic.AtomicInteger inFlight = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.concurrent.atomic.AtomicInteger maxInFlight = new java.util.concurrent.atomic.AtomicInteger();
+        when(attractionTool.searchPois(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt())).thenAnswer(inv -> {
+            String keyword = inv.getArgument(1);
+            int cur = inFlight.incrementAndGet();
+            maxInFlight.accumulateAndGet(cur, Math::max);
+            try {
+                Thread.sleep(300); // 模拟 IO（flyai CLI 子进程 + 高德 HTTP）
+            } finally {
+                inFlight.decrementAndGet();
+            }
+            return "{\"attractions\":[{\"name\":\"" + keyword + "\",\"location\":\"120.15,30.24\","
+                    + "\"rating\":4.8,\"source\":\"高德\"}]}";
+        });
+
+        String result = tools.select_poi_shortlist("conv-1", "甲,乙,丙,丁", null, null, ctx);
+
+        assertThat(result).startsWith("POI 筛选完成");
+        assertThat(maxInFlight.get()).as("L1a 实证并行真实发生（串行恒为 1）").isGreaterThan(1);
+        var back = workspace.readPoiShortlist("u1", "conv-1").orElseThrow();
+        assertThat(back.pois()).extracting(com.travelscope.collab.PoiShortlist.PoiItem::name)
+                .as("并行解析按提交序 join 保序").containsExactly("甲", "乙", "丙", "丁");
+    }
+
+    @Test
+    void selectShortlistRetriesTransientFailure() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        // 「灵隐寺」首调抛 QPS 类异常（resolvePoiItem 捕获→null），600ms 后整单重试成功
+        when(attractionTool.searchPois(anyString(), eq("灵隐寺"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenThrow(new RuntimeException("CUQPS_HAS_EXCEEDED_THE_LIMIT"))
+                .thenReturn("{\"attractions\":[{\"name\":\"灵隐寺\",\"location\":\"120.10,30.24\","
+                        + "\"rating\":4.7,\"source\":\"高德\"}]}");
+        when(attractionTool.searchPois(anyString(), eq("西湖"), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn("{\"attractions\":[{\"name\":\"西湖\",\"location\":\"120.15,30.24\","
+                        + "\"rating\":4.8,\"source\":\"高德\"}]}");
+
+        String result = tools.select_poi_shortlist("conv-1", "西湖,灵隐寺", null, null, ctx);
+
+        assertThat(result).as("瞬时 QPS 抖动经重试吸收，不误杀名单").startsWith("POI 筛选完成");
+        org.mockito.Mockito.verify(attractionTool, org.mockito.Mockito.times(2))
+                .searchPois(anyString(), eq("灵隐寺"), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    // ---------- L1c 收尾轮消除：自动链成功文本附终止指令 ----------
+
+    @Test
+    void autoChainSuccessTextContainsTerminationInstruction() {
+        RoutePlan plan = new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, null, List.of(
+                        new RoutePlan.RoutePoi("西湖", 120.15, 30.24, "09:00", "11:00", null, null)), 0),
+                new RoutePlan.RouteDay(2, null, List.of(
+                        new RoutePlan.RoutePoi("灵隐寺", 120.10, 30.24, "09:00", "12:00", null, null),
+                        new RoutePlan.RoutePoi("雷峰塔", 120.14, 30.23, "14:00", "16:00", "公交", 30)), 30)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
+
+        String text = CollabTools.autoChainSuccessText("{\"solverMeta\":{}}", "已组装并写入", plan);
+
+        assertThat(text).contains(CollabTools.AUTO_ASSEMBLED_MARKER)
+                .contains("【系统终止指令】")
+                .contains("原样回复以下一行")
+                .contains("行程草案已生成：2 天 3 景");
+    }
+
     // ==================== plan_route 无 unplaced 自动链 ====================
 
     @Test

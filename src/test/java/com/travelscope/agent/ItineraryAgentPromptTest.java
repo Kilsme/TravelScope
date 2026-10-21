@@ -44,4 +44,18 @@ class ItineraryAgentPromptTest {
     void maxItersHalvedTo16() {
         assertThat(ItineraryAgent.MAX_ITERS).isEqualTo(16);
     }
+
+    // ---------- 用例 4：L1 轮次合并锚点（L1b 筛选前移 + L1c 终止指令衔接） ----------
+    @Test
+    void promptContainsRoundMergeAnchors() {
+        assertThat(ItineraryAgent.SYS_PROMPT)
+                // L1b：缓存命中候选池时 select 与其余数据工具同一首轮 response 并行
+                .contains("【筛选前移】")
+                .contains("一并并行发出")
+                // L1b：前移后轮次防重复调用
+                .contains("严禁重复调用")
+                // L1c：plan_route 返回的终止指令直接原样收尾
+                .contains("【系统终止指令】")
+                .contains("原样回复收尾");
+    }
 }

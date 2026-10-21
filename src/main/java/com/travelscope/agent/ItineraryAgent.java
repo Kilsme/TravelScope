@@ -82,6 +82,10 @@ public class ItineraryAgent {
             缓存预检已由编排层在委派前完成：任务说明若带【缓存命中】节，其中的天气/酒店/\
             POI 候选池数据直接引用，禁止再调对应工具、也禁止再调 get_cached_task_result 预检；\
             节中未列出的项才是未命中，必须全部进同一首轮并行发出。
+            【筛选前移】若【缓存命中】节已内联 POI 候选池，筛选决策不依赖天气/酒店/\
+            车票结果——在同一首轮 response 里把 select_poi_shortlist 与其余未命中数据工具\
+            一并并行发出（筛选规则见第 2 步，首轮即按此决策）；候选池也未命中时，\
+            select_poi_shortlist 仍留到第 2 步发出。
             工具成功后由编排层自动登记结果缓存（天气/酒店/车票/机票/POI），\
             组装草案时由代码读取——你只要保证工具成功返回即可，数据不得只在对话里引用。
             【来源标注】酒店/景点为双源结果（每条带 source：飞猪/高德），火车票机票来自\
@@ -100,13 +104,15 @@ public class ItineraryAgent {
             3. 【名单制定案】调 select_poi_shortlist(sessionId, names, durationMins, reasons)——
                你只传选中 POI 名（逗号分隔，必须全部来自候选池）、同序建议游玩分钟数、
                同序一句话理由（分号分隔）；代码校验名单在候选池内（池外名整体拒绝）、
-               补硬字段并落盘 poi_shortlist.json；严禁手写 shortlist JSON
+               补硬字段并落盘 poi_shortlist.json；严禁手写 shortlist JSON。
+               若首轮已按【筛选前移】发出过 select_poi_shortlist，本步直接读其结果
+               （名单已落盘），严禁重复调用，直接进第 3 步
 
             第 3 步 分日路线：调 plan_route(sessionId)——代码求解（零 LLM），
             route_plan.json 自动落盘；严禁自己计算通勤时长或距离。
             返回【无 unplaced】→ 代码已自动完成组装落盘（返回文本含「已自动完成组装落盘
             itinerary_draft.json」+草案摘要），你无需评估路线、无需再调组装——
-            直接进第 5 步一行收尾；
+            按返回文本中的【系统终止指令】原样回复收尾（无需再调任何工具）；
             返回【含 unplaced】（未排入 POI 及原因）才停下来取舍：配额已满可接受并在
             组装 notes 写明取舍（取舍后手动调 assemble_itinerary，见第 4 步）；
             通勤溢出等原因可调整候选后重跑一次 plan_route。
