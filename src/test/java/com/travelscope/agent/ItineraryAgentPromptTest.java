@@ -58,4 +58,10 @@ class ItineraryAgentPromptTest {
                 .contains("【系统终止指令】")
                 .contains("原样回复收尾");
     }
+
+    // ---------- 用例 5：L1d shortlist 4×days 硬截断锚点 ----------
+    @Test
+    void promptContainsShortlistCapAnchor() {
+        assertThat(ItineraryAgent.SYS_PROMPT).contains("总数上限 4×days");
+    }
 }

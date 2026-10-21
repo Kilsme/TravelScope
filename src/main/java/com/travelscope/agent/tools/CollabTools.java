@@ -123,7 +123,7 @@ public class CollabTools {
             + "names：选中的 POI 名（逗号/顿号分隔；候选池内优先，领域常识名也可——代码会逐一调实时 POI 库校验并补坐标/开放时段，查无此地会被整体拒绝）；"
             + "durationMins：与 names 同顺序的建议游玩分钟数（逗号分隔，可空，默认 120）；"
             + "reasons：与 names 同顺序的一句话入选理由（分号分隔，可空）。"
-            + "数量目标 ≥ 2×days（每日 2~4 个配额）。严禁手写 shortlist JSON")
+            + "数量目标 ≥ 2×days、总数 ≤ 4×days（每日 2~4 个配额，多选会被代码截断）。严禁手写 shortlist JSON")
     public String select_poi_shortlist(
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
             String sessionId,
@@ -170,6 +170,18 @@ public class CollabTools {
             if (selected.isEmpty()) {
                 return "ERROR: names 为空——数量目标 ≥ 2×days 个 POI 名";
             }
+            // L1d（v6）shortlist 4×days 硬截断：压矩阵规模（节点数平方级影响矩阵对数）
+            // 与 unplaced 溢出触发面；截前 4×days（保序，durations/reasons 索引对齐不受影响），
+            // 截断项在返回文本与日志中明示
+            int days = parseDays(daysStr);
+            List<String> truncated = List.of();
+            if (days > 0 && selected.size() > 4 * days) {
+                truncated = List.copyOf(selected.subList(4 * days, selected.size()));
+                selected = new ArrayList<>(selected.subList(0, 4 * days));
+                log.info("select_poi_shortlist 4×days 截断: 用户={}, 会话={}, {} → {} 个（截断 {} 项 {}）",
+                        userId, sessionId, selected.size() + truncated.size(), selected.size(),
+                        truncated.size(), truncated);
+            }
             List<Integer> durations = parseIntList(durationMins);
             List<String> reasonList = splitReasons(reasons);
 
@@ -207,9 +219,11 @@ public class CollabTools {
                         + "——请核对名字（用候选池/常识中的正式名称）后重调";
             }
 
-            int days = parseDays(daysStr);
             String warn = days > 0 && items.size() < 2 * days
                     ? "（提示：选定 " + items.size() + " 个 < 2×days=" + (2 * days) + " 目标，确认是否漏选）" : "";
+            String truncNote = truncated.isEmpty() ? ""
+                    : "（已按 4×days=" + (4 * days) + " 上限截断以下 " + truncated.size()
+                            + " 项：" + truncated + "）";
 
             taskWorkspace.writePoiShortlist(userId, sessionId, new com.travelscope.collab.PoiShortlist(
                     destination, "候选池 " + pool.candidates().size() + " 个，名单制筛选 " + items.size() + " 个",
@@ -217,7 +231,7 @@ public class CollabTools {
             log.info("select_poi_shortlist: 用户={}, 会话={}, 落盘 {} 个（候选池 {} 个）",
                     userId, sessionId, items.size(), pool.candidates().size());
             return "POI 筛选完成：已落盘 poi_shortlist.json 共 " + items.size() + " 个（候选池 "
-                    + pool.candidates().size() + " 个）" + warn + "。下一步调 plan_route。";
+                    + pool.candidates().size() + " 个）" + warn + truncNote + "。下一步调 plan_route。";
         } catch (Exception e) {
             log.warn("select_poi_shortlist 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: POI 筛选落盘失败: " + e.getMessage();

@@ -96,7 +96,8 @@ public class ItineraryAgent {
             1. 取候选池 JSON：首轮 retrieve_poi_candidates 的返回，或任务说明【缓存命中】节\
                内联的候选池（两者内容等价；都缺时补调 retrieve_poi_candidates(destination, days, preferences)）
             2. 由你做筛选决策：偏好匹配优先、开放时间适配行程日、评分门槛（≥4.0 优先，
-               无评分不因单一因素淘汰）、每日 2~4 个配额——最终选定数量 ≥ 2×days
+               无评分不因单一因素淘汰）、每日 2~4 个配额——总数上限 4×days（多选会被
+               代码截断），最终选定数量 ≥ 2×days
                【偏好硬约束】intake.preference 的每个关键词（如「园林」「古镇」），
                最终 days 时间线里必须至少有一个对应 POI 覆盖；排不进时在对应 POI 的
                reason 里写明取舍原因（如「同里古镇通勤超限，以平江路替代」）——

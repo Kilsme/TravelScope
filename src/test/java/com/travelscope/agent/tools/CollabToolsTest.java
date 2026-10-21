@@ -300,6 +300,46 @@ class CollabToolsTest {
                 .contains("行程草案已生成：2 天 3 景");
     }
 
+    // ---------- L1d shortlist 4×days 硬截断 ----------
+
+    @Test
+    void selectShortlistTruncatesToFourPerDay() {
+        workspace.writeIntakeResult("u1", "conv-1", intake()); // days=2 → 上限 8
+        when(attractionTool.searchPois(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt())).thenAnswer(inv -> {
+            String keyword = inv.getArgument(1);
+            return "{\"attractions\":[{\"name\":\"" + keyword + "\",\"location\":\"120.15,30.24\","
+                    + "\"rating\":4.8,\"source\":\"高德\"}]}";
+        });
+        String tenNames = "名1,名2,名3,名4,名5,名6,名7,名8,名9,名10";
+
+        String result = tools.select_poi_shortlist("conv-1", tenNames, null, null, ctx);
+
+        assertThat(result).startsWith("POI 筛选完成")
+                .contains("已按 4×days=8 上限截断以下 2 项")
+                .contains("名9").contains("名10");
+        var back = workspace.readPoiShortlist("u1", "conv-1").orElseThrow();
+        assertThat(back.pois()).extracting(com.travelscope.collab.PoiShortlist.PoiItem::name)
+                .as("截断保留前 4×days 且保序")
+                .containsExactly("名1", "名2", "名3", "名4", "名5", "名6", "名7", "名8");
+    }
+
+    @Test
+    void selectShortlistWithinCapNotTruncated() {
+        workspace.writeIntakeResult("u1", "conv-1", intake()); // days=2 → 上限 8，传 8 个恰好不截
+        when(attractionTool.searchPois(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyInt())).thenAnswer(inv -> {
+            String keyword = inv.getArgument(1);
+            return "{\"attractions\":[{\"name\":\"" + keyword + "\",\"location\":\"120.15,30.24\","
+                    + "\"rating\":4.8,\"source\":\"高德\"}]}";
+        });
+
+        String result = tools.select_poi_shortlist("conv-1", "名1,名2,名3,名4,名5,名6,名7,名8", null, null, ctx);
+
+        assertThat(result).startsWith("POI 筛选完成").doesNotContain("截断");
+        assertThat(workspace.readPoiShortlist("u1", "conv-1").orElseThrow().pois()).hasSize(8);
+    }
+
     // ==================== plan_route 无 unplaced 自动链 ====================
 
     @Test
