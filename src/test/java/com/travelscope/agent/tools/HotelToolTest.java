@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.config.AppProperties;
 import com.travelscope.tool.flyai.FlyaiCliTool;
+import io.agentscope.core.agent.RuntimeContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -125,6 +126,40 @@ class HotelToolTest {
                 assertNotNull(first.getString("name"), "POI 名称不应为 null");
                 log.info("找到 {} 个餐饮点，第一个: {}", count, first.getString("name"));
             }
+        }
+    }
+
+    @Test
+    @DisplayName("图片透传与图集收集（v5-F2，集成 - 需要有效 AMAP_WEB_API_KEY）：4 参 searchHotels 带 ctx 收集器")
+    @EnabledIfEnvironmentVariable(named = "AMAP_WEB_API_KEY", matches = ".+")
+    void testSearchHotels_imageCollector() {
+        appProperties.getAmap().setWebApiKey(System.getenv("AMAP_WEB_API_KEY"));
+        ImageCollector collector = new ImageCollector();
+        RuntimeContext ctx = RuntimeContext.builder().userId("u1").sessionId("c1").build();
+        ctx.put(ImageCollector.CTX_KEY, collector);
+
+        String result = hotelTool.searchHotels("杭州", "西湖", 5, ctx);
+
+        JSONObject json = JSON.parseObject(result);
+        assertTrue(json.containsKey("hotels") || json.containsKey("error"));
+        if (!json.containsKey("hotels")) {
+            return;
+        }
+        var hotels = json.getJSONArray("hotels");
+        int withPic = 0;
+        for (int i = 0; i < hotels.size(); i++) {
+            String url = hotels.getJSONObject(i).getString("imageUrl");
+            if (url != null) {
+                withPic++;
+                assertTrue(url.startsWith("https://"), "imageUrl 必须已归一 https: " + url);
+            }
+        }
+        log.info("酒店 {} 条，其中带图 {} 条，收集器收到 {} 条", hotels.size(), withPic, collector.refs().size());
+        // 带图条目应全部进收集器（URL 去重可能略少）；收集到的 URL 全部 https
+        assertTrue(collector.refs().size() <= withPic);
+        if (withPic > 0) {
+            assertTrue(!collector.refs().isEmpty(), "有带图条目时收集器不应为空");
+            collector.refs().forEach(r -> assertTrue(r.url().startsWith("https://")));
         }
     }
 }

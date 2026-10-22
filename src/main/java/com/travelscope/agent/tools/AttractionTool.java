@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.config.AppProperties;
 import com.travelscope.tool.flyai.FlyaiCliTool;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import okhttp3.HttpUrl;
@@ -76,7 +77,8 @@ public class AttractionTool {
             @ToolParam(name = "keyword", description = "搜索关键词，如 '西湖'、'博物馆'、'古镇'，传空字符串则搜索城市热门景点")
             String keyword,
             @ToolParam(name = "pageSize", description = "返回结果数量，建议5-20")
-            int pageSize
+            int pageSize,
+            RuntimeContext ctx
     ) {
         log.info("搜索景点POI（双源）: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
         boolean flyaiEnabled = appProperties.getFlyai().isEnabled();
@@ -102,12 +104,19 @@ public class AttractionTool {
             if (merged.isEmpty()) {
                 return errorResult("飞猪与高德均未查到景点（city=" + city + " keyword=" + keyword + "）");
             }
+            // v5-F2 图片透传：ctx 有收集器（非 PLANNING 轮）时把 imageUrl 收进数组，收尾代码组装图集
+            ImageCollector.collectFrom(ctx, merged);
             JSONObject result = new JSONObject();
             result.put("count", merged.size());
             result.put("attractions", merged);
             result.put("sources", Map.of("飞猪", flyaiPois.size(), "高德", amapPois.size()));
             return JSON.toJSONString(result);
         }
+    }
+
+    /** 程序内调用重载（PoiRetrievalService 硬补全/单测等无收集器场景）——委托 4 参主方法 */
+    public String searchPois(String city, String keyword, int pageSize) {
+        return searchPois(city, keyword, pageSize, null);
     }
 
     // ==================== 飞猪源 ====================
@@ -138,6 +147,7 @@ public class AttractionTool {
                     poi.put("ticketName", ticket.getString("ticketName"));
                 }
                 poi.put("jumpUrl", raw.getString("jumpUrl"));
+                poi.put("imageUrl", ImageCollector.flyaiImageUrl(raw));
                 poi.put("source", SOURCE_FLIGGY);
                 pois.add(poi);
             }
@@ -202,6 +212,7 @@ public class AttractionTool {
                 item.put("rating", bizExt.getString("rating"));
                 item.put("cost", bizExt.getString("cost"));
             }
+            item.put("imageUrl", ImageCollector.normalizeUrl(ImageCollector.amapPhotoUrl(poi)));
             item.put("source", SOURCE_AMAP);
             attractions.add(item);
         }
@@ -241,7 +252,8 @@ public class AttractionTool {
             @ToolParam(name = "radius", description = "搜索半径（米），建议1000-5000")
             int radius,
             @ToolParam(name = "pageSize", description = "返回结果数量，建议5-20")
-            int pageSize
+            int pageSize,
+            RuntimeContext ctx
     ) {
         String apiKey = appProperties.getAmap().getWebApiKey();
         String baseUrl = appProperties.getAmap().getBaseUrl();
@@ -270,15 +282,20 @@ public class AttractionTool {
                 return errorResult("高德 API 请求失败，HTTP " + response.code());
             }
             String body = response.body() != null ? response.body().string() : "{}";
-            return parseNearbyResults(body);
+            return parseNearbyResults(body, ctx);
         } catch (IOException e) {
             log.error("周边景点搜索异常: location={}", location, e);
             return errorResult("周边景点搜索失败: " + e.getMessage());
         }
     }
 
-    /** 解析周边景点结果（含 distance 字段） */
-    private String parseNearbyResults(String body) {
+    /** 程序内调用重载（无收集器场景）——委托 4 参主方法 */
+    public String searchNearbyAttractions(String location, int radius, int pageSize) {
+        return searchNearbyAttractions(location, radius, pageSize, null);
+    }
+
+    /** 解析周边景点结果（含 distance 字段；ctx 有收集器时同步收集 imageUrl） */
+    private String parseNearbyResults(String body, RuntimeContext ctx) {
         JSONObject json = JSON.parseObject(body);
         if (json.getIntValue("status") != 1) {
             return errorResult("高德 API 返回错误: " + json.getString("info"));
@@ -300,8 +317,10 @@ public class AttractionTool {
             item.put("tel", poi.getString("tel"));
             item.put("type", poi.getString("type"));
             item.put("distance", poi.getString("distance"));
+            item.put("imageUrl", ImageCollector.normalizeUrl(ImageCollector.amapPhotoUrl(poi)));
             attractions.add(item);
         }
+        ImageCollector.collectFrom(ctx, attractions);
         JSONObject result = new JSONObject();
         result.put("count", attractions.size());
         result.put("attractions", attractions);

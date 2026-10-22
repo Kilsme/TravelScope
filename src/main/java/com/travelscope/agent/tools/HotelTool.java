@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.config.AppProperties;
 import com.travelscope.tool.flyai.FlyaiCliTool;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import okhttp3.HttpUrl;
@@ -90,7 +91,8 @@ public class HotelTool {
             @ToolParam(name = "keyword", description = "搜索关键词，如酒店名或品牌名称，传空字符串则搜索全部酒店")
             String keyword,
             @ToolParam(name = "pageSize", description = "返回结果数量，建议5-20")
-            int pageSize
+            int pageSize,
+            RuntimeContext ctx
     ) {
         log.info("搜索酒店（双源）: city={}, keyword={}, pageSize={}", city, keyword, pageSize);
         boolean flyaiEnabled = appProperties.getFlyai().isEnabled();
@@ -116,12 +118,19 @@ public class HotelTool {
             if (merged.isEmpty()) {
                 return errorResult("飞猪与高德均未查到酒店（city=" + city + " keyword=" + keyword + "）");
             }
+            // v5-F2 图片透传：ctx 有收集器（非 PLANNING 轮）时把 imageUrl 收进数组，收尾代码组装图集
+            ImageCollector.collectFrom(ctx, merged);
             JSONObject result = new JSONObject();
             result.put("count", merged.size());
             result.put("hotels", merged);
             result.put("sources", Map.of("飞猪", flyaiHotels.size(), "高德", amapHotels.size()));
             return JSON.toJSONString(result);
         }
+    }
+
+    /** 程序内调用重载（PoiRetrievalService/单测等无收集器场景）——委托 4 参主方法 */
+    public String searchHotels(String city, String keyword, int pageSize) {
+        return searchHotels(city, keyword, pageSize, null);
     }
 
     // ==================== 飞猪源 ====================
@@ -146,6 +155,7 @@ public class HotelTool {
                 hotel.put("price", raw.getString("price"));
                 hotel.put("score", raw.getString("score"));
                 hotel.put("detailUrl", raw.getString("detailUrl"));
+                hotel.put("imageUrl", ImageCollector.flyaiImageUrl(raw));
                 hotel.put("source", SOURCE_FLIGGY);
                 hotels.add(hotel);
             }
@@ -197,6 +207,7 @@ public class HotelTool {
                 hotel.put("location", poi.getString("location"));
                 hotel.put("tel", poi.getString("tel"));
                 hotel.put("type", poi.getString("type"));
+                hotel.put("imageUrl", ImageCollector.normalizeUrl(ImageCollector.amapPhotoUrl(poi)));
                 hotel.put("source", SOURCE_AMAP);
                 hotels.add(hotel);
             }
@@ -248,7 +259,8 @@ public class HotelTool {
             @ToolParam(name = "type", description = "POI类型，如 '餐饮服务'、'风景名胜'、'住宿服务'")
             String type,
             @ToolParam(name = "radius", description = "搜索半径（米），默认1000")
-            int radius
+            int radius,
+            RuntimeContext ctx
     ) {
         String apiKey = appProperties.getAmap().getWebApiKey();
         String baseUrl = appProperties.getAmap().getBaseUrl();
@@ -285,15 +297,20 @@ public class HotelTool {
                 return errorResult("高德 API 请求失败，HTTP " + response.code());
             }
             String body = response.body() != null ? response.body().string() : "{}";
-            return parsePoiResults(body);
+            return parsePoiResults(body, ctx);
         } catch (IOException e) {
             log.error("周边搜索异常: location={}", location, e);
             return errorResult("周边搜索失败: " + e.getMessage());
         }
     }
 
-    /** 解析周边搜索结果 */
-    private String parsePoiResults(String body) {
+    /** 程序内调用重载（无收集器场景）——委托 4 参主方法 */
+    public String searchNearbyPois(String location, String type, int radius) {
+        return searchNearbyPois(location, type, radius, null);
+    }
+
+    /** 解析周边搜索结果（ctx 有收集器时同步收集 imageUrl——餐馆图集的代码组装数据源） */
+    private String parsePoiResults(String body, RuntimeContext ctx) {
         JSONObject json = JSON.parseObject(body);
         int status = json.getIntValue("status");
         if (status != 1) {
@@ -317,8 +334,10 @@ public class HotelTool {
             item.put("tel", poi.getString("tel"));
             item.put("type", poi.getString("type"));
             item.put("distance", poi.getString("distance"));
+            item.put("imageUrl", ImageCollector.normalizeUrl(ImageCollector.amapPhotoUrl(poi)));
             poiList.add(item);
         }
+        ImageCollector.collectFrom(ctx, poiList);
 
         JSONObject result = new JSONObject();
         result.put("count", poiList.size());

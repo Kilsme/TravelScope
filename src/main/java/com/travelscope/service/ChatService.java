@@ -7,6 +7,7 @@ import com.travelscope.agent.IntentRouterMiddleware;
 import com.travelscope.agent.IntentType;
 import com.travelscope.agent.ItineraryAgent;
 import com.travelscope.agent.TravelMasterAgent;
+import com.travelscope.agent.tools.ImageCollector;
 import com.travelscope.common.ActivityPresenter;
 import com.travelscope.common.TracingHelper;
 import com.travelscope.dto.ChatEvent;
@@ -873,6 +874,17 @@ public class ChatService {
         String agentSessionId = SESSION_PREFIX + conversation.getId();
         ctx.put(CTX_COLLAB_DIR_KEY,
                 taskWorkspaceService.collabDirRelativePath(agentSessionId));
+        // v5-F2 图片透传（2026-10-22）：非 PLANNING 轮注入图片收集器——HotelTool/AttractionTool
+        // 搜索入口把 imageUrl 收进数组，流收尾由代码组装图集追加（不靠提示词，LLM 无法丢失
+        // 或伪造——URL 唯一来源是工具真实返回的数组）。PLANNING 泳道不注入：行程图片走
+        // poi_shortlist 契约字段，由 ItineraryAssembler/TaskResultFormatter 代码渲染。
+        final ImageCollector imageCollector;
+        if (type != IntentType.PLANNING) {
+            imageCollector = new ImageCollector();
+            ctx.put(ImageCollector.CTX_KEY, imageCollector);
+        } else {
+            imageCollector = null;
+        }
         // 前端可见性改造（2026-10-04，2026-10-05 模型网关迁移后再校准 420→600）：
         // PLANNING 轮强制 spawn 同步等待 600s——框架默认同步等待仅 30s；qwen 时期全链
         // 实测 275~320s 配 420s，迁移 glm-5-3-260814（thinking 禁用）+ RAG 语义路降级
@@ -929,15 +941,31 @@ public class ChatService {
         // 查询类不被进行中的长规划拖慢（独立链路 + 各自超时保护），超时 → SSE error 兜底文案
         Duration laneTimeout = llmGateway.laneTimeout(type == IntentType.PLANNING);
         boolean planning = type == IntentType.PLANNING;
-        return mapAgentEventStream(activeAgent.streamEvents(msg, ctx),
-                        TravelMasterAgent.AGENT_NAME, conversation, type, planning, laneTimeout,
-                        replyBuf, thinkingFull, usageTracker, observation)
-                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
-                    log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
-                            type, laneTimeout.toSeconds(), conversation.getId());
-                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
-                            "处理超时了（" + laneTimeout.toSeconds() + " 秒上限），请稍后重试或换个问法～"));
-                });
+        return Flux.concat(
+                mapAgentEventStream(activeAgent.streamEvents(msg, ctx),
+                                TravelMasterAgent.AGENT_NAME, conversation, type, planning, laneTimeout,
+                                replyBuf, thinkingFull, usageTracker, observation)
+                        .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                            log.warn("泳道超时: 意图={}, 泳道={}s, conversationId={}",
+                                    type, laneTimeout.toSeconds(), conversation.getId());
+                            return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR,
+                                    "处理超时了（" + laneTimeout.toSeconds() + " 秒上限），请稍后重试或换个问法～"));
+                        }),
+                // v5-F2 图集尾段：主流完成后代码组装——append 进 replyBuf（落库与 done 载荷
+                // 都带上）同时发一条 delta（正文已流式输出的轮次前端也能显示）；
+                // 与已流出正文按 URL 去重（LLM 若自写了同图不重复）；主流真异常时 concat 不订阅尾段
+                Flux.defer(() -> {
+                    if (imageCollector == null) {
+                        return Flux.empty();
+                    }
+                    String gallery = ImageCollector.toGalleryMarkdown(
+                            imageCollector.refs(), replyBuf.toString());
+                    if (gallery.isBlank()) {
+                        return Flux.empty();
+                    }
+                    replyBuf.append(gallery);
+                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_DELTA, gallery));
+                }));
     }
 
     /**

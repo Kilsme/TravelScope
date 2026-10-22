@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Markdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import '../App.css'
 import { createConversation, listConversations, listMessages, streamChat } from '../api/chat'
+import MarkdownView from '../components/MarkdownView'
 import RequirementFormCard from '../components/RequirementFormCard'
 import ReviewReportCard from '../components/ReviewReportCard'
-import { defuseGfmTildes, sanitizeMarkdown } from '../markdown'
 import type {
   AgentActivity,
   ChatMessage,
@@ -17,9 +15,9 @@ import type {
   RequirementFormPayload,
 } from '../types'
 
-/** Markdown 渲染（GFM + 流式脏符号清理 + 波浪号删除线免疫——工具函数与缘由见 markdown.ts，全站出口共用） */
+/** Markdown 渲染（全站共享出口 MarkdownView：GFM+流式清理+波浪号免疫+图片直连定制，见 components/MarkdownView.tsx） */
 function Md({ text }: { text: string }) {
-  return <Markdown remarkPlugins={[remarkGfm]}>{defuseGfmTildes(sanitizeMarkdown(text))}</Markdown>
+  return <MarkdownView text={text} />
 }
 
 const INTENT_LABELS: Record<string, string> = {

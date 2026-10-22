@@ -28,8 +28,18 @@ export function sanitizeMarkdown(text: string): string {
  * GFM 删除线免疫（conv-78 实证）：remark-gfm 把单个 ~ 当删除线定界符，
  * 同一文本行出现两个 ~（如「10-22 小雨 8~18℃；10-23 晴 9~16℃」）即配对——
  * 波浪号被当语法字符吞掉、中间文字加删除线，渲染成「818℃…916℃」。
- * 全站不用删除线语法，~ 统一转全角～零副作用，对任何来源文本免疫。
+ * 全站不用删除线语法，~ 统一转全角～零副作用。
+ * 豁免（v5-F2 图片直显）：markdown 链接/图片语法 [..](..) 整段保护后再替换——
+ * CDN 图片 URL 含 ~ 时被改写会直接裂图，替换后按占位符还原。
  */
 export function defuseGfmTildes(text: string): string {
-  return text.replace(/~/g, '～')
+  if (!text) return text
+  const spans: string[] = []
+  const guarded = text.replace(/\[[^\]]*\]\([^)]*\)/g, (m) => {
+    spans.push(m)
+    return `\u0000${spans.length - 1}\u0000`
+  })
+  return guarded
+    .replace(/~/g, '～')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => spans[Number(i)] ?? '')
 }
