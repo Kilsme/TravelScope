@@ -50,7 +50,8 @@ class ChatServiceSseFallbackMessageTest {
                 mock(TripRequirementStore.class), mock(LlmGateway.class), mock(LoadShedService.class),
                 mock(ConversationSummaryService.class), TracingHelper.NOOP, new AppProperties(),
                 mock(Model.class), mock(PointsService.class), mock(RequirementWorkflowService.class),
-                mock(TaskBacklogPlanner.class), mock(HarnessAgent.class));
+                mock(TaskBacklogPlanner.class), mock(HarnessAgent.class),
+                mock(com.travelscope.service.MinioService.class), mock(io.agentscope.core.model.Model.class));
         return service;
     }
 

@@ -10,6 +10,9 @@ export interface ChatMessage {
   id?: number
   role: 'user' | 'assistant'
   content: string
+  /** 用户图片（私人讲解员图片轮）：当前会话为 data URL（内存压缩结果），历史回显为后端
+   *  能力 URL /api/chat/images/{messageId}/{nonce}.jpg（MinIO 代理端点）；null = 纯文本 */
+  image?: string
   /** 前端临时状态：Agent 活动流（agent_status SSE 事件累积；仅本轮流式期间使用） */
   activities?: AgentActivity[]
   /** 前端临时状态：意图分类结果 */

@@ -298,13 +298,23 @@ public class AgentConfig {
      * 质检评分模型池 Bean（v5-F3 reviewer 池：standaloneReviewer / planner modelResolver 分流 /
      * RubricScorer / PosthocScorer，独立列表独立熔断，将来换更强模型只改本池配置）
      * <p>
-     * providers 来自 {@code travelscope.model-pool.chat.reviewer}（当前 Kimi-k3 优先 +
-     * glm-5-3-260814 兜底）；未配置时回落 model-gateway.reviewer-model 单模型（GLMFormatter）。
+     * providers 来自 {@code travelscope.model-pool.chat.reviewer}（当前 glm 优先 +
+     * kimi-k3 兜底）；未配置时回落 model-gateway.reviewer-model 单模型（GLMFormatter）。
      * </p>
      */
     @Bean
     public Model gatewayReviewerModel(ProviderProbeScheduler probeScheduler) {
         return buildChatPool("reviewer", appProperties.getModelPool().getChat().getReviewer(), probeScheduler);
+    }
+
+    /**
+     * 讲解专用模型池 Bean（私人讲解员图片轮）：多模态单轮调用专用——glm-5-3 无视觉，
+     * 池内固定 kimi-k3（网关强制开思考、看图慢，独立池与主链路互不拖累）。
+     * ChatService.guideEventStream 消费；未配置时回落 model-gateway 单模型。
+     */
+    @Bean
+    public Model guideModelPool(ProviderProbeScheduler probeScheduler) {
+        return buildChatPool("guide", appProperties.getModelPool().getChat().getGuide(), probeScheduler);
     }
 
     /**

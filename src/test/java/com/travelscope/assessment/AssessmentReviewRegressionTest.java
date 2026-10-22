@@ -38,6 +38,18 @@ class AssessmentReviewRegressionTest {
         var parsed=mapper.readTree(result);assertEquals("[REDACTED]",parsed.get("api_key").asText());assertTrue(parsed.get("ok").asBoolean());
     }
 
+    @Test void oversizeTextIsTruncatedNotPersistedVerbatim() {
+        var redactor=new PayloadRedactor(mapper);
+        String huge="A".repeat(150_000);
+        // 顶层超长文本 → 占位符（图片 base64 随消息进观测 span 的防线）
+        assertTrue(redactor.redact(huge).startsWith("[TRUNCATED: LONG_TEXT len=150000]"));
+        // 嵌在 JSON 对象里的超长值同样截断（content_blocks/消息体场景）
+        assertTrue(redactor.redact(java.util.Map.of("data",huge))
+                .startsWith("{\"data\":\"[TRUNCATED: LONG_TEXT len=150000]\"}"));
+        // 阈值内文本原样保留（脱敏规则不受影响）
+        assertEquals("正常文本",redactor.redact("正常文本"));
+    }
+
     @Test void embeddedJsonPreservesOuterAndInnerTypes() throws Exception {
         var payload=Map.of("text","{\"password\":\"synthetic-password\",\"count\":7}","nested",List.of(Map.of("authorization","synthetic-auth")));
         String result=new PayloadRedactor(mapper).redact(payload);assertFalse(result.contains("synthetic-password"));assertFalse(result.contains("synthetic-auth"));

@@ -9,13 +9,17 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 
 /**
  * 消息实体（对应 messages 表）
  * <p>
- * 仅映射核心列；JSONB 列（content_blocks/tool_calls/metadata）暂不映射，插入时保持 NULL。
+ * content_blocks 已映射（JSONB，私人讲解员图片引用：
+ * {@code {"images":[{"mediaType":"image/jpeg","objectKey":"chat-images/..."}]}}——
+ * 存 MinIO 对象引用而非 base64 本体）；tool_calls/metadata 仍不映射，插入保持 NULL。
  * </p>
  */
 @Getter
@@ -42,9 +46,14 @@ public class Message {
     @Column(nullable = false, length = 20)
     private String role;
 
-    /** 消息文本内容 */
+    /** 消息文本内容（图片轮为占位文本「[图片] {问题}」，base64 绝不进此列） */
     @Column(nullable = false, columnDefinition = "text")
     private String content;
+
+    /** 多模态内容块引用（JSONB；null = 纯文本消息） */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "content_blocks", columnDefinition = "jsonb")
+    private String contentBlocks;
 
     @Column(name = "model_name", length = 128)
     private String modelName;

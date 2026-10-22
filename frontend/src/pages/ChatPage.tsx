@@ -79,14 +79,52 @@ function ActivityStream({ activities }: { activities: AgentActivity[] }) {
   )
 }
 
+/**
+ * 图片压缩（私人讲解员，2026-10-22）：canvas 重绘最长边 1600px、JPEG q0.8；
+ * base64 超 1.2MB 自动降质（网关请求体 2MiB 硬上限，留 prompt/历史余量）。
+ * 返回裸 base64（不带 data: 前缀，后端 Base64Source 约定）。
+ */
+async function compressImage(file: File): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(reader.result as string)
+    reader.onerror = () => reject(new Error('读取图片失败'))
+    reader.readAsDataURL(file)
+  })
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image()
+    el.onload = () => resolve(el)
+    el.onerror = () => reject(new Error('图片解码失败'))
+    el.src = dataUrl
+  })
+  const MAX_EDGE = 1600
+  const scale = Math.min(1, MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight))
+  const w = Math.max(1, Math.round(img.naturalWidth * scale))
+  const h = Math.max(1, Math.round(img.naturalHeight * scale))
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+  let quality = 0.8
+  let base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1]
+  while (base64.length > 1_200_000 && quality > 0.3) {
+    quality -= 0.15
+    base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1]
+  }
+  return base64
+}
+
 function ChatPage() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [activeId, setActiveId] = useState<number | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [streaming, setStreaming] = useState(false)
+  /** 待发送图片（私人讲解员）：raw = 裸 base64（发后端），preview = data URL（气泡预览） */
+  const [pendingImage, setPendingImage] = useState<{ raw: string; preview: string } | null>(null)
   const abortRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -107,7 +145,8 @@ function ChatPage() {
         if (list.length > 0) {
           setActiveId(list[0].id) // 列表按 updatedAt 倒序，[0] 即最近会话
           const history = await listMessages(list[0].id)
-          setMessages(history.map((m) => ({ id: m.id, role: m.role, content: m.content })))
+          // image = 后端能力 URL（MinIO 代理端点），历史图片轮气泡回显
+          setMessages(history.map((m) => ({ id: m.id, role: m.role, content: m.content, image: m.image })))
         }
       } catch (e) {
         console.error('加载会话列表失败', e)
@@ -117,14 +156,14 @@ function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, pendingImage])
 
   const loadHistory = useCallback(async (id: number) => {
     setActiveId(id)
     setMessages([])
     try {
       const history = await listMessages(id)
-      setMessages(history.map((m) => ({ id: m.id, role: m.role, content: m.content })))
+      setMessages(history.map((m) => ({ id: m.id, role: m.role, content: m.content, image: m.image })))
     } catch (e) {
       console.error('加载历史消息失败', e)
     }
@@ -136,6 +175,17 @@ function ChatPage() {
     setActiveId(conv.id)
     setMessages([])
   }, [refreshConversations])
+
+  /** 选择/粘贴图片 → 压缩 → 待发送预览（替换式：一次一张） */
+  const handleImageFile = useCallback(async (file: File | null | undefined) => {
+    if (!file || !file.type.startsWith('image/')) return
+    try {
+      const raw = await compressImage(file)
+      setPendingImage({ raw, preview: `data:image/jpeg;base64,${raw}` })
+    } catch (e) {
+      console.error('图片处理失败', e)
+    }
+  }, [])
 
   /**
    * SSE 事件应用（发送消息与清单提交共用，避免两份处理逻辑漂移）。
@@ -245,9 +295,11 @@ function ChatPage() {
 
   const handleSend = useCallback(async () => {
     const text = input.trim()
-    if (!text || streaming) return
+    const image = pendingImage
+    if ((!text && !image) || streaming) return
 
     setInput('')
+    setPendingImage(null)
     setStreaming(true)
     abortRef.current = false
 
@@ -274,21 +326,26 @@ function ChatPage() {
       }
     }
 
-    const userMsg: ChatMessage = { role: 'user', content: text }
+    const userMsg: ChatMessage = { role: 'user', content: text, image: image?.preview }
     const assistantMsg: ChatMessage = { role: 'assistant', content: '', streaming: true, activities: [] }
     setMessages((prev) => [...prev, userMsg, assistantMsg])
 
     try {
-      await streamChat(convId, text, (event: ChatEvent) => {
-        if (abortRef.current) return false
-        applyEvent(event)
-      })
+      await streamChat(
+        convId,
+        text,
+        (event: ChatEvent) => {
+          if (abortRef.current) return false
+          applyEvent(event)
+        },
+        image?.raw,
+      )
     } catch (e) {
       appendAssistantError(e)
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, activeId, refreshConversations, applyEvent])
+  }, [input, streaming, activeId, pendingImage, refreshConversations, applyEvent])
 
   /** 清单提交（S2.3）：结构化消息走既有 /api/chat/stream 通道（不新增端点） */
   const submitForm = useCallback(
@@ -431,7 +488,10 @@ function ChatPage() {
                     )
                   ) : null
                 ) : (
-                  <div className="bubble-content">{msg.content}</div>
+                  <div className="bubble-content">
+                    {msg.image && <img className="user-image" src={msg.image} alt="用户图片" />}
+                    {msg.content}
+                  </div>
                 )}
                 {msg.streaming && <span className="cursor">▌</span>}
                 {msg.requirementForm && (
@@ -455,28 +515,70 @@ function ChatPage() {
         </div>
 
         <div className="input-area">
-          <textarea
-            value={input}
-            placeholder="输入你的问题，例如：帮我规划杭州三日游…"
-            rows={2}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault()
-                handleSend()
+          <div className="input-main">
+            {/* 待发送图片预览（私人讲解员）：一次一张，可移除 */}
+            {pendingImage && (
+              <div className="image-preview">
+                <img src={pendingImage.preview} alt="待发送图片" />
+                <button className="image-remove" onClick={() => setPendingImage(null)} title="移除图片">
+                  ✕
+                </button>
+                <span className="image-hint">发送后将由 AI 讲解这张图片（可附文字提问）</span>
+              </div>
+            )}
+            <textarea
+              value={input}
+              placeholder={
+                pendingImage ? '可附提问（如：这是哪里？帮我规划去这里的行程），留空则直接讲解…' : '输入你的问题，例如：帮我规划杭州三日游…'
               }
+              rows={2}
+              onChange={(e) => setInput(e.target.value)}
+              onPaste={(e) => {
+                const file = Array.from(e.clipboardData.files).find((f) => f.type.startsWith('image/'))
+                if (file) {
+                  e.preventDefault()
+                  handleImageFile(file)
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  handleSend()
+                }
+              }}
+              disabled={streaming}
+            />
+          </div>
+          <div className="input-actions">
+            <button
+              className="photo-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={streaming}
+              title="添加照片提问"
+            >
+              📷
+            </button>
+            {streaming ? (
+              <button className="stop-btn" onClick={handleStop}>
+                停止
+              </button>
+            ) : (
+              <button className="send-btn" onClick={handleSend} disabled={!input.trim() && !pendingImage}>
+                发送
+              </button>
+            )}
+          </div>
+          {/* 隐藏文件选择（照片提问入口；粘贴截图走 textarea onPaste 同一压缩管线） */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            hidden
+            onChange={(e) => {
+              handleImageFile(e.target.files?.[0])
+              e.target.value = '' // 允许重复选择同一文件
             }}
-            disabled={streaming}
           />
-          {streaming ? (
-            <button className="stop-btn" onClick={handleStop}>
-              停止
-            </button>
-          ) : (
-            <button className="send-btn" onClick={handleSend} disabled={!input.trim()}>
-              发送
-            </button>
-          )}
         </div>
       </main>
     </div>

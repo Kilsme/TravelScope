@@ -33,19 +33,21 @@ async function* parseSse(reader: ReadableStreamDefaultReader<Uint8Array>) {
 }
 
 /**
- * 流式对话：POST /api/chat/stream 读取 SSE（认证：Authorization: Bearer）
+ * 流式对话：POST /api/chat/stream 读取 SSE（认证：Authorization Bearer）
  *
  * @param onEvent 每个事件回调；返回 false 可中止读取
+ * @param imageBase64 私人讲解员图片（裸 base64，canvas 压缩后 JPEG；文本与图片至少其一）
  */
 export async function streamChat(
   conversationId: number | null,
   message: string,
   onEvent: (event: ChatEvent) => boolean | void,
+  imageBase64?: string,
 ): Promise<void> {
   const resp = await apiFetch(`${BASE}/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify({ conversationId, message }),
+    body: JSON.stringify({ conversationId, message, imageBase64: imageBase64 ?? null }),
   })
 
   if (!resp.ok || !resp.body) {

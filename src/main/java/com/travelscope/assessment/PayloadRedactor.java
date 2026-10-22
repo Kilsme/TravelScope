@@ -27,6 +27,14 @@ public class PayloadRedactor {
         } catch (Exception e) { return "[UNSERIALIZABLE]"; }
     }
 
+    /**
+     * 超长文本截断阈值（2026-10-22 私人讲解员）：图片 base64 会随消息进入观测 span 的
+     * payload（ObservedModel 把 messages 交给 store.span）——10 万字符以上的文本值以
+     * 占位符替代，防 assessment_payloads 单条膨胀至 MB 级；合法的超大工具结果同受影响
+     * （观测库只做审计，截断无害）。
+     */
+    private static final int MAX_TEXT_LENGTH = 100_000;
+
     private JsonNode node(JsonNode value, int depth) throws Exception {
         if (depth > MAX_DEPTH) return TextNode.valueOf("[REDACTED: NESTING_LIMIT]");
         if (value.isObject()) {
@@ -60,10 +68,15 @@ public class PayloadRedactor {
             } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) { /* malformed text: fail closed below */ }
         }
         if (CREDENTIAL_TEXT.matcher(value).find()) return "[REDACTED: CREDENTIAL_TEXT]";
-        return value.replaceAll("(?i)Bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")
+        String scrubbed = value.replaceAll("(?i)Bearer\\s+[A-Za-z0-9._~+/=-]+", "Bearer [REDACTED]")
                 .replaceAll("(?i)sk-[A-Za-z0-9_-]+", "[KEY]")
                 .replaceAll("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "[EMAIL]")
                 .replaceAll("(?<!\\d)1[3-9]\\d{9}(?!\\d)", "[PHONE]")
                 .replaceAll("(?<!\\d)\\d{17}[\\dXx](?!\\d)", "[ID]");
+        // 超长文本（图片 base64 等）截断为占位符——脱敏正则对 MB 级字符串逐个回溯代价高，
+        // 先判长度再跑正则（base64 字符集不会命中任何脱敏规则，直接占位）
+        return scrubbed.length() > MAX_TEXT_LENGTH
+                ? "[TRUNCATED: LONG_TEXT len=" + scrubbed.length() + "]"
+                : scrubbed;
     }
 }

@@ -107,7 +107,8 @@ class ChatServicePlanningOrchestrationTest {
                 conversationService, workspace, tripRequirementStore, llmGateway, loadShedService,
                 conversationSummaryService, TracingHelper.NOOP, new AppProperties(),
                 gatewayChatModel, pointsService, requirementWorkflowService, taskBacklogPlanner,
-                itineraryPlanningAgent);
+                itineraryPlanningAgent, mock(com.travelscope.service.MinioService.class),
+                mock(io.agentscope.core.model.Model.class));
     }
 
     // ---------- 用例 1：缺项轮 → 只发 requirement_form（不进 step2，Agent 零交互） ----------

@@ -138,6 +138,11 @@ public class ChatService {
     /** S2.5 PLANNING 编排直持的行程规划 Agent（方案 B 决策：编排/渲染收归代码、不经 master
      *  中转——LLM 不确定性收敛到 planner 的执行本职；master 兜底链（v3）原样保留） */
     private final HarnessAgent itineraryPlanningAgent;
+    /** MinIO 对象存储（私人讲解员图片轮：上传图片本体，content_blocks 只存对象引用） */
+    private final MinioService minioService;
+    /** 讲解专用模型池（私人讲解员图片轮）：多模态调用固定 kimi-k3——glm-5-3 无视觉，
+     *  独立池与主链路选路互不拖累（kimi 看图慢但不影响分类/规划的 glm 快路径） */
+    private final Model guideModel;
 
     public ChatService(@org.springframework.beans.factory.annotation.Qualifier("travelMasterAgent") HarnessAgent travelMasterAgent,
                        IntentCascadeRouter intentCascadeRouter,
@@ -155,7 +160,10 @@ public class ChatService {
                        com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService,
                        com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner,
                        @org.springframework.beans.factory.annotation.Qualifier("itineraryPlanningAgent")
-                       HarnessAgent itineraryPlanningAgent) {
+                       HarnessAgent itineraryPlanningAgent,
+                       MinioService minioService,
+                       @org.springframework.beans.factory.annotation.Qualifier("guideModelPool")
+                       Model guideModel) {
         this.travelMasterAgent = travelMasterAgent;
         this.intentCascadeRouter = intentCascadeRouter;
         this.ragService = ragService;
@@ -183,6 +191,8 @@ public class ChatService {
         this.requirementWorkflowService = requirementWorkflowService;
         this.taskBacklogPlanner = taskBacklogPlanner;
         this.itineraryPlanningAgent = itineraryPlanningAgent;
+        this.minioService = minioService;
+        this.guideModel = guideModel;
     }
 
     /** 清单卡片结构化提交识别（JSON 对象且含 __form__ 键；与 workflow 的解析口径一致） */
@@ -623,7 +633,50 @@ public class ChatService {
             reactor.core.scheduler.Schedulers.newBoundedElastic(32, 10_000, "slow-lane", 60, true);
 
     public SseEmitter streamChat(Conversation conversation, Long userId, String userMessage) {
-        conversationService.saveUserMessage(conversation, userId, userMessage);
+        return streamChat(conversation, userId, userMessage, null);
+    }
+
+    /**
+     * 处理一轮对话（私人讲解员图片轮重载）：imageBase64 携带单张图片（裸 base64）。
+     * <ul>
+     *   <li><b>落库</b>：图片本体上传 MinIO（key {@code chat-images/{yyyyMMdd}/{uuid32}.{ext}}），
+     *       messages.content 存占位文本「[图片] {问题}」、content_blocks 存对象引用——base64
+     *       绝不进库，历史注入/摘要/标题四处纯文本假定不受影响；</li>
+     *   <li><b>场景一</b>（带图 + 非 PLANNING 意图）：讲解员单轮多模态调用（主池=kimi-k3 优先）
+     *       流式讲解；</li>
+     *   <li><b>场景二</b>（带图 + PLANNING 意图）：先流式讲解（累计讲解文本），再以
+     *       「原文+【图片讲解】」为输入走<b>原封不动的</b> planningOrchestration（表单可从
+     *       讲解文本预填目的地等字段）；</li>
+     *   <li>图片不进 Agent memory/会话状态；推理用请求内存中的 base64，不回读 MinIO。</li>
+     * </ul>
+     */
+    public SseEmitter streamChat(Conversation conversation, Long userId, String userMessage, String imageBase64) {
+        final boolean hasImage = imageBase64 != null && !imageBase64.isBlank();
+        // 图片轮问题文本缺省（意图分类与讲解共用；落库 content 亦用此文本）
+        final String question = hasImage && (userMessage == null || userMessage.isBlank())
+                ? DEFAULT_GUIDE_QUESTION : userMessage;
+        // 魔数嗅探结果（讲解消息的 Base64Source 需要 mediaType；非法格式在入口即拒绝）
+        final String imageMediaType;
+        if (hasImage) {
+            byte[] imageBytes = decodeImage(imageBase64);
+            imageMediaType = sniffImageMediaType(imageBytes);
+            String objectKey = "chat-images/" + java.time.LocalDate.now()
+                    .format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE)
+                    + "/" + java.util.UUID.randomUUID().toString().replace("-", "")
+                    + imageExtension(imageMediaType);
+            minioService.upload(objectKey, new java.io.ByteArrayInputStream(imageBytes),
+                    imageBytes.length, imageMediaType);
+            com.alibaba.fastjson2.JSONObject ref = new com.alibaba.fastjson2.JSONObject();
+            ref.put("mediaType", imageMediaType);
+            ref.put("objectKey", objectKey);
+            com.alibaba.fastjson2.JSONObject blocks = new com.alibaba.fastjson2.JSONObject();
+            blocks.put("images", com.alibaba.fastjson2.JSONArray.of(ref));
+            conversationService.saveUserMessage(conversation, userId,
+                    "[图片] " + question, blocks.toJSONString());
+        } else {
+            imageMediaType = null;
+            conversationService.saveUserMessage(conversation, userId, userMessage);
+        }
 
         // SSE 超时（并发改造 2026-09-23）：初始即给慢泳道档（泳道 300s + 30s 缓冲）——
         // 此前 0L 永不超时，客户端异常断开时连接与缓冲泄漏（onTimeout 永不触发）。
@@ -680,7 +733,7 @@ public class ChatService {
                     // Agent 自主路由（CHAT 档）：模型池全灭时错误经 mapAgentEventStream 的
                     // 通用分支转 SSE error「AI 服务暂时不可用，请联系管理员」，不再白屏
                     .fromCallable(() -> java.util.Optional.ofNullable(
-                            resolveIntent(conversation, userId, userMessage, observation)))
+                            resolveIntent(conversation, userId, hasImage ? question : userMessage, observation)))
                     .subscribeOn(Schedulers.boundedElastic())
                     .flatMapMany(classified -> {
                         IntentResult intent = classified.orElse(null);
@@ -728,17 +781,43 @@ public class ChatService {
                         // S2.5 PLANNING 五步编排（编排收归代码）：待输入/取消本轮结束；
                         // 收齐 → 登记→委派→等待→渲染全代码驱动；
                         // 返回 null（form 开关关闭 / workflow 异常）落回 v3 master 规划链兜底
-                        Flux<ChatEvent> planningFlow = planningIntent
-                                ? planningOrchestration(conversation, userId, userMessage, replyBuf,
-                                        thinkingFull, usageTracker, observation, "LIVE", false, null,
-                                        itineraryPlanningAgent)
-                                : null;
-                        return Flux.concat(
-                            Flux.just(toIntentEvent(intent)),
-                            planningFlow != null
+                        // 私人讲解员图片轮（question=缺省补齐后的问题文本）：
+                        //   场景二（PLANNING+图）：先讲解后表单——讲解流式推送并累计文本，
+                        //     完成后以「原文+【图片讲解】」为输入调原封不动的编排（表单可从
+                        //     讲解文本预填目的地等）；编排 null 兜底降级为纯讲解。
+                        //   场景一（非 PLANNING+图）：讲解员单轮多模态调用，不经 Agent。
+                        //   无图：planningFlow/runAgent 原路径逐字节不变。
+                        Flux<ChatEvent> execution;
+                        if (hasImage && planningIntent) {
+                            StringBuilder guideText = new StringBuilder();
+                            execution = Flux.concat(
+                                    guideEventStream(conversation, userId, question, imageBase64,
+                                            imageMediaType, replyBuf, guideText, observation),
+                                    Flux.defer(() -> {
+                                        String enriched = question + "\n\n【图片讲解】\n"
+                                                + truncateForExtractor(guideText.toString());
+                                        Flux<ChatEvent> flow = planningOrchestration(conversation, userId,
+                                                enriched, replyBuf, thinkingFull, usageTracker, observation,
+                                                "LIVE", false, null, itineraryPlanningAgent);
+                                        return flow != null ? flow : Flux.empty();
+                                    }));
+                        } else if (hasImage) {
+                            execution = guideEventStream(conversation, userId, question, imageBase64,
+                                    imageMediaType, replyBuf, new StringBuilder(), observation);
+                        } else {
+                            Flux<ChatEvent> planningFlow = planningIntent
+                                    ? planningOrchestration(conversation, userId, userMessage, replyBuf,
+                                            thinkingFull, usageTracker, observation, "LIVE", false, null,
+                                            itineraryPlanningAgent)
+                                    : null;
+                            execution = planningFlow != null
                                     ? planningFlow
                                     : runAgent(conversation, userId, userMessage, intent, replyBuf,
-                                            thinkingFull, usageTracker, observation))
+                                            thinkingFull, usageTracker, observation);
+                        }
+                        return Flux.concat(
+                            Flux.just(toIntentEvent(intent)),
+                            execution)
                             .doOnNext(event -> {
                                 if (ChatEvent.TYPE_ERROR.equals(event.getType())) observationStatus.set("FAILED");
                             })
@@ -779,6 +858,109 @@ public class ChatService {
         emitter.onError(t -> disposable.dispose());
         emitter.onCompletion(disposable::dispose);
         return emitter;
+    }
+
+    // ==================== 私人讲解员（图片提问，2026-10-22） ====================
+
+    /** 图片轮问题文本缺省（场景一/二共用：意图分类输入与讲解提问一致） */
+    private static final String DEFAULT_GUIDE_QUESTION = "讲解一下这个景点";
+
+    /** 讲解员人设：识别 → 讲解（是什么/背景历史/看点/游玩建议）→ 回答提问；防幻觉口径对齐全站 */
+    private static final String GUIDE_SYS_PROMPT = """
+            你是 TravelScope 的私人讲解员。用户会发送一张照片（可能附带提问），请：
+            1. 先识别照片中的地点或景物；识别不出就如实描述能看到的内容，不要编造地名；
+            2. 讲解它是什么、背景与历史、值得看的点；著名景点补充游玩建议（最佳时间、建议时长、注意事项）；
+            3. 用户附带提问时优先回答提问，讲解作为背景融入回答；
+            4. 照片与旅行无关时如实说明，并简短介绍照片内容；
+            5. 中文回答，条理清晰；不确定的信息明确说「不确定」，不编造。
+            """;
+
+    /**
+     * 讲解员单轮多模态调用：[TextBlock+ImageBlock] 消息直调讲解专用池（kimi-k3——glm 无
+     * 视觉），无工具循环、不进 Agent memory（图片不落会话状态，推理用请求内存中的
+     * base64）。响应块的文本逐块转 delta 事件并累计进 replyBuf（done/落库复用既有链路）
+     * 与 guideText（场景二供需求抽取预填目的地等字段）。失败 onErrorResume 转 error
+     * 事件（复用 sseFallbackMessage；模型池全灭等异常用户侧有明确文案）。
+     */
+    private Flux<ChatEvent> guideEventStream(Conversation conversation, Long userId, String question,
+            String imageBase64, String mediaType, StringBuilder replyBuf, StringBuilder guideText,
+            com.travelscope.assessment.ObservationContext observation) {
+        if (observation != null) {
+            observationStore.task(observation, "IMAGE_GUIDE");
+        }
+        List<io.agentscope.core.message.ContentBlock> parts = new java.util.ArrayList<>();
+        parts.add(io.agentscope.core.message.TextBlock.builder().text(question).build());
+        parts.add(io.agentscope.core.message.ImageBlock.builder()
+                .source(new io.agentscope.core.message.Base64Source(mediaType, imageBase64)).build());
+        io.agentscope.core.message.Msg guideSystem = io.agentscope.core.message.Msg.builder()
+                .role(io.agentscope.core.message.MsgRole.SYSTEM)
+                .textContent(GUIDE_SYS_PROMPT).build();
+        io.agentscope.core.message.Msg guideUser = io.agentscope.core.message.Msg.builder()
+                .role(io.agentscope.core.message.MsgRole.USER)
+                .content(parts).build();
+        return guideModel.stream(List.of(guideSystem, guideUser), List.of(), null)
+                .doOnNext(chunk -> {
+                    String delta = chunkText(chunk);
+                    if (!delta.isEmpty()) {
+                        replyBuf.append(delta);
+                        guideText.append(delta);
+                    }
+                })
+                .mapNotNull(chunk -> {
+                    String delta = chunkText(chunk);
+                    return delta.isEmpty() ? null : ChatEvent.of(ChatEvent.TYPE_DELTA, delta);
+                })
+                .onErrorResume(e -> {
+                    log.error("讲解员调用失败: conversationId={}", conversation.getId(), e);
+                    return Flux.just(ChatEvent.of(ChatEvent.TYPE_ERROR, sseFallbackMessage(e)));
+                });
+    }
+
+    /** 响应块的文本抽取（只取 TextBlock；usage/role-only 空块返回空串） */
+    private static String chunkText(io.agentscope.core.model.ChatResponse chunk) {
+        if (chunk.getContent() == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (var block : chunk.getContent()) {
+            if (block instanceof io.agentscope.core.message.TextBlock t && t.getText() != null) {
+                sb.append(t.getText());
+            }
+        }
+        return sb.toString();
+    }
+
+    /** base64 解码（容错空白字符；非法 base64 拒绝整轮） */
+    private static byte[] decodeImage(String imageBase64) {
+        try {
+            return java.util.Base64.getDecoder().decode(imageBase64.replaceAll("\\s", ""));
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("图片 base64 无法解码");
+        }
+    }
+
+    /** 魔数嗅探定 mediaType：JPEG(FF D8 FF)/PNG(89 50 4E 47)/WebP(RIFF…WEBP)；白名单外拒绝 */
+    private static String sniffImageMediaType(byte[] b) {
+        if (b.length >= 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8 && (b[2] & 0xFF) == 0xFF) {
+            return "image/jpeg";
+        }
+        if (b.length >= 4 && (b[0] & 0xFF) == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) {
+            return "image/png";
+        }
+        if (b.length >= 12 && b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46
+                && b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50) {
+            return "image/webp";
+        }
+        throw new IllegalArgumentException("不支持的图片格式（仅接受 JPEG/PNG/WebP）");
+    }
+
+    private static String imageExtension(String mediaType) {
+        return "image/png".equals(mediaType) ? ".png" : "image/webp".equals(mediaType) ? ".webp" : ".jpg";
+    }
+
+    /** 场景二讲解文本喂需求抽取器的截断上限（RequirementExtractor 单次 15s，控输入长度） */
+    private static String truncateForExtractor(String text) {
+        return text.length() > 800 ? text.substring(0, 800) + "…" : text;
     }
 
     /**

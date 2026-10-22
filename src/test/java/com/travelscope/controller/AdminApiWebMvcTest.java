@@ -80,6 +80,10 @@ class AdminApiWebMvcTest {
     @MockBean
     private ConversationService conversationService;
 
+    // ChatController 的图片能力端点依赖（私人讲解员，2026-10-22）
+    @MockBean
+    private com.travelscope.service.MinioService minioService;
+
     // AdminController 的过载降级状态查询依赖（2026-09-23 并发改造新增）
     @MockBean
     private com.travelscope.service.LoadShedService loadShedService;

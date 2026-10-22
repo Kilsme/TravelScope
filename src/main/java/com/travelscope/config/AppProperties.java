@@ -221,6 +221,9 @@ public class AppProperties {
         private ChatPoolSpec main = new ChatPoolSpec();
         /** reviewer 池：质检评分（更强模型，独立列表独立熔断） */
         private ChatPoolSpec reviewer = new ChatPoolSpec();
+        /** 讲解专用池（私人讲解员图片轮）：多模态模型——glm-5-3 无视觉，讲解固定走
+         *  kimi-k3（网关强制开思考，慢但能看图）；主池文本链路不受图片耗时拖累 */
+        private ChatPoolSpec guide = new ChatPoolSpec();
     }
 
     @Data

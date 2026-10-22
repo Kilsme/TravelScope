@@ -115,8 +115,8 @@ travelscope:
       chunk-timeout-seconds: 30
       embedding-timeout-seconds: 15
     chat:
-      # 主池：travel-master/planner/意图识别 L2+L3/需求抽取/会话摘要（glm 优先，kimi-k3 兜底）
-      # 注意：网关模型 id 为小写 kimi-k3（/models 实测），错写大小写会 model not found
+      # 主池：travel-master/planner/意图识别 L2+L3/需求抽取/会话摘要（glm 优先——thinking
+      # 可禁，v6 实测规划 57s/分类 1~2s；kimi-k3 网关强制开思考会拖慢全链路，只作兜底）
       main:
         providers:
           - id: glm
@@ -132,8 +132,7 @@ travelscope:
             # Kimi/DeepSeek 系已知坑：tools + response_format 并存时优先 response_format
             # 跳过工具调用——结构化+工具并存场景走合成工具路径
             native-structured-output-with-tools: false
-      # reviewer 池：质检评分（glm 优先，kimi-k3 兜底；独立列表独立熔断，
-      # 将来换更强模型只改本池配置——如需 Kimi 优先仅调整 priority）
+      # reviewer 池：质检评分（glm 优先，kimi 兜底；独立列表独立熔断）
       reviewer:
         providers:
           - id: glm
@@ -145,6 +144,17 @@ travelscope:
             model: kimi-k3
             api-key: ${media_model_gateway_api_key:}
             priority: 2
+            use-glm-formatter: false
+            native-structured-output-with-tools: false
+      # 讲解专用池（私人讲解员图片轮）：glm-5-3 无视觉（实测+网关无 GLM 视觉型号），
+      # 图片讲解固定 kimi-k3；网关对 kimi 强制开思考（三种参数实测均被忽略），单轮看图
+      # 生成 1~2 分钟——独立池隔离，不拖累主链路选路
+      guide:
+        providers:
+          - id: kimi
+            model: kimi-k3
+            api-key: ${media_model_gateway_api_key:}
+            priority: 1
             use-glm-formatter: false
             native-structured-output-with-tools: false
     embedding:

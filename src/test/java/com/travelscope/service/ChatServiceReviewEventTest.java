@@ -98,7 +98,8 @@ class ChatServiceReviewEventTest {
                 conversationService, workspace, tripRequirementStore, llmGateway, loadShedService,
                 conversationSummaryService, TracingHelper.NOOP, new AppProperties(),
                 gatewayChatModel, pointsService, requirementWorkflowService, taskBacklogPlanner,
-                itineraryPlanningAgent);
+                itineraryPlanningAgent, mock(com.travelscope.service.MinioService.class),
+                mock(io.agentscope.core.model.Model.class));
     }
 
     // ---------- 用例 1：passed 场景 → 事件载荷 {passed:true, total:85, segments:[]} ----------

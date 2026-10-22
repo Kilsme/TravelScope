@@ -162,9 +162,17 @@ public class LightweightIntentClassifier {
                 + "\n\n【当前用户消息】\n" + userMessage;
     }
 
+    /** 兜底一：带前缀形态（kimi-k3 实测输出「**意图类别：PLANNING**」——markdown 加粗+中文前缀） */
+    private static final java.util.regex.Pattern LABEL_WITH_PREFIX = java.util.regex.Pattern.compile(
+            "意图[类别分类]*\\s*[:：]\\s*[\\*`\"'\\s]*(CHAT|TOOL_CALL|PLANNING|RAG)");
+    /** 兜底二：短输出内词边界提取（限 ≤50 字符——长解释可能提到多个标签词，误判不如判空降 L3） */
+    private static final java.util.regex.Pattern LABEL_ANYWHERE = java.util.regex.Pattern.compile(
+            "\\b(CHAT|TOOL_CALL|PLANNING|RAG)\\b");
+    private static final int LABEL_ANYWHERE_MAX_LEN = 50;
+
     /**
-     * 纯文本标签解析：去除引号/句读/空白后按 IntentType 归一化；
-     * 多词或非标签文本（如完整句子）返回 null
+     * 纯文本标签解析（三层）：整串归一化 → 「意图X：LABEL」前缀形态提取 →
+     * 短输出（≤50 字符）词边界提取。多词或长解释文本返回 null（级联降 L3）。
      */
     private static IntentType parseTextLabel(String text) {
         if (text == null) {
@@ -183,8 +191,19 @@ public class LightweightIntentClassifier {
         }
         try {
             return IntentType.valueOf(label.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return null;
+        } catch (IllegalArgumentException ignored) {
+            // 非纯标签形态，落正则兜底
         }
+        java.util.regex.Matcher m = LABEL_WITH_PREFIX.matcher(text);
+        if (m.find()) {
+            return IntentType.valueOf(m.group(1));
+        }
+        if (text.length() <= LABEL_ANYWHERE_MAX_LEN) {
+            m = LABEL_ANYWHERE.matcher(text.toUpperCase());
+            if (m.find()) {
+                return IntentType.valueOf(m.group(1));
+            }
+        }
+        return null;
     }
 }

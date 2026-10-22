@@ -97,11 +97,23 @@ public class ConversationService {
      */
     @Transactional
     public void saveUserMessage(Conversation conversation, Long userId, String content) {
+        saveUserMessage(conversation, userId, content, null);
+    }
+
+    /**
+     * 保存用户消息（私人讲解员图片轮）：contentBlocks 携带多模态引用 JSON
+     * （{@code {"images":[{"mediaType":...,"objectKey":...}]}，MinIO 对象引用而非 base64 本体）。
+     * content 仍为纯文本占位（「[图片] {问题}」）——历史注入/摘要/标题/token 估算
+     * 四处纯文本假定不受图片影响。
+     */
+    @Transactional
+    public void saveUserMessage(Conversation conversation, Long userId, String content, String contentBlocks) {
         Message message = new Message();
         message.setConversationId(conversation.getId());
         message.setUserId(userId);
         message.setRole(Message.ROLE_USER);
         message.setContent(content);
+        message.setContentBlocks(contentBlocks);
         message.setModelName(estimateUserModel());
         message.setTokenCount(estimateTokens(content));
         messageRepository.save(message);
@@ -111,6 +123,11 @@ public class ConversationService {
             conversation.setTitle(title.length() > TITLE_MAX_LEN ? title.substring(0, TITLE_MAX_LEN) : title);
         }
         conversationRepository.save(conversation);
+    }
+
+    /** 按 id 取消息（图片能力端点解析 content_blocks 用；null = 不存在） */
+    public Message getMessage(Long messageId) {
+        return messageRepository.findById(messageId).orElse(null);
     }
 
     /**

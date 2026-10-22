@@ -342,6 +342,88 @@
   color: #fff;
 }
 
+/* ---- 私人讲解员（照片提问，2026-10-22） ---- */
+/* 输入区主列：预览条 + 输入框纵向排布 */
+.input-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 右侧动作列：照片按钮 + 发送/停止 */
+.input-actions {
+  display: flex;
+  gap: 8px;
+  align-self: flex-end;
+}
+
+/* 照片按钮（幽灵态，与 send-btn 同高同圆角） */
+.photo-btn {
+  padding: 10px 14px;
+  border: 1px solid #d5dbe6;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.photo-btn:hover:not(:disabled) {
+  border-color: #3b82f6;
+  background: #f5f9ff;
+}
+
+.photo-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 待发送图片预览条：缩略图 + 移除按钮 + 提示 */
+.image-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid #e5e8ef;
+  border-radius: 10px;
+  background: #f7f9fc;
+}
+
+.image-preview img {
+  height: 64px;
+  max-width: 120px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.image-remove {
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.image-hint {
+  font-size: 12px;
+  color: #8a94a6;
+}
+
+/* 用户气泡内图片（当前会话 data URL / 历史能力 URL 同一渲染） */
+.bubble-content .user-image {
+  display: block;
+  max-width: 240px;
+  max-height: 200px;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  object-fit: cover;
+}
+
 /* 质检报告折叠区（FR-S08 review_report 事件） */
 .review-report {
   margin-top: 10px;
