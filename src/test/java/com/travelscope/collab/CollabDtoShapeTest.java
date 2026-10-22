@@ -156,4 +156,30 @@ class CollabDtoShapeTest {
         assertThatThrownBy(() -> JSON.parseObject(legacyJson, IntakeResult.class))
                 .isInstanceOf(JSONException.class);
     }
+
+    @Test
+    void v5f2ImageUrlNullableAndBackwardCompatible() {
+        // 旧 JSON（v5-F2 前，无 imageUrl 键）→ 反序列化为 null，存量产物兼容
+        PoiShortlist legacy = JSON.parseObject(
+                "{\"schemaVersion\":4,\"destination\":\"杭州\","
+                        + "\"pois\":[{\"name\":\"灵隐寺\",\"source\":\"高德\"}]}", PoiShortlist.class);
+        assertThat(legacy.pois().get(0).imageUrl()).isNull();
+        ItineraryDraft.DraftDay legacyDay = JSON.parseObject(
+                "{\"day\":1,\"items\":[{\"time\":\"09:00-10:00\",\"activity\":\"灵隐寺\","
+                        + "\"location\":\"灵隐寺\"}]}", ItineraryDraft.DraftDay.class);
+        assertThat(legacyDay.items().get(0).imageUrl()).isNull();
+
+        // 新 JSON（含 imageUrl）→ 序列化往返保留
+        PoiShortlist modern = new PoiShortlist("杭州", null, List.of(
+                new PoiShortlist.PoiItem("灵隐寺", null, null, null, null, null, "高德", null,
+                        "https://img.alicdn.com/1.jpg")));
+        assertThat(JSON.parseObject(JSON.toJSONString(modern), PoiShortlist.class)
+                .pois().get(0).imageUrl()).isEqualTo("https://img.alicdn.com/1.jpg");
+
+        ItineraryDraft.DraftDay day = new ItineraryDraft.DraftDay(1, null, null, List.of(
+                new ItineraryDraft.DraftItem("09:00-10:00", "灵隐寺", "灵隐寺", null, null,
+                        "https://x/2.jpg")));
+        assertThat(JSON.parseObject(JSON.toJSONString(day), ItineraryDraft.DraftDay.class)
+                .items().get(0).imageUrl()).isEqualTo("https://x/2.jpg");
+    }
 }

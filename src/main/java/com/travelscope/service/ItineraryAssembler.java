@@ -65,6 +65,9 @@ public class ItineraryAssembler {
         if (!knownPoiNames.isEmpty()) {
             cleanedDays = filterHallucinatedPois(skeleton.days(), knownPoiNames, hallucinations);
         }
+        // v5-F2 图片透传：shortlist 的 imageUrl 挂载到匹配行程项（随草案 JSON 持久化，
+        // ItineraryProgress 逐天事件与修订增量链自动继承；renderDaySection 渲染图集行）
+        cleanedDays = attachPoiImages(cleanedDays, shortlist);
         // 校验 2（偏好硬约束）：每个偏好关键词必须在 days 实际排程中有覆盖
         List<String> pending = new ArrayList<>(skeleton.pendingConfirm());
         if (preferences != null && !preferences.isEmpty()) {
@@ -255,8 +258,84 @@ public class ItineraryAssembler {
                 sb.append("| | ↳ ").append(item.note()).append(" | | |\n");
             }
         }
+        // v5-F2 图集行：该天带图 POI 横排缩略图（代码组装，模型不参与；无图天不输出）
+        List<DraftItem> withImages = new ArrayList<>();
+        for (DraftItem item : day.items()) {
+            if (item.imageUrl() != null && !item.imageUrl().isBlank()) {
+                withImages.add(item);
+            }
+        }
+        if (!withImages.isEmpty()) {
+            sb.append("\n📷 图集：");
+            for (DraftItem item : withImages) {
+                sb.append("![").append(galleryAlt(item)).append("](").append(item.imageUrl()).append(") ");
+            }
+            sb.append("\n");
+        }
         sb.append("\n");
         return sb.toString();
+    }
+
+    /**
+     * v5-F2 图片挂载：把 poi_shortlist 的 imageUrl（非空者）挂到名称匹配的行程项上。
+     * 匹配保守（防错图比无图更糟）：非景点项不配图（午餐/酒店/交通行）；名称精确等值
+     * 或池名含条目地名（与防幻觉 poiMentioned 同款包含语义）。无任何挂载时原列表引用返回。
+     */
+    private List<DraftDay> attachPoiImages(List<DraftDay> days,
+                                           com.travelscope.collab.PoiShortlist shortlist) {
+        if (shortlist == null || shortlist.pois() == null || shortlist.pois().isEmpty()) {
+            return days;
+        }
+        java.util.Map<String, String> images = new java.util.LinkedHashMap<>();
+        for (com.travelscope.collab.PoiShortlist.PoiItem p : shortlist.pois()) {
+            if (p.name() != null && p.imageUrl() != null && !p.imageUrl().isBlank()) {
+                images.putIfAbsent(p.name(), p.imageUrl());
+            }
+        }
+        if (images.isEmpty()) {
+            return days;
+        }
+        List<DraftDay> result = new ArrayList<>();
+        boolean changed = false;
+        for (DraftDay day : days) {
+            List<DraftItem> items = new ArrayList<>();
+            for (DraftItem item : day.items()) {
+                String url = matchPoiImage(item, images);
+                if (url != null) {
+                    items.add(new DraftItem(item.time(), item.activity(), item.location(),
+                            item.cost(), item.note(), url));
+                    changed = true;
+                } else {
+                    items.add(item);
+                }
+            }
+            result.add(new DraftDay(day.day(), day.date(), day.theme(), items));
+        }
+        return changed ? result : days;
+    }
+
+    /** 单条行程项 → 匹配 POI 图（null=不配图） */
+    private static String matchPoiImage(DraftItem item, java.util.Map<String, String> images) {
+        if (isNonPoiItem(item)) {
+            return null;
+        }
+        String location = nvl(item.location());
+        if (location.isBlank()) {
+            return null;
+        }
+        for (java.util.Map.Entry<String, String> e : images.entrySet()) {
+            if (e.getKey().equals(location) || e.getKey().equals(item.activity())
+                    || e.getKey().contains(location)) {
+                return e.getValue();
+            }
+        }
+        return null;
+    }
+
+    /** 图集 alt 文本：条目地名（方括号转全角防 markdown 冲突；空名兜底「图片」） */
+    private static String galleryAlt(DraftItem item) {
+        String alt = nvl(item.location()).replace("[", "（").replace("]", "）");
+        return alt.isBlank() ? "图片" : alt;
     }
 
     /**

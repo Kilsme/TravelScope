@@ -85,6 +85,7 @@ public final class TaskResultFormatter {
         StringBuilder sb = new StringBuilder();
         sb.append("| 酒店 | 类型 | 参考价 | 地址 | 来源 |\n");
         sb.append("| --- | --- | --- | --- | --- |\n");
+        StringBuilder gallery = new StringBuilder();
         int shown = 0;
         for (Object item : hotels) {
             if (shown >= MAX_HOTELS) {
@@ -100,6 +101,12 @@ public final class TaskResultFormatter {
                     .append(" | ").append(nvl(h.getString("address"), "—"))
                     .append(" | ").append(nvl(h.getString("source"), "—"))
                     .append(" |\n");
+            // v5-F2 图片透传：已展示酒店的图片收进图集（代码组装，随住宿节渲染）
+            String img = h.getString("imageUrl");
+            if (img != null && !img.isBlank()) {
+                gallery.append("![").append(name.replace("[", "（").replace("]", "）"))
+                        .append("](").append(img).append(") ");
+            }
             shown++;
         }
         int total = json.getIntValue("count") > 0 ? json.getIntValue("count") : hotels.size();
@@ -115,6 +122,9 @@ public final class TaskResultFormatter {
                 sb.append(String.join("、", parts)).append("）");
             }
             sb.append("，以上按工具返回顺序取前 ").append(shown).append(" 家");
+        }
+        if (gallery.length() > 0) {
+            sb.append("\n\n📷 图集：").append(gallery);
         }
         return sb.toString().strip();
     }

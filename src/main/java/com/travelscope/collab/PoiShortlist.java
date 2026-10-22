@@ -40,7 +40,9 @@ public record PoiShortlist(
 
     /**
      * POI 候选。source 必填：来源标记（RAG(chunk=…) / ES(keyword=…) / RAG+ES / searchPois(keyword=…)）。
-     * lng/lat 可空（待 geocode 补齐）；rating/openHours/durationMin/reason 均可空。
+     * lng/lat 可空（待 geocode 补齐）；rating/openHours/durationMin/reason 均可空；
+     * imageUrl 可空（v5-F2 图片透传：飞猪 mainPic/高德 photos 首图，https 归一——
+     * 由 select_poi_shortlist 从候选池/实证解析继承，ItineraryAssembler 据此渲染图集）。
      */
     public record PoiItem(
             String name,
@@ -50,11 +52,18 @@ public record PoiShortlist(
             String openHours,
             Integer durationMin,
             String source,
-            String reason) {
+            String reason,
+            String imageUrl) {
 
         public PoiItem {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(source, "source");
+        }
+
+        /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
+        public PoiItem(String name, Double lng, Double lat, Double rating, String openHours,
+                       Integer durationMin, String source, String reason) {
+            this(name, lng, lat, rating, openHours, durationMin, source, reason, null);
         }
     }
 }

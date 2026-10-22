@@ -154,6 +154,23 @@ class TaskResultFormatterTest {
     }
 
     @Test
+    @DisplayName("v5-F2：酒店图集行——缓存 hotels[].imageUrl 代码组装，无图酒店不输出")
+    void hotelGalleryFromImageUrls() {
+        String raw = """
+                {"count":2,"hotels":[\
+                {"name":"杭州望湖宾馆","type":"四星级","price":"¥420","address":"西湖边",\
+                "source":"飞猪","imageUrl":"https://img.alicdn.com/h1.jpg"},\
+                {"name":"西湖大酒店","type":"舒适型","price":"¥350","address":"解放路","source":"高德"}],\
+                "sources":{"飞猪":1,"高德":1}}""";
+
+        String out = TaskResultFormatter.formatHotel(raw);
+
+        assertThat(out).contains("📷 图集：")
+                .contains("![杭州望湖宾馆](https://img.alicdn.com/h1.jpg)")
+                .doesNotContain("西湖大酒店](");
+    }
+
+    @Test
     @DisplayName("天气：渲成预报表 + 按全程最低温给穿衣建议（-3℃ → 羽绒服档）")
     void weatherTableWithClothingAdvice() {
         String out = TaskResultFormatter.formatWeather(WEATHER_JSON);

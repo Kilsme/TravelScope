@@ -217,11 +217,16 @@ public class CollabTools {
                 }
                 Integer dur = i < durations.size() ? durations.get(i) : null;
                 String reason = i < reasonList.size() ? reasonList.get(i) : null;
+                // v5-F2 图片继承：池内条目优先（hard 补全携带），实证解析兜底
+                String image = inPool.map(c -> c.imageUrl())
+                        .filter(u -> u != null && !u.isBlank())
+                        .orElse(r.imageUrl());
                 items.add(new com.travelscope.collab.PoiShortlist.PoiItem(
                         r.name(), r.lng(), r.lat(), r.rating(),
                         r.openHours(), dur == null ? 120 : dur,
                         inPool.map(c -> c.source()).orElse(r.source()),
-                        reason == null ? r.reason() : reason));
+                        reason == null ? r.reason() : reason,
+                        image));
             }
             // 防幻觉锁：池外名单整体拒绝，不部分落盘
             if (!rejected.isEmpty()) {
@@ -873,7 +878,7 @@ public class CollabTools {
                     name, lng, lat, best.getDouble("rating"),
                     best.getString("openHours"), best.getInteger("durationMin") == null
                             ? 120 : best.getInteger("durationMin"),
-                    source, "reviewer 修订补入");
+                    source, "reviewer 修订补入", best.getString("imageUrl"));
         } catch (Exception e) {
             log.warn("POI 硬字段补全失败: {}/{}, 原因={}", destination, poiName, e.getMessage());
             return null;

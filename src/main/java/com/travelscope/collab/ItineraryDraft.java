@@ -58,18 +58,28 @@ public record ItineraryDraft(
         }
     }
 
-    /** 行程条目：时间 | 活动 | 地点 | 费用（可空）| 备注（可空）。time 形如 "09:00-11:30"。 */
+    /**
+     * 行程条目：时间 | 活动 | 地点 | 费用（可空）| 备注（可空）| 图片 URL（可空，v5-F2）。
+     * time 形如 "09:00-11:30"；imageUrl 由 ItineraryAssembler 按 poi_shortlist 匹配挂载
+     * （随草案 JSON 持久化——ItineraryProgress 逐天事件与修订增量链自动继承）。
+     */
     public record DraftItem(
             String time,
             String activity,
             String location,
             String cost,
-            String note) {
+            String note,
+            String imageUrl) {
 
         public DraftItem {
             Objects.requireNonNull(time, "time");
             Objects.requireNonNull(activity, "activity");
             Objects.requireNonNull(location, "location");
+        }
+
+        /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
+        public DraftItem(String time, String activity, String location, String cost, String note) {
+            this(time, activity, location, cost, note, null);
         }
     }
 

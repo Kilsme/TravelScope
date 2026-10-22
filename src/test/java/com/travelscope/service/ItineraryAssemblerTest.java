@@ -163,4 +163,48 @@ class ItineraryAssemblerTest {
         assertThat(draft.days().get(0).items()).hasSize(3);
         assertThat(draft.notes()).noneMatch(n -> n.contains("已剔除未核验项"));
     }
+
+    @Test
+    @DisplayName("v5-F2 图片透传：shortlist imageUrl 挂载匹配行程项 + 图集行渲染（非景点行不配图）")
+    void assembleAttachesPoiImagesAndRendersGallery() {
+        ItineraryDraft skeleton = skeleton(List.of(
+                new DraftItem("09:00-11:30", "灵隐寺", "灵隐寺", "¥45", null),
+                new DraftItem("12:00-13:00", "午餐", "灵隐寺旁餐厅", "约¥30", null),
+                new DraftItem("14:00-16:00", "断桥残雪", "断桥残雪", "免费", null)),
+                List.of());
+        com.travelscope.collab.PoiShortlist shortlist = new com.travelscope.collab.PoiShortlist(
+                "杭州", null, List.of(
+                new com.travelscope.collab.PoiShortlist.PoiItem(
+                        "灵隐寺", 120.1, 30.24, 4.8, "06:30-18:00", 150, "HARD_COMPLETE", null,
+                        "https://img.alicdn.com/ly.jpg"),
+                new com.travelscope.collab.PoiShortlist.PoiItem(
+                        "断桥残雪", 120.15, 30.26, 4.7, null, 90, "高德", null,
+                        "https://store.is.autonavi.com/dq.jpg")));
+
+        ItineraryDraft draft = assembler.assemble(skeleton, null, null, null, null,
+                shortlist, List.of());
+
+        // 图集行：两个 POI 图横排；午餐行不配图（防错图）
+        assertThat(draft.markdownBody()).contains("📷 图集：")
+                .contains("![灵隐寺](https://img.alicdn.com/ly.jpg)")
+                .contains("![断桥残雪](https://store.is.autonavi.com/dq.jpg)")
+                .doesNotContain("灵隐寺旁餐厅](");
+        // imageUrl 随草案结构持久化（ItineraryProgress 逐天事件/修订增量链继承的载体）
+        assertThat(draft.days().get(0).items().get(0).imageUrl())
+                .isEqualTo("https://img.alicdn.com/ly.jpg");
+        assertThat(draft.days().get(0).items().get(1).imageUrl()).isNull();
+    }
+
+    @Test
+    @DisplayName("v5-F2：shortlist 无图时图集行零输出（存量行为不变）")
+    void assembleWithoutImagesOmitsGallery() {
+        ItineraryDraft skeleton = skeleton(List.of(
+                new DraftItem("09:00-11:30", "灵隐寺", "灵隐寺", "¥45", null)), List.of());
+
+        ItineraryDraft draft = assembler.assemble(skeleton, null, null, null, null,
+                shortlistOf("灵隐寺", "无图候选"), List.of());
+
+        assertThat(draft.markdownBody()).doesNotContain("📷 图集").doesNotContain("![");
+        assertThat(draft.days().get(0).items().get(0).imageUrl()).isNull();
+    }
 }

@@ -268,7 +268,8 @@ public class PoiRetrievalService {
                 adds.add(new PoiCandidatePool.Candidate(
                         "hard:" + source + ":" + name,
                         formatCompletion(name, poi, source),
-                        "HARD_COMPLETE", 0, null, List.of(keyword)));
+                        "HARD_COMPLETE", 0, null, List.of(keyword),
+                        poi.getString("imageUrl")));
             }
             return adds;
         } catch (Exception e) {

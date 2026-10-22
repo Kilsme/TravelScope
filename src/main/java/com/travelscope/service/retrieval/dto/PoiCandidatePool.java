@@ -56,15 +56,24 @@ public record PoiCandidatePool(List<Candidate> candidates, PoolStats stats) {
      * @param score        RRF 融合得分（共识度，非相关性）；补全条目恒 0
      * @param vectorScore  pgvector 余弦相似度（可空——ES-only 或补全条目无此分）
      * @param hitVariants  命中本候选的检索变体（有序去重；多变体命中时累计）
+     * @param imageUrl     图片 URL（v5-F2，可空——仅硬补全条目来自 searchPois 实时图，知识库
+     *                     chunk 无图；select 继承进 poi_shortlist 供组装渲染图集。
+     *                     注意 toSlimView 不含它——模型筛选决策不需要 URL，省 token）
      */
     public record Candidate(String chunkId, String content, String source, double score,
-                            Double vectorScore, List<String> hitVariants) {
+                            Double vectorScore, List<String> hitVariants, String imageUrl) {
 
         public Candidate {
             Objects.requireNonNull(chunkId, "chunkId");
             Objects.requireNonNull(content, "content");
             Objects.requireNonNull(source, "source");
             hitVariants = List.copyOf(Objects.requireNonNull(hitVariants, "hitVariants"));
+        }
+
+        /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
+        public Candidate(String chunkId, String content, String source, double score,
+                         Double vectorScore, List<String> hitVariants) {
+            this(chunkId, content, source, score, vectorScore, hitVariants, null);
         }
     }
 
