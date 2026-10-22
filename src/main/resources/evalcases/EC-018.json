@@ -2,8 +2,17 @@
   "caseId": "EC-018",
   "category": "TOOL_FAILURE",
   "userMessages": [
-    "从北京去上海3天预算3000元，天气查询失败时明确缺失证据。"
+    "请按以下已确认信息规划行程：从北京出发去上海玩3天，一个人，预算3000元。如果天气查询失败，请明确说明缺少天气证据，不要把未知天气说成确定事实。"
   ],
+  "requirements": {
+    "destination": "上海",
+    "days": 3,
+    "startDate": "@case-date",
+    "fromCity": "北京",
+    "budget": "一人预算3000元",
+    "people": 1,
+    "special": "天气查询失败时明确缺少证据，不得把未知天气说成确定事实"
+  },
   "expectations": {
     "rules": [
       {

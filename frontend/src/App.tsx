@@ -11,7 +11,6 @@ import TokenUsagePage from './pages/admin/TokenUsagePage'
 import UsersPage from './pages/admin/UsersPage'
 import DocUploadPage from './pages/admin/DocUploadPage'
 import InvitationCodesPage from './pages/admin/InvitationCodesPage'
-import EvalDashboardPage from './pages/admin/EvalDashboardPage'
 
 /**
  * 受保护路由：未登录 → /login
@@ -57,7 +56,6 @@ export default function App() {
           <Route path="users" element={<UsersPage />} />
           <Route path="documents" element={<DocUploadPage />} />
           <Route path="invitation-codes" element={<InvitationCodesPage />} />
-          <Route path="evaluation" element={<EvalDashboardPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

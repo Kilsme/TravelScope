@@ -30,7 +30,11 @@ public final class EvalCaseLoader {
     public static final String CASE_DIR = "evalcases";
 
     private static final Pattern CASE_ID_PATTERN = Pattern.compile("EC-\\d{3,}");
-    private static final Set<String> TOP_LEVEL_KEYS = Set.of("caseId", "category", "userMessages", "expectations");
+    private static final Set<String> TOP_LEVEL_REQUIRED = Set.of("caseId", "category", "userMessages", "expectations");
+    private static final Set<String> TOP_LEVEL_KEYS = Set.of("caseId", "category", "userMessages", "requirements", "expectations");
+    private static final Set<String> REQUIREMENT_REQUIRED = Set.of("destination", "days", "startDate", "fromCity");
+    private static final Set<String> REQUIREMENT_KEYS = Set.of(
+            "destination", "days", "startDate", "fromCity", "budget", "preference", "people", "special");
     private static final Set<String> EXPECTATION_KEYS = Set.of("rules", "rubric");
     private static final Set<String> RULE_KEYS = Set.of("type", "desc", "params");
     private static final Set<String> RUBRIC_KEYS = Set.of("minTotal");
@@ -100,7 +104,7 @@ public final class EvalCaseLoader {
         if (!(root instanceof Map<?, ?> rootMap)) {
             throw new IllegalArgumentException(source + ": 用例必须是 JSON 对象");
         }
-        requireKeys(rootMap, TOP_LEVEL_KEYS, TOP_LEVEL_KEYS, source);
+        requireKeys(rootMap, TOP_LEVEL_REQUIRED, TOP_LEVEL_KEYS, source);
 
         String caseId = requiredString(rootMap, "caseId", source);
         if (!CASE_ID_PATTERN.matcher(caseId).matches()) {
@@ -110,6 +114,13 @@ public final class EvalCaseLoader {
 
         EvalCategory category = parseEnum(rootMap.get("category"), EvalCategory.class, where + ".category");
         List<String> userMessages = parseUserMessages(rootMap.get("userMessages"), where);
+        EvalCase.Requirements requirements = parseRequirements(rootMap.get("requirements"), where);
+        if (category == EvalCategory.MISSING_INFORMATION && requirements != null) {
+            throw new IllegalArgumentException(where + ": MISSING_INFORMATION 用例不得提供 requirements");
+        }
+        if (category != EvalCategory.MISSING_INFORMATION && requirements == null) {
+            throw new IllegalArgumentException(where + ": 规划用例必须提供 requirements");
+        }
 
         Object expectationsRaw = rootMap.get("expectations");
         if (!(expectationsRaw instanceof Map<?, ?> expectationsMap)) {
@@ -119,7 +130,50 @@ public final class EvalCaseLoader {
 
         List<EvalCase.Rule> rules = parseRules(expectationsMap.get("rules"), where);
         EvalCase.Rubric rubric = parseRubric(expectationsMap.get("rubric"), where);
-        return new EvalCase(caseId, category, userMessages, new EvalCase.Expectations(rules, rubric));
+        return new EvalCase(caseId, category, userMessages, requirements,
+                new EvalCase.Expectations(rules, rubric));
+    }
+
+    private static EvalCase.Requirements parseRequirements(Object raw, String where) {
+        if (raw == null) {
+            return null;
+        }
+        if (!(raw instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException(where + ".requirements: 必须是对象");
+        }
+        String requirementWhere = where + ".requirements";
+        requireKeys(map, REQUIREMENT_REQUIRED, REQUIREMENT_KEYS, requirementWhere);
+        String destination = requiredNonBlankString(map, "destination", requirementWhere);
+        int days = requiredPositiveInt(map, "days", requirementWhere);
+        String startDate = requiredNonBlankString(map, "startDate", requirementWhere);
+        String fromCity = requiredNonBlankString(map, "fromCity", requirementWhere);
+        Integer people = map.get("people") == null ? null : requiredPositiveInt(map, "people", requirementWhere);
+        return new EvalCase.Requirements(destination, days, startDate, fromCity,
+                optionalString(map, "budget", requirementWhere),
+                optionalString(map, "preference", requirementWhere), people,
+                optionalString(map, "special", requirementWhere));
+    }
+
+    private static String requiredNonBlankString(Map<?, ?> map, String key, String where) {
+        String value = requiredString(map, key, where);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(where + "." + key + ": 不得为空白");
+        }
+        return value;
+    }
+
+    private static String optionalString(Map<?, ?> map, String key, String where) {
+        if (!map.containsKey(key) || map.get(key) == null) {
+            return null;
+        }
+        return requiredNonBlankString(map, key, where);
+    }
+
+    private static int requiredPositiveInt(Map<?, ?> map, String key, String where) {
+        if (!(map.get(key) instanceof Long value) || value <= 0 || value > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException(where + "." + key + ": 必须是正整数");
+        }
+        return value.intValue();
     }
 
     /** 必填字段齐全且无未知字段：required ⊆ keys ⊆ allowed */

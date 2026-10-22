@@ -11,10 +11,19 @@ import java.util.Map;
  * @param caseId       用例编号，格式 EC-XXX，与资源文件名主干一致
  * @param category     场景类别（5 类固定用例）
  * @param userMessages 多轮用户输入，按顺序依次发送给被测系统
+ * @param requirements 已确认的需求表单；缺失信息用例为空
  * @param expectations 期望断言（确定性规则 + rubric 门槛）
  */
 public record EvalCase(String caseId, EvalCategory category, List<String> userMessages,
-                       Expectations expectations) {
+                       Requirements requirements, Expectations expectations) {
+
+    /**
+     * 规划开始前的已确认需求。startDate 可在资源文件中写 {@code @case-date}，
+     * 由评测冻结器替换为该批次的确定日期。
+     */
+    public record Requirements(String destination, int days, String startDate, String fromCity,
+                               String budget, String preference, Integer people, String special) {
+    }
 
     /**
      * 期望断言集合。

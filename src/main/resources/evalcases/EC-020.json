@@ -2,9 +2,18 @@
   "caseId": "EC-020",
   "category": "MODIFIED_REQUIREMENTS",
   "userMessages": [
-    "杭州3天预算3000元，不吃辣，请规划行程。",
-    "现在改为带80岁老人出行，请减少步行并调整原方案。"
+    "请按以下已确认信息规划行程：从上海出发去杭州玩3天，一个人，预算3000元，不吃辣。",
+    "需求变更：仍从上海出发，出发日期、杭州3天和3000元预算都不变，但现在带一位80岁老人同行，共两个人；请减少步行、增加休息并调整完整方案，同时保留不吃辣要求。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 3,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "budget": "总预算3000元",
+    "people": 1,
+    "special": "不吃辣；后续用户会改为带80岁老人同行"
+  },
   "expectations": {
     "rules": [
       {

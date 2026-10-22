@@ -23,6 +23,7 @@ class AssessmentArtifactOwnershipTest {
     @TempDir Path workspace;
     private String lastToolOutput="";
     private String toolMode = "LIVE";
+    private boolean useRealAssembly;
     private HarnessAgent agent(ObservationStore store,String tool,Map<String,Object> input) throws Exception {
         AtomicInteger calls=new AtomicInteger();
         Model model=new Model(){
@@ -35,7 +36,7 @@ class AssessmentArtifactOwnershipTest {
             }
         };
         var toolkit = new io.agentscope.core.tool.Toolkit();
-        if (Set.of("write_collab_file", "plan_route").contains(Objects.toString(tool, ""))) {
+        if (Set.of("write_collab_file", "plan_route").contains(Objects.toString(tool, "")) || useRealAssembly) {
             var writer = new com.travelscope.collab.CollabFileWriter(workspace.toString());
             var taskWorkspace = new com.travelscope.collab.TaskWorkspace(writer, new com.travelscope.collab.CollabFileReader());
             toolkit.registerTool(new com.travelscope.agent.tools.CollabTools(
@@ -43,15 +44,24 @@ class AssessmentArtifactOwnershipTest {
                     mock(com.travelscope.service.route.RoutePlannerServiceImpl.class), taskWorkspace, writer,
                     new com.travelscope.service.ItineraryAssembler(),
                     mock(com.travelscope.service.TaskResultCache.class),
-                    mock(io.agentscope.core.model.Model.class),
+                    useRealAssembly ? assemblyModel() : mock(io.agentscope.core.model.Model.class),
                     mock(com.travelscope.agent.tools.AttractionTool.class)));
         }
-        if (Set.of("assemble_itinerary", "revise_poi_selection").contains(Objects.toString(tool, ""))) {
+        if (!useRealAssembly && Set.of("assemble_itinerary", "revise_poi_selection").contains(Objects.toString(tool, ""))) {
             toolkit.registerTool(new FakeAssemblyTools());
         }
         return HarnessAgent.builder().name("planning-agent").model(model).toolkit(toolkit).workspace(workspace.toString())
+            .stateStore(new io.agentscope.core.state.InMemoryAgentStateStore())
             .permissionContext(PermissionContextState.builder().mode(PermissionMode.BYPASS).build())
             .disableDefaultWorkspaceSkills().disableShellTool().middlewares(List.of(new ObservationMiddleware(store))).maxIters(3).build();
+    }
+    private Model assemblyModel() {
+        Model model = mock(Model.class);
+        when(model.getModelName()).thenReturn("synthetic-copy-model");
+        String copy = "{\"theme\":\"本轮 JSON 行程\",\"notes\":[],\"costs\":[],\"budget\":null,\"pendingConfirm\":[]}";
+        when(model.stream(anyList(), anyList(), any())).thenReturn(Flux.just(
+                ChatResponse.builder().content(List.of(TextBlock.builder().text(copy).build())).build()));
+        return model;
     }
     private RuntimeContext runtime(ObservationContext observation){return RuntimeContext.builder().userId("synthetic-user").sessionId(SESSION).put(ObservationContext.KEY,observation).put("assessment.toolMode",toolMode).build();}
     private ObservationStore store(JdbcTemplate jdbc){var config=new AssessmentProperties();config.setEnabled(true);return new ObservationStore(jdbc,config,new PayloadRedactor(new ObjectMapper()));}
@@ -119,20 +129,38 @@ class AssessmentArtifactOwnershipTest {
         }finally{store.close();}
     }
 
-    @Test void validatedJsonWriteRemainsRealInFixtureAndProducesOwnedMarkdownSnapshot() throws Exception {
+    @Test void realAssemblyInFixtureProducesOwnedValidatedMarkdownSnapshot() throws Exception {
         toolMode = "FIXTURE";
+        useRealAssembly = true;
         var jdbc = mock(JdbcTemplate.class);
         var store = store(jdbc);
-        String json = "{\"days\":[],\"markdownBody\":\"# 本轮 JSON 行程\"}";
+        var tasks = new com.travelscope.collab.TaskWorkspace(
+                new com.travelscope.collab.CollabFileWriter(workspace.toString()),
+                new com.travelscope.collab.CollabFileReader());
+        var destination = new com.travelscope.collab.IntakeResult.FieldValue("杭州", true, null);
+        var days = new com.travelscope.collab.IntakeResult.FieldValue("1", true, null);
+        tasks.writeIntakeResult("synthetic-user", SESSION, new com.travelscope.collab.IntakeResult(
+                SESSION, com.travelscope.collab.IntakeResult.Status.DONE, 0,
+                new com.travelscope.collab.IntakeResult.RequirementFields(destination, days, null, null,
+                        null, null, null, null), false, "test"));
+        tasks.writeRoutePlan("synthetic-user", SESSION, new com.travelscope.collab.RoutePlan(
+                List.of(new com.travelscope.collab.RoutePlan.RouteDay(1, null, List.of(
+                        new com.travelscope.collab.RoutePlan.RoutePoi("固定测试景点", 120.16, 30.25,
+                                "09:00", "10:00", null, null)), 0)),
+                new com.travelscope.collab.RoutePlan.SolverMeta("FIXTURE", "FIXTURE", 0, List.of())));
         try {
             var observation = store.begin(SESSION, null);
-            run(agent(store, "write_collab_file", Map.of("sessionId", SESSION,
-                    "fileName", "itinerary_draft.json", "contentJson", json)), observation);
-            assertTrue(lastToolOutput.contains("已写入"), lastToolOutput);
-            assertEquals("# 本轮 JSON 行程", store.planningArtifact(observation));
+            run(agent(store, "assemble_itinerary", Map.of("sessionId", SESSION)), observation);
+            assertTrue(lastToolOutput.contains("已组装并写入 itinerary_draft.json"), lastToolOutput);
+            String markdown = store.planningArtifact(observation);
+            assertNotNull(markdown);
+            assertTrue(markdown.contains("固定测试景点"), markdown);
             String raw = store.currentArtifacts(observation).get("itinerary_draft.json");
             assertNotNull(raw);
-            assertEquals(4, new ObjectMapper().readTree(raw).get("schemaVersion").asInt());
+            var draft = new ObjectMapper().readTree(raw);
+            assertEquals(4, draft.get("schemaVersion").asInt());
+            assertEquals(markdown, draft.get("markdownBody").asText());
+            assertEquals("09:00-10:00", draft.get("days").get(0).get("items").get(0).get("time").asText());
             store.finish(observation, "PLANNING_COMPLETED", 10, true);
             store.flush();
             var terminal = mockingDetails(jdbc).getInvocations().stream()
@@ -143,13 +171,13 @@ class AssessmentArtifactOwnershipTest {
         } finally { store.close(); }
     }
 
-    @Test void failedJsonContractDoesNotCaptureOrCompletePlanning() throws Exception {
+    @Test void manualDraftWriteCannotCaptureOrCompletePlanning() throws Exception {
         var store = store(mock(JdbcTemplate.class));
         try {
             var observation = store.begin(SESSION, null);
             run(agent(store, "write_collab_file", Map.of("sessionId", SESSION,
-                    "fileName", "itinerary_draft.json", "contentJson", "{\"days\":[]}")), observation);
-            assertTrue(lastToolOutput.contains("ERROR"), lastToolOutput);
+                    "fileName", "itinerary_draft.json", "contentJson", DRAFT_BODY)), observation);
+            assertTrue(lastToolOutput.contains("不接受手写"), lastToolOutput);
             assertNull(store.planningArtifact(observation));
             assertTrue(store.currentArtifacts(observation).isEmpty());
             store.finish(observation, "INCOMPLETE", 10, false);

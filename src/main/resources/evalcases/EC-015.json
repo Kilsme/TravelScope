@@ -2,8 +2,16 @@
   "caseId": "EC-015",
   "category": "POI_NOT_EXIST",
   "userMessages": [
-    "去火星海底故宫玩2天，请核实地点是否存在。"
+    "请按以下已确认信息规划行程：从天津出发去北京玩2天，一个人，想参观一个叫「火星海底故宫」的地方。请先核实这个地点是否真实存在；如果不存在必须明确说明，不要编造地址、交通或景点，并推荐真实替代景点。"
   ],
+  "requirements": {
+    "destination": "北京",
+    "days": 2,
+    "startDate": "@case-date",
+    "fromCity": "天津",
+    "people": 1,
+    "special": "核实火星海底故宫是否存在；不存在时不得编造地址、交通或景点，并推荐真实替代景点"
+  },
   "expectations": {
     "rules": [
       {

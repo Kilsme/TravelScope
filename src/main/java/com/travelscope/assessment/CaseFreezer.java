@@ -6,6 +6,7 @@ import java.util.*;
 /** Deterministic test calendar policy, not a statement about official holiday opening dates. */
 final class CaseFreezer {
     static final String VERSION="calendar-v1";
+    private static final java.util.regex.Pattern ISO_DATE=java.util.regex.Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
     static EvalCase freeze(EvalCase c,LocalDate base){
         List<String> messages=new ArrayList<>();
         for(String input:c.userMessages()){
@@ -18,9 +19,17 @@ final class CaseFreezer {
                 value=value.replace(weekday.getKey(),base.with(TemporalAdjusters.nextOrSame(weekday.getValue())).toString());
             messages.add(value);
         }
-        if(c.category()!=EvalCategory.MISSING_INFORMATION&&!java.util.regex.Pattern.compile("\\d{4}-\\d{2}-\\d{2}").matcher(messages.getFirst()).find())
+        if(c.category()!=EvalCategory.MISSING_INFORMATION&&!ISO_DATE.matcher(messages.getFirst()).find())
             messages.set(0,"出发日期为"+base.plusDays(7)+"。"+messages.getFirst());
-        return new EvalCase(c.caseId(),c.category(),List.copyOf(messages),c.expectations());
+        EvalCase.Requirements requirements=c.requirements();
+        if(requirements!=null&&"@case-date".equals(requirements.startDate())){
+            var matcher=ISO_DATE.matcher(messages.getFirst());
+            if(!matcher.find())throw new IllegalStateException(c.caseId()+" 冻结后仍缺少出发日期");
+            requirements=new EvalCase.Requirements(requirements.destination(),requirements.days(),matcher.group(),
+                    requirements.fromCity(),requirements.budget(),requirements.preference(),
+                    requirements.people(),requirements.special());
+        }
+        return new EvalCase(c.caseId(),c.category(),List.copyOf(messages),requirements,c.expectations());
     }
     private static LocalDate annual(LocalDate base,int month,int day){LocalDate target=LocalDate.of(base.getYear(),month,day);return target.isBefore(base)?target.plusYears(1):target;}
 }

@@ -2,8 +2,17 @@
   "caseId": "EC-019",
   "category": "ROUTE_TOO_DENSE",
   "userMessages": [
-    "一天游遍北京故宫、八达岭、颐和园、天坛，预算1000元。"
+    "请按以下已确认信息规划行程：从北京出发，在北京玩1天，一个人，预算1000元，想一天游遍故宫、八达岭、颐和园和天坛。请判断是否可行，不可行时明确说明并给出合理取舍。"
   ],
+  "requirements": {
+    "destination": "北京",
+    "days": 1,
+    "startDate": "@case-date",
+    "fromCity": "北京",
+    "budget": "一人预算1000元",
+    "people": 1,
+    "special": "希望一天游览故宫、八达岭、颐和园和天坛；不可行时给出合理取舍"
+  },
   "expectations": {
     "rules": [
       {

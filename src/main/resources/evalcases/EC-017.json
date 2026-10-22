@@ -2,8 +2,18 @@
   "caseId": "EC-017",
   "category": "WEATHER_CONFLICT",
   "userMessages": [
-    "暴雨预警仍想全天登山，杭州2天预算2000元，请给安全替代。"
+    "请按以下已确认信息规划行程：从上海出发去杭州玩2天，一个人，预算2000元。当地有暴雨预警，但我原本想全天登山；请优先保证安全，明确说明风险并提供室内或低风险替代方案。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 2,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "budget": "一人预算2000元",
+    "preference": "登山",
+    "people": 1,
+    "special": "暴雨预警；优先保证安全并提供室内或低风险替代方案"
+  },
   "expectations": {
     "rules": [
       {

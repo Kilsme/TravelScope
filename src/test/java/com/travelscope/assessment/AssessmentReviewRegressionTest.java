@@ -10,7 +10,6 @@ import io.agentscope.core.message.TextBlock;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.springframework.beans.factory.config.DependencyDescriptor;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -66,7 +65,7 @@ class AssessmentReviewRegressionTest {
         assertFalse(new PayloadRedactor(mapper).redact("noise \"password\":\"synthetic-malformed-secret\"").contains("synthetic-malformed-secret"));
     }
 
-    @Test void realReviewerFactoryResolvesLegacyRegressionDependencyWithoutApiCalls() throws Exception {
+    @Test void realReviewerFactoryBuildsObservedScoringModelWithoutApiCalls() {
         var properties=new AppProperties();properties.getModelGateway().setBaseUrl("http://127.0.0.1:9/v1");properties.getModelGateway().setApiKey("SYNTHETIC-NOT-A-CREDENTIAL");
         var config=new AgentConfig(properties,null,null,null,null,null,null,TracingHelper.NOOP);
         ReflectionTestUtils.setField(config,"observationStore",mock(ObservationStore.class));
@@ -75,9 +74,6 @@ class AssessmentReviewRegressionTest {
             context.registerBean("gatewayReviewerModel",Model.class,()->config.gatewayReviewerModel(new com.travelscope.llm.ProviderProbeScheduler()));context.refresh();
             Model bean=context.getBean("gatewayReviewerModel",Model.class);assertInstanceOf(com.travelscope.llm.ModelProviderPool.class,bean);
             assertEquals("reviewer",((com.travelscope.llm.ModelProviderPool)bean).poolName());
-            var legacyField=Class.forName("com.travelscope.eval.EvalCaseRunnerTest").getDeclaredField("reviewerModel");
-            assertEquals(Model.class,legacyField.getType());
-            assertSame(bean,context.getDefaultListableBeanFactory().resolveDependency(new DependencyDescriptor(legacyField,true),"legacy-eval"));
         }
     }
 

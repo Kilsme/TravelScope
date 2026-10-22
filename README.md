@@ -39,13 +39,13 @@
 - 🤖 **三 Agent + 代码五步编排** — `travel-master`（单点查询接待员，工具直调零委派）/ `planning-agent`（规划执行）/ `reviewer-agent`（质检兜底）；PLANNING 链路由 `ChatService` 代码编排：需求采集 → 任务登记 + 缓存预检 → 委派规划 → 规则质检 + 渲染，慢泳道 600s
 - 🧠 **LLM 只做两件事** — planner 首轮并行抓齐全量数据后，POI 偏好筛选（名单制工具）与草案结构字段产出是仅有的 LLM 决策点；检索、路线求解、组装、质检、记账全部代码化（OpenAI Agents SDK「LLM 产结构化 JSON → 代码执行」模式），happy path 全链仅 5~7 次 LLM 调用
 - 📜 **JSON 契约驱动协作** — 六个契约文件（`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`）+ collab 五件套（9 个 DTO + Schema 校验 + 原子写 + TaskWorkspace + TaskRegistry）；工具面收编：`write_collab_file` 是唯一落盘口，`edit_file` / `write_file` / `web_search` / `web_fetch` 已从 planner 工具面移除
-- ✅ **规则质检 + 定向修订** — `RuleReviewService` 三段规则（基本要素 / 时间线自洽 / 预算偏好 + 防幻觉）零 LLM <1s 出分；全过直接交付，发现硬伤才唤起 reviewer 用 `revise_poi_selection` 名单式修订（代码补硬字段 → 重跑路线 → 重组装），修订上限 2 次由中间件保险丝代码硬拦
+- ✅ **规则质检 + 定向修订** — `RuleReviewService` 三段规则（基本要素 / 时间线自洽 / 预算偏好 + 防幻觉）零 LLM <1s 出分；全过直接交付，发现硬伤才唤起 reviewer 用 `revise_poi_selection` 名单式修订（代码补硬字段 → 重跑路线 → 重组装），修订上限 1 次由中间件保险丝代码硬拦
 - 🧭 **意图三层级联路由** — L0 会话延续（Redis 最近意图 + 短追问识别，0 计算）→ L1 规则表（承接约 60% 流量）→ L2 deepseek-v4-flash-0731 轻量语义分类（带结果缓存）→ L3 主链路模型兜底，上层命中即短路
 - 🔍 **RAG 双路检索** — pgvector 语义检索 + Elasticsearch BM25 关键词检索，RRF 融合排序，证据门控 + 变体扩展（3~5 个查询变体并行）；向量路不可用时自动退化为 ES 全文（`mode=fulltext`）
 - ⚡ **任务结果缓存** — Redis `taskresult:{userId}:{sessionId}:{taskType}`，TTL 按数据时效分级（天气 10min、POI/酒店/路线 30min）；**预检上提到编排层**：委派前代码查缓存，命中内容直接内联进委派说明；工具成功由记账中间件零 LLM 自动登记，往返车票 append 防互覆
 - 🛡️ **LLM Gateway** — 全局并发 Semaphore(200) → 全局 QPS 100/s → 单用户并发 2，全 `tryAcquire` 快速失败；PLANNING 慢泳道 600s 与查询快泳道 25s 隔离；主备模型（glm-5-3-260814 → deepseek-v4-flash-0731）+ 熔断 + 首包超时闸门 + 粘滞回切
 - 📡 **全链路可观测** — OpenTelemetry 埋点（chat-turn / task-cache / review-attempt 等 span）对接 Jaeger；SSE 过程/结果分离事件协议（`agent_status` 活动流 + 最终方案独立事件）
-- 🧪 **双轨质量门禁** — 24 条 EvalCase 真实链路用例（12 类场景），「确定性规则断言 + 质检模型 Rubric 三维评分」双轨判定，任一 FAIL 或总分 <80 即门禁失败，结果含 trace_id 落库
+- 🧪 **评估中心** — 24 条 EvalCase 真实链路用例（多城市/亲子/严格预算/地点不存在/路线过密等），统一展示确定性规则、模型评分、调用链、耗时与 Token；普通规划用例带已确认需求表单，避免在生成前因缺项终止
 
 ## 🏗️ 系统架构
 
@@ -81,7 +81,7 @@ flowchart TD
     TC -.->|"二次规划/修订 预检命中即复用"| CS
 
     S5 -->|"规则全过（<1s 零 LLM）"| OUT["✅ review_passed → done 事件（方案正文 + 评分）"]
-    S5 -->|"规则不过 → 定向修订 ≤2 次（保险丝硬拦）"| RV["🕵️ reviewer-agent<br/>revise_poi_selection 名单式修订"]
+    S5 -->|"规则不过 → 定向修订 ≤1 次（保险丝硬拦）"| RV["🕵️ reviewer-agent<br/>revise_poi_selection 名单式修订"]
 
     OUT --> U
 ```
@@ -90,10 +90,10 @@ flowchart TD
 
 | 规则质检结果 | 动作 | LLM 成本 |
 |---|---|---|
-| 三段全过（总分 ≥80 且单维 ≥12） | `review_passed.json` 落盘，直接渲染交付 | 0（<1s） |
-| 段 1 基本要素（天数/目的地/出发地/unplaced 溢出）不过 | 唤起 reviewer 定向修订，修订任务内联 intake + 草案 | 1~2 轮 |
-| 段 2 时间线重叠 / 段 3 预算·偏好·防幻觉不过 | reviewer 用 `revise_poi_selection` 名单式修订（只传加/删 POI 名，代码补硬字段 → 重跑路线 → 重组装） | 1~2 轮 |
-| 修订后重跑规则质检 | 收敛即交付；未收敛继续修订 | 上限 2 次，第 3 次被 `ReviewerRetryMiddleware` 代码保险丝硬拦，以「当前最佳版本（已尽力）」收尾 |
+| PASS / PASS_WITH_WARNINGS（无 HARD 问题） | `review_passed.json` 落盘，软问题随 warnings 交付；评分用于展示与评估 | 0（<1s） |
+| 段 1 存在 HARD 问题（天数/目的地/出发地或多个 POI 未排入） | 唤起 reviewer 定向修订，修订任务内联 intake + 草案 | 最多 1 次修订 |
+| 时间线重叠、严重预算偏差、偏好全未覆盖或候选池外 POI 等 HARD 问题 | reviewer 用 `revise_poi_selection` 名单式修订（只传加/删 POI 名，代码补硬字段 → 重跑路线 → 重组装） | 最多 1 次修订 |
+| 修订后重跑规则质检 | 收敛即交付；仍有硬伤则标记 DEGRADED，附未解决问题交付 | 最多 1 次修订，第 2 次 `revise_poi_selection` 被保险丝拦截 |
 
 **耗时演进（同需求「西安四日」真实链路实测）：**
 
@@ -216,11 +216,13 @@ mvn test -Dtest=RoutePlannerRealApiTest              # VRPTW 路线求解真实�
 mvn test -Dtest=IntentCascadeRealApiTest             # 意图级联路由
 mvn test -Dtest=LlmGatewayRealApiTest                # 网关主备与熔断
 
-# EvalCase 全链路质量门禁（另需 PG 就绪 + EVAL_REAL_API=1）
-EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
+# 评估中心后端回归（真实批次请在管理端“评估中心”创建）
+mvn "-Dtest=Assessment*Test,EvalCaseLoaderTest" test
 ```
 
-EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 条、覆盖 12 类场景（多城市/亲子/严格预算/地点不存在/路线过密等）。评测与日常规划共用需求工作流、任务登记、路线规划及审核流程。JSON 契约 `itinerary_draft.json` 优先，文本评分使用其中的 `markdownBody`。未启用真实 API 门控时，相关集成测试自动跳过。
+EvalCase 用例库在 `src/main/resources/evalcases/`，随 JAR 打包，共 24 条、覆盖 12 类场景。EC-001～EC-020 保留评估模块的场景；主线原 EC-011/012 回炉恢复场景迁为 EC-021/022，原 EC-013/014 预算边缘场景迁为 EC-023/024。编号调整不改写已冻结的历史批次及其用例正文。
+
+评测与日常规划共用需求工作流、任务登记、路线规划及审核流程。除信息缺失场景外，每条 EvalCase 都携带已确认的需求表单；自然语言抽取未收齐必填项时，runner 会自动模拟表单提交，再进入规划。JSON 契约 `itinerary_draft.json` 优先，文本评分使用其中的 `markdownBody`；仅本轮成功写入并明确关联的产物可以作为最终行程，保留旧 Markdown 兼容。FIXTURE 只替换外部数据源，继续执行本地检索编排、路线算法和契约校验；工具顺序缺少真实事件证据时标记无法判断。
 
 ## 📁 项目结构
 
@@ -237,7 +239,7 @@ TravelScope/
     │   │   ├── ItineraryAgent.java          # planning-agent：五步规划 SYS_PROMPT
     │   │   ├── ReviewerAgent.java           # reviewer-agent：定向修订
     │   │   ├── IntentCascadeRouter.java     # 意图 L0~L3 级联
-    │   │   ├── ReviewerRetryMiddleware.java # 回炉保险丝（≤2 次代码硬拦）
+    │   │   ├── ReviewerRetryMiddleware.java # 回炉保险丝（≤1 次代码硬拦）
     │   │   ├── BookkeepingMiddleware.java   # 记账零 LLM（工具事件→缓存+任务状态）
     │   │   ├── LlmGatewayModel.java         # 主备 + 熔断 + 首包闸门
     │   │   └── tools/                       # @Tool 工具面（天气/酒店/景点/车票/机票/RAG/协作文件）

@@ -2,8 +2,17 @@
   "caseId": "EC-013",
   "category": "STRICT_BUDGET",
   "userMessages": [
-    "上海出发去杭州2天，总预算100元。"
+    "请按以下已确认信息规划行程：从上海出发去杭州玩2天，一个人，总预算只有100元。请明确判断预算是否可行，不要编造无法实现的费用。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 2,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "budget": "一人总预算100元",
+    "people": 1,
+    "special": "预算不可行时必须明确说明，不得编造费用"
+  },
   "expectations": {
     "rules": [
       {

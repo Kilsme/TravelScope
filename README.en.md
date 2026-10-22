@@ -42,13 +42,13 @@ Three agents + code orchestration · JSON-contract-driven · Rule-based review w
 - 🤖 **Three agents + five-step code orchestration** — `travel-master` (single-point query receptionist, direct tool calls, no delegation) / `planning-agent` (planning execution) / `reviewer-agent` (review fallback); the PLANNING chain is orchestrated by `ChatService` code: requirement collection → task registration + cache pre-check → delegation → rule review + rendering, on a 600s slow lane
 - 🧠 **LLM does only two things** — after the planner's parallel first round fetches all data, POI preference filtering (name-list tool) and draft structural-field generation are the only LLM decision points; retrieval, route solving, assembly, review, and bookkeeping are all code (the OpenAI Agents SDK "LLM produces structured JSON → code executes" pattern). A happy path takes only 5~7 LLM calls end to end
 - 📜 **JSON-contract-driven collaboration** — six contract files (`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`) plus the collab five-piece set (9 DTOs + schema validation + atomic writes + TaskWorkspace + TaskRegistry); the tool surface is fenced in: `write_collab_file` is the only persistence gate — `edit_file` / `write_file` / `web_search` / `web_fetch` have been removed from the planner's toolkit
-- ✅ **Rule-based review + targeted revision** — `RuleReviewService` checks three rule segments (essentials / timeline consistency / budget & preference + anti-hallucination) in <1s with zero LLM; all-pass delivers directly, a hard failure wakes the reviewer for name-list revision via `revise_poi_selection` (code fills hard fields → re-runs routes → re-assembles), capped at 2 revisions by a middleware fuse enforced in code
+- ✅ **Rule-based review + targeted revision** — `RuleReviewService` checks three rule segments (essentials / timeline consistency / budget & preference + anti-hallucination) in <1s with zero LLM; all-pass delivers directly, a hard failure wakes the reviewer for name-list revision via `revise_poi_selection` (code fills hard fields → re-runs routes → re-assembles), capped at 1 revision by a middleware fuse enforced in code
 - 🧭 **Three-tier cascaded intent routing** — L0 session continuity (Redis last-intent + short follow-up detection, zero compute) → L1 rule table (~60% of traffic) → L2 deepseek-v4-flash-0731 lightweight classification (with result caching) → L3 main-chain model fallback; upper layers short-circuit on hit
 - 🔍 **Dual-path RAG retrieval** — pgvector semantic search + Elasticsearch BM25 keyword search fused with RRF ranking, evidence gating + query expansion (3~5 variants in parallel); the semantic path degrades to ES full-text automatically when unavailable (`mode=fulltext`)
 - ⚡ **Task-result cache** — Redis `taskresult:{userId}:{sessionId}:{taskType}` with TTL tiered by data freshness (weather 10min, POI/hotel/route 30min); **pre-checking hoisted to the orchestration layer**: code checks the cache before delegation and inlines hits into the task brief; successful tool calls are auto-registered by a bookkeeping middleware with zero LLM cost, with append semantics for round-trip tickets to prevent overwrites
 - 🛡️ **LLM Gateway** — global concurrency Semaphore(200) → global QPS 100/s → per-user concurrency 2, all via fast-fail `tryAcquire`; the 600s PLANNING slow lane is isolated from the 25s query fast lane; primary/backup models (glm-5-3-260814 → deepseek-v4-flash-0731) with circuit breaking, a first-packet timeout gate, and sticky failback
 - 📡 **End-to-end observability** — OpenTelemetry instrumentation (chat-turn / task-cache / review-attempt spans) exported to Jaeger; an SSE protocol that separates process from result (`agent_status` activity stream + a dedicated final-answer event)
-- 🧪 **Dual-track quality gate** — 24 real-chain EvalCases (12 scenario classes); verdicts combine deterministic rule assertions with a reviewer-model 3-dimension rubric; any rule FAIL or a total score below 80 fails the gate, with results (including trace_id) persisted
+- 🧪 **Assessment center** — 24 real-chain EvalCases (multi-city / family / strict budget / nonexistent place / over-dense route and more) combine deterministic rules, model scoring, traces, latency, and token usage; planning cases carry confirmed requirement forms so they do not stop before generation because of missing fields
 
 ## 🏗️ Architecture
 
@@ -84,7 +84,7 @@ flowchart TD
     TC -.->|"re-planning/revision reuse on pre-check hit"| CS
 
     S5 -->|"all rules pass (<1s, zero LLM)"| OUT["✅ review_passed → done event (itinerary + score)"]
-    S5 -->|"rules fail → targeted revision ≤2 (fuse-enforced)"| RV["🕵️ reviewer-agent<br/>revise_poi_selection name-list revision"]
+    S5 -->|"rules fail → targeted revision ≤1 (fuse-enforced)"| RV["🕵️ reviewer-agent<br/>revise_poi_selection name-list revision"]
 
     OUT --> U
 ```
@@ -93,10 +93,10 @@ flowchart TD
 
 | Rule review result | Action | LLM cost |
 |---|---|---|
-| All three segments pass (total ≥80, each ≥12) | `review_passed.json` persisted, render and deliver | 0 (<1s) |
-| Segment 1 essentials fail (days/destination/origin/unplaced overflow) | Wake the reviewer for targeted revision; the revision brief inlines intake + draft | 1~2 rounds |
-| Segment 2 timeline overlap / Segment 3 budget·preference·anti-hallucination fail | Reviewer revises via `revise_poi_selection` (passes only POI names to add/remove; code fills hard fields → re-runs routes → re-assembles) | 1~2 rounds |
-| Rules re-run after revision | Converged → deliver; otherwise continue | capped at 2; a 3rd attempt is hard-blocked by the `ReviewerRetryMiddleware` fuse, ending with "best current version (best effort)" |
+| PASS / PASS_WITH_WARNINGS (no HARD issues) | Persist `review_passed.json`, deliver SOFT warnings; scores remain for display and evaluation | 0 (<1s) |
+| HARD essentials issues (days/destination/origin or multiple unplaced POIs) | Wake the reviewer for targeted revision; the revision brief inlines intake + draft | At most 1 revision |
+| HARD timeline, budget, preference, or out-of-shortlist POI issues | Reviewer revises via `revise_poi_selection` (passes only POI names to add/remove; code fills hard fields → re-runs routes → re-assembles) | At most 1 revision |
+| Rules re-run after revision | Converged → deliver; otherwise mark DEGRADED and include unresolved issues | At most 1 revision; a second `revise_poi_selection` is fuse-blocked |
 
 **Latency evolution (same "Xi'an 4-day" request, real-chain measurements):**
 
@@ -214,11 +214,11 @@ mvn test -Dtest=RoutePlannerRealApiTest              # VRPTW route solving, real
 mvn test -Dtest=IntentCascadeRealApiTest             # cascaded intent routing
 mvn test -Dtest=LlmGatewayRealApiTest                # gateway primary/backup & circuit breaking
 
-# EvalCase full-chain quality gate (also needs PG ready + EVAL_REAL_API=1)
-EVAL_REAL_API=1 mvn test -Dtest=EvalCaseRunnerTest
+# Assessment-center backend regression (create real batches in the admin Assessment Center)
+mvn "-Dtest=Assessment*Test,EvalCaseLoaderTest" test
 ```
 
-The EvalCase library lives in `src/main/resources/evalcases/`, packaged into the JAR — 24 cases across 12 scenario classes (multi-city / family / strict budget / nonexistent place / over-dense route, etc.). Evaluation shares the requirement workflow, task registration, route planning, and review flow with daily planning. The `itinerary_draft.json` contract takes priority, with `markdownBody` used for text scoring. Real-API-gated integration tests skip automatically when the gate is off.
+The EvalCase suite lives in `src/main/resources/evalcases/` (EC-001~024), covering 12 scenario categories. Every planning case carries a confirmed requirement form; if natural-language extraction still leaves required fields empty, the assessment runner submits that form before continuing. The missing-information case intentionally remains at the input step.
 
 ## 📁 Project Structure
 
@@ -235,7 +235,7 @@ TravelScope/
     │   │   ├── ItineraryAgent.java          # planning-agent: five-step SYS_PROMPT
     │   │   ├── ReviewerAgent.java           # reviewer-agent: targeted revision
     │   │   ├── IntentCascadeRouter.java     # intent L0~L3 cascade
-    │   │   ├── ReviewerRetryMiddleware.java # revision fuse (≤2, code-enforced)
+    │   │   ├── ReviewerRetryMiddleware.java # revision fuse (≤1, code-enforced)
     │   │   ├── BookkeepingMiddleware.java   # zero-LLM bookkeeping (tool events → cache + task status)
     │   │   ├── LlmGatewayModel.java         # primary/backup + circuit breaking + first-packet gate
     │   │   └── tools/                       # @Tool surface (weather/hotel/POI/ticket/flight/RAG/collab files)

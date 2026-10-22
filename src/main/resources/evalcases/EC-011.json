@@ -2,8 +2,17 @@
   "caseId": "EC-011",
   "category": "NORMAL_PLANNING",
   "userMessages": [
-    "北京出发去杭州3天，两人预算5000元，喜欢历史，住地铁附近。"
+    "请按以下已确认信息规划行程：从北京出发去杭州玩3天，两个人，总预算5000元，喜欢历史文化景点，住宿选择地铁附近。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 3,
+    "startDate": "@case-date",
+    "fromCity": "北京",
+    "budget": "两人总预算5000元",
+    "preference": "历史文化景点；住宿在地铁附近",
+    "people": 2
+  },
   "expectations": {
     "rules": [
       {

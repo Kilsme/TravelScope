@@ -11,7 +11,7 @@ public final class FixtureTools {
         "memory_get","memory_save","session_history","session_search","session_list",
         "get_missing_fields","update_requirement_state","ask_user","register_task_result","get_cached_task_result",
         "create_task_backlog","update_task_status","get_task_progress","planning_gate_hint","review_retry_hint",
-        "retrieve_poi_candidates","plan_route","write_collab_file").contains(name);}
+        "retrieve_poi_candidates","plan_route","assemble_itinerary","write_collab_file").contains(name);}
     public static synchronized void install(Toolkit toolkit){
         for(String name:List.copyOf(toolkit.getToolNames())) {
             AgentTool delegate=toolkit.getTool(name);

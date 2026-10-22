@@ -67,8 +67,33 @@ class AssessmentLifecycleTest {
         for(var c:com.travelscope.eval.EvalCaseLoader.loadAll()){
             var frozen=CaseFreezer.freeze(c,base);assertEquals(frozen,CaseFreezer.freeze(c,base));
             if(c.category()==com.travelscope.eval.EvalCategory.MISSING_INFORMATION)assertEquals(c.userMessages(),frozen.userMessages());
-            else assertTrue(java.util.regex.Pattern.compile("\\d{4}-\\d{2}-\\d{2}").matcher(frozen.userMessages().getFirst()).find());
+            else {
+                assertTrue(java.util.regex.Pattern.compile("\\d{4}-\\d{2}-\\d{2}").matcher(frozen.userMessages().getFirst()).find());
+                assertTrue(frozen.requirements().startDate().matches("\\d{4}-\\d{2}-\\d{2}"));
+            }
         }
+    }
+
+    @Test void planningCasesSubmitConfirmedFormAndCannotPassWhileWaiting() throws Exception {
+        var properties=new AssessmentProperties();
+        var batches=new AssessmentBatches(mock(JdbcTemplate.class),new ObjectMapper(),properties,
+                mock(ChatService.class),mock(ObservationStore.class),mock(TaskWorkspace.class),
+                mock(PosthocScorer.class),mock(AssessmentQueries.class),new AppProperties());
+        try {
+            var planning=com.travelscope.eval.EvalCaseLoader.loadAll().stream()
+                    .filter(c->c.category()!=com.travelscope.eval.EvalCategory.MISSING_INFORMATION)
+                    .findFirst().orElseThrow();
+            var form=new ObjectMapper().readTree(batches.requirementForm(
+                    CaseFreezer.freeze(planning,java.time.LocalDate.of(2026,10,17)).requirements())).get("__form__");
+            assertEquals("submit",form.get("__action__").asText());
+            assertTrue(form.hasNonNull("destination"));assertTrue(form.hasNonNull("days"));
+            assertTrue(form.hasNonNull("startDate"));assertTrue(form.hasNonNull("fromCity"));
+            assertTrue(AssessmentBatches.isUnexpectedWaiting(planning,"WAITING_INPUT"));
+            var missing=com.travelscope.eval.EvalCaseLoader.loadAll().stream()
+                    .filter(c->c.category()==com.travelscope.eval.EvalCategory.MISSING_INFORMATION)
+                    .findFirst().orElseThrow();
+            assertFalse(AssessmentBatches.isUnexpectedWaiting(missing,"WAITING_INPUT"));
+        } finally { batches.close(); }
     }
 
 }

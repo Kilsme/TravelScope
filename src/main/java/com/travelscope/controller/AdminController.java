@@ -3,12 +3,9 @@ package com.travelscope.controller;
 import com.travelscope.dto.TokenUsageVO;
 import com.travelscope.entity.User;
 import com.travelscope.security.AuthInterceptor;
-import com.travelscope.service.EvaluationRecordService;
 import com.travelscope.service.TokenUsageService;
 import com.travelscope.service.UserAdminService;
 import jakarta.servlet.http.HttpServletRequest;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,20 +32,15 @@ import java.util.Map;
 @RequestMapping("/admin")
 public class AdminController {
 
-    private static final Logger log = LoggerFactory.getLogger(AdminController.class);
-
     private final UserAdminService userAdminService;
     private final TokenUsageService tokenUsageService;
     private final com.travelscope.service.LoadShedService loadShedService;
-    private final EvaluationRecordService evaluationRecordService;
 
     public AdminController(UserAdminService userAdminService, TokenUsageService tokenUsageService,
-                           com.travelscope.service.LoadShedService loadShedService,
-                           EvaluationRecordService evaluationRecordService) {
+                           com.travelscope.service.LoadShedService loadShedService) {
         this.userAdminService = userAdminService;
         this.tokenUsageService = tokenUsageService;
         this.loadShedService = loadShedService;
-        this.evaluationRecordService = evaluationRecordService;
     }
 
     // ==================== 过载状态（2026-09-23 并发改造） ====================
@@ -207,41 +199,6 @@ public class AdminController {
         LocalDate to = parseDate(dateTo);
         List<TokenUsageVO> rows = tokenUsageService.query(userId, from, to);
         return ResponseEntity.ok(rows);
-    }
-
-    // ==================== 评测看板（2026-10-14 P2-M） ====================
-
-    /**
-     * 评测汇总：总数/通过率/坏例数 + 按类别、按用例两个分组聚合
-     */
-    @GetMapping("/evaluation/summary")
-    public ResponseEntity<?> evaluationSummary(HttpServletRequest request) {
-        ResponseEntity<?> forbidden = requireAdmin(request);
-        if (forbidden != null) {
-            return forbidden;
-        }
-        return ResponseEntity.ok(evaluationRecordService.summary());
-    }
-
-    /**
-     * 评测记录列表（坏例诊断用，含双轨原始 JSON）
-     *
-     * @param caseId      可选按用例过滤（如 EC-001）
-     * @param category    可选按类别过滤（如 MULTI_CITY）
-     * @param badCaseOnly true 只看坏例
-     * @param limit       条数上限（默认 50）
-     */
-    @GetMapping("/evaluation/records")
-    public ResponseEntity<?> evaluationRecords(@RequestParam(required = false) String caseId,
-                                               @RequestParam(required = false) String category,
-                                               @RequestParam(defaultValue = "false") boolean badCaseOnly,
-                                               @RequestParam(defaultValue = "50") int limit,
-                                               HttpServletRequest request) {
-        ResponseEntity<?> forbidden = requireAdmin(request);
-        if (forbidden != null) {
-            return forbidden;
-        }
-        return ResponseEntity.ok(evaluationRecordService.records(caseId, category, badCaseOnly, limit));
     }
 
     // ==================== 内部 ====================

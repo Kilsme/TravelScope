@@ -2,8 +2,17 @@
   "caseId": "EC-024",
   "category": "STRICT_BUDGET",
   "userMessages": [
-    "周六日去南京玩2天，一个人，总预算1500元，帮我安排"
+    "请按以下已确认信息规划行程：周六从上海出发去南京玩2天，一个人，总预算1500元，吃住行和门票都要计入并列出明细，预算不能超。"
   ],
+  "requirements": {
+    "destination": "南京",
+    "days": 2,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "budget": "一人总预算1500元，包含吃住行和门票",
+    "people": 1,
+    "special": "预算不得超过1500元；列出吃住行和门票明细"
+  },
   "expectations": {
     "rules": [
       {"type": "FIELD_COMPLETE", "desc": "2天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},

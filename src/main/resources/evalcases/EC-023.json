@@ -2,9 +2,18 @@
   "caseId": "EC-023",
   "category": "STRICT_BUDGET",
   "userMessages": [
-    "十一假期去杭州玩3天，两个人，总预算3000元，住连锁酒店，帮我规划一下",
-    "预算千万别超，吃住行门票都算进去"
+    "请按以下已确认信息规划行程：十一假期从上海出发去杭州玩3天，两个人，总预算3000元，住宿选择连锁酒店。预算不能超，吃住行和门票都要计入并列出明细。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 3,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "budget": "两人总预算3000元，包含吃住行和门票",
+    "preference": "连锁酒店",
+    "people": 2,
+    "special": "预算不得超过3000元；列出吃住行和门票明细"
+  },
   "expectations": {
     "rules": [
       {"type": "FIELD_COMPLETE", "desc": "3天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},

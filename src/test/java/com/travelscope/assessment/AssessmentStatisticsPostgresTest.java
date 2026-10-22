@@ -23,7 +23,6 @@ class AssessmentStatisticsPostgresTest {
                 connection.createStatement().execute("CREATE SCHEMA "+schema);owned=true;connection.setSchema(schema);
                 connection.createStatement().execute("SET statement_timeout='5s'");
                 JdbcTemplate jdbc=new JdbcTemplate(new SingleConnectionDataSource(connection,true));
-                jdbc.execute("CREATE TABLE evaluation_records(id BIGSERIAL PRIMARY KEY)");
                 String upgrade;try(var in=getClass().getResourceAsStream("/assessment-upgrade.sql")){upgrade=new String(Objects.requireNonNull(in).readAllBytes(),StandardCharsets.UTF_8);}
                 for(String statement:upgrade.replaceAll("(?m)^--.*$","").split(";"))if(!statement.isBlank())jdbc.execute(statement);
                 var queries=new AssessmentQueries(jdbc);

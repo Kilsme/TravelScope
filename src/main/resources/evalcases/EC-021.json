@@ -2,9 +2,17 @@
   "caseId": "EC-021",
   "category": "REWORK_RECOVERY",
   "userMessages": [
-    "周末去杭州玩2天，听说「西湖天空之镜观景台」拍照特别出片，第一天上午务必安排去这里",
-    "住宿在西湖湖滨附近，其他景点你来推荐真实的经典去处"
+    "请按以下已确认信息规划行程：周末从上海出发去杭州玩2天，一个人，住宿在西湖湖滨附近。听说「西湖天空之镜观景台」拍照特别出片，想在第一天上午去；请核实地点，若不存在就纠正并推荐真实经典景点。"
   ],
+  "requirements": {
+    "destination": "杭州",
+    "days": 2,
+    "startDate": "@case-date",
+    "fromCity": "上海",
+    "preference": "拍照；住宿在西湖湖滨附近；经典景点",
+    "people": 1,
+    "special": "核实西湖天空之镜观景台；若不存在则纠正并推荐真实景点"
+  },
   "expectations": {
     "rules": [
       {"type": "FIELD_COMPLETE", "desc": "纠错回炉后仍需产出2天完整行程：每日POI、预算汇总及交通/住宿/天气四维"},

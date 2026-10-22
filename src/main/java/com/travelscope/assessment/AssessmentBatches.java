@@ -135,6 +135,7 @@ public class AssessmentBatches {
         try{
             EvalCase c=mapper.readValue((String)sample.get("case_json"),EvalCase.class);
             var isolatedAgent=chat.newAssessmentAgent();activeAgent=isolatedAgent;
+            int messageIndex=0;
             for(String message:c.userMessages()){
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
                 last=store.begin("conv-"+identity,sampleId);long start=System.nanoTime();
@@ -144,6 +145,15 @@ public class AssessmentBatches {
                     artifact=store.planningArtifact(last);
                     store.finish(last,artifact==null?(chat.assessmentWaiting(identity)?"WAITING_INPUT":"INCOMPLETE"):"PLANNING_COMPLETED",(System.nanoTime()-start)/1e6,artifact!=null);
                 }catch(Exception e){store.finish(last,Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",(System.nanoTime()-start)/1e6,false);throw e;}
+                if(messageIndex++==0&&artifact==null&&c.requirements()!=null&&chat.assessmentWaiting(identity)){
+                    last=store.begin("conv-"+identity,sampleId);start=System.nanoTime();
+                    try{
+                        reply=chat.executeAssessment(identity,requirementForm(c.requirements()),last,mode,"EC-018".equals(c.caseId()),c.caseId(),isolatedAgent).block(Duration.ofMinutes(12));
+                        lastArtifacts=store.currentArtifacts(last);
+                        artifact=store.planningArtifact(last);
+                        store.finish(last,artifact==null?(chat.assessmentWaiting(identity)?"WAITING_INPUT":"INCOMPLETE"):"PLANNING_COMPLETED",(System.nanoTime()-start)/1e6,artifact!=null);
+                    }catch(Exception e){store.finish(last,Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",(System.nanoTime()-start)/1e6,false);throw e;}
+                }
             }
             var dir=workspace.getTaskDir(""+identity,"conv-"+identity);
             var evidence=new EvalRunArtifact(reply,artifact,
@@ -151,7 +161,10 @@ public class AssessmentBatches {
                     lastArtifacts.getOrDefault("route_plan.json",lastArtifacts.get("route_plan.md")),dir);
             store.flush();
             String executionStatus=(String)queries.one("SELECT status FROM assessment_runs WHERE id=?",last.runId()).get("status");
-            if(Set.of("TIMED_OUT","FAILED","CANCELLED","INCOMPLETE").contains(executionStatus)) {
+            boolean unexpectedWaiting=isUnexpectedWaiting(c,executionStatus);
+            if(Set.of("TIMED_OUT","FAILED","CANCELLED","INCOMPLETE").contains(executionStatus)||unexpectedWaiting) {
+                var rules=AssessmentRules.check(c,evidence,jdbc.queryForList("SELECT s.* FROM assessment_spans s JOIN assessment_runs r ON r.id=s.run_id WHERE r.sample_id=?",sampleId),executionStatus);
+                jdbc.update("UPDATE assessment_samples SET rule_json=? WHERE id=?",json(rules),sampleId);
                 jdbc.update("UPDATE assessment_samples SET status=?,score_status='SKIPPED' WHERE id=?",
                         "CANCELLED".equals(executionStatus)?"CANCELLED":"FAILED",sampleId);
                 return;
@@ -167,6 +180,19 @@ public class AssessmentBatches {
             jdbc.update("UPDATE assessment_samples SET status=? WHERE id=? AND status='RUNNING'",artifact==null&&!chat.assessmentWaiting(identity)?"FAILED":"SUCCEEDED",sampleId);
         }catch(Exception e){jdbc.update("UPDATE assessment_samples SET status=?,score_status=CASE WHEN score_status='RUNNING' THEN 'ERROR' ELSE score_status END WHERE id=? AND status='RUNNING'",Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",sampleId);}
         finally{var agent=activeAgent;activeAgent=null;if(agent!=null)agent.close();}
+    }
+    static boolean isUnexpectedWaiting(EvalCase evalCase,String executionStatus){
+        return "WAITING_INPUT".equals(executionStatus)&&evalCase.category()!=EvalCategory.MISSING_INFORMATION;
+    }
+    String requirementForm(EvalCase.Requirements requirements){
+        Map<String,Object> form=new LinkedHashMap<>();form.put("__action__","submit");
+        form.put("destination",requirements.destination());form.put("days",requirements.days());
+        form.put("startDate",requirements.startDate());form.put("fromCity",requirements.fromCity());
+        if(requirements.budget()!=null)form.put("budget",requirements.budget());
+        if(requirements.preference()!=null)form.put("preference",requirements.preference());
+        if(requirements.people()!=null)form.put("people",requirements.people());
+        if(requirements.special()!=null)form.put("special",requirements.special());
+        return json(Map.of("__form__",form));
     }
     private String read(Path path){try{return Files.exists(path)?Files.readString(path):null;}catch(Exception e){return null;}}
     @PreDestroy public void close(){executor.shutdownNow();}

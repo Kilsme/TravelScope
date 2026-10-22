@@ -2,8 +2,18 @@
   "caseId": "EC-016",
   "category": "CLOSED_VENUE",
   "userMessages": [
-    "周一去北京故宫1天，预算1000元，请核实开放时间。"
+    "请按以下已确认信息规划行程：周一从天津出发去北京玩1天，一个人，预算1000元，主要想去故宫。请核实故宫开放时间，闭馆时明确说明并安排真实可行的替代景点。"
   ],
+  "requirements": {
+    "destination": "北京",
+    "days": 1,
+    "startDate": "@case-date",
+    "fromCity": "天津",
+    "budget": "一人预算1000元",
+    "preference": "故宫",
+    "people": 1,
+    "special": "核实周一开放时间；闭馆时明确说明并提供真实替代景点"
+  },
   "expectations": {
     "rules": [
       {

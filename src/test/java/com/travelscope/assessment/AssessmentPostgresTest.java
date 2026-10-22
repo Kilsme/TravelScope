@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /** Explicit opt-in, isolated owned schema. Never uses the application's production connection. */
 @EnabledIfEnvironmentVariable(named="ASSESSMENT_TEST_DATABASE_URL",matches=".+")
 class AssessmentPostgresTest {
-    @Test void upgradeQueriesLegacyCompatibilityAndRetention() throws Exception {
+    @Test void upgradeQueriesAndRetention() throws Exception {
         Properties credentials=new Properties();
         for(String key:List.of("USER","PASSWORD")){String value=System.getenv("ASSESSMENT_TEST_DATABASE_"+key);if(value!=null)credentials.setProperty(key.toLowerCase(Locale.ROOT),value);}
         String schema="assessment_it_"+UUID.randomUUID().toString().replace("-","");boolean owned=false;
@@ -20,11 +20,8 @@ class AssessmentPostgresTest {
             try {
                 connection.createStatement().execute("CREATE SCHEMA "+schema);owned=true;connection.setSchema(schema);
                 JdbcTemplate jdbc=new JdbcTemplate(new SingleConnectionDataSource(connection,true));
-                jdbc.execute("CREATE TABLE evaluation_records(id BIGSERIAL PRIMARY KEY, legacy_note TEXT)");
-                jdbc.update("INSERT INTO evaluation_records(legacy_note) VALUES ('preserved')");
                 String sql;try(var in=getClass().getResourceAsStream("/assessment-upgrade.sql")){sql=new String(Objects.requireNonNull(in).readAllBytes(),StandardCharsets.UTF_8);}
                 for(int repeat=0;repeat<2;repeat++)for(String statement:sql.replaceAll("(?m)^--.*$", "").split(";"))if(!statement.isBlank())jdbc.execute(statement);
-                assertEquals(1,jdbc.queryForObject("SELECT count(*) FROM evaluation_records WHERE legacy_note='preserved'",Integer.class));
                 var properties=new AssessmentProperties();properties.setEnabled(true);
                 var price=new AssessmentProperties.Price();price.setInputPerMillion(BigDecimal.ONE);price.setOutputPerMillion(new BigDecimal("2"));properties.getPrices().put("stub",price);
                 var store=new ObservationStore(jdbc,properties,new PayloadRedactor(new ObjectMapper()));

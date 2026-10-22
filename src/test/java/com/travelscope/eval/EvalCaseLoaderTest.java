@@ -27,6 +27,8 @@ class EvalCaseLoaderTest {
 
     private static final String CATEGORY = "\"FAMILY\"";
     private static final String MESSAGES = "[\"你好，帮我规划一份行程\"]";
+    private static final String REQUIREMENTS =
+            "{\"destination\":\"北京\",\"days\":2,\"startDate\":\"@case-date\",\"fromCity\":\"上海\"}";
     private static final String EXPECTATIONS =
             "{\"rules\": [{\"type\": \"TOOL_ORDER\", \"desc\": \"先 POI 后路线后组装\"}], \"rubric\": {\"minTotal\": 80}}";
 
@@ -51,6 +53,12 @@ class EvalCaseLoaderTest {
             assertFalse(evalCase.userMessages().isEmpty(), id + ": userMessages 不能为空");
             evalCase.userMessages().forEach(message ->
                     assertFalse(message.isBlank(), id + ": userMessages 含空白消息"));
+            if (evalCase.category() == EvalCategory.MISSING_INFORMATION) {
+                assertNull(evalCase.requirements(), id + ": 缺失信息用例不应预填需求表单");
+            } else {
+                assertNotNull(evalCase.requirements(), id + ": 规划用例必须有需求表单");
+                assertTrue(evalCase.requirements().days() > 0, id + ": 游玩天数必须为正数");
+            }
             assertNotNull(evalCase.expectations(), id + ": expectations 不能为空");
 
             List<EvalCase.Rule> rules = evalCase.expectations().rules();
@@ -144,6 +152,13 @@ class EvalCaseLoaderTest {
         // userMessages 为空数组
         assertRejected(caseJson("EC-900", CATEGORY, "[]", EXPECTATIONS, ""),
                 "userMessages 必须是非空数组");
+        // 规划用例缺 requirements
+        assertRejected("{\"caseId\":\"EC-900\",\"category\":\"FAMILY\",\"userMessages\":[\"x\"],\"expectations\":" + EXPECTATIONS + "}",
+                "规划用例必须提供 requirements");
+        // requirements 缺必填字段
+        assertRejected(caseJson("EC-900", CATEGORY, MESSAGES, EXPECTATIONS,
+                        ", \"requirements\": {\"destination\":\"北京\"}"),
+                "缺少必填字段");
         // 缺少 rules
         assertRejected(caseJson("EC-900", CATEGORY, MESSAGES, "{\"rubric\": {\"minTotal\": 80}}", ""),
                 "缺少必填字段 'rules'");
@@ -226,8 +241,9 @@ class EvalCaseLoaderTest {
                   "caseId": "%s",
                   "category": %s,
                   "userMessages": %s,
+                  "requirements": %s,
                   "expectations": %s%s
                 }
-                """.formatted(caseId, category, messages, expectations, extra);
+                """.formatted(caseId, category, messages, REQUIREMENTS, expectations, extra);
     }
 }
