@@ -52,7 +52,16 @@ class PosthocScorerTest {
         var properties=new AssessmentProperties();properties.setEnabled(true);
         var store=new ObservationStore(jdbc,properties,new PayloadRedactor(mapper));
         try {
-            var scorer=new PosthocScorer(config,store,new ObservationMiddleware(store),jdbc,mapper,new PayloadRedactor(mapper),"");
+            // v5-F3：PosthocScorer 改注入模型——测试自建与 reviewer 池 GLM provider 同构的
+            // ObservedModel(GLMFormatter + thinking 透传)，断言口径不变（请求体 thinking 开关）
+            var model=new ObservedModel(io.agentscope.extensions.model.openai.OpenAIChatModel.builder()
+                .baseUrl(gateway.getBaseUrl()).apiKey(gateway.getApiKey()).modelName(gateway.getReviewerModel()).stream(true)
+                .formatter(new io.agentscope.extensions.model.openai.compat.glm.GLMFormatter())
+                .generateOptions(io.agentscope.core.model.GenerateOptions.builder()
+                    .additionalBodyParam("thinking",Map.of("type",thinking?"enabled":"disabled")).build())
+                .nativeStructuredOutput(gateway.isNativeStructuredOutput()).nativeStructuredOutputWithTools(gateway.isNativeStructuredOutputWithTools())
+                .build(),store);
+            var scorer=new PosthocScorer(new ObservationMiddleware(store),jdbc,mapper,new PayloadRedactor(mapper),model);
             scorer.score(new ObservationContext(UUID.randomUUID(),UUID.randomUUID(),null,null,null),"杭州半日步行游览",PLAN);store.flush();
             if(alwaysInvalid){
                 var failure=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().startsWith("UPDATE assessment_evaluations SET status='ERROR'")).findFirst().orElseThrow();

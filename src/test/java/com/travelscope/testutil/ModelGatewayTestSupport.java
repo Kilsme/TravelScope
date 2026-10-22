@@ -45,12 +45,25 @@ public final class ModelGatewayTestSupport {
         return ofModel(MAIN_MODEL);
     }
 
-    /** 质检评分模型（glm-5-3-260814，与生产 gatewayReviewerModel 同源配置） */
+    /**
+     * 质检评分模型（glm-5-3-260814，与生产 reviewer 池 GLM provider 同构：
+     * GLMFormatter + thinking 禁用——网关 glm 默认开思考，不禁会慢生成撞测试 300s 超时；
+     * v5-F3 后生产 reviewer = ModelProviderPool，glm priority 1 即本形态）
+     */
     public static OpenAIChatModel reviewerModel() {
-        return ofModel(REVIEWER_MODEL);
+        return OpenAIChatModel.builder()
+                .baseUrl(baseUrl())
+                .apiKey(apiKey())
+                .modelName(REVIEWER_MODEL)
+                .stream(true)
+                .formatter(new io.agentscope.extensions.model.openai.compat.glm.GLMFormatter())
+                .generateOptions(io.agentscope.core.model.GenerateOptions.builder()
+                        .additionalBodyParam("thinking", java.util.Map.of("type", "disabled"))
+                        .build())
+                .build();
     }
 
-    /** 轻量模型（deepseek-v4-flash-0731，与生产 gatewayLightModel 同源配置） */
+    /** 轻量模型（deepseek-v4-flash-0731，RealApi 池测试的次选 provider 用） */
     public static OpenAIChatModel lightModel() {
         return ofModel(LIGHT_MODEL);
     }

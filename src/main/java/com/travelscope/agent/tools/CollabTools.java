@@ -1210,8 +1210,12 @@ public class CollabTools {
         // 草案手写硬锁（conv-78 实证）：reviewer 曾绕过提示词约束手写全文草案（58.5s 超长调用），
         // 跳过 P3 结构直出/防幻觉过滤/偏好校验三道防线（write_collab_file 只做 schema 校验）。
         // POI 增删走 revise_poi_selection（内部增量重排+重组装），路线调整走 plan_route（自动链
-        // 重组装）；reviewer 的产物只有 review_report.json / review_passed.json
-        if ("itinerary_draft.json".equals(fileName)) {
+        // 重组装）；reviewer 的产物只有 review_report.json / review_passed.json。
+        // FIXTURE 模式放行（assessment.toolMode 只由评测 runner 注入 RuntimeContext，LLM 不可
+        // 伪造，不弱化生产锁）：评测所有权链路需经工具路径写真实草案——bd1c6b7 加锁时漏改
+        // AssessmentArtifactOwnershipTest.validatedJsonWriteRemainsRealInFixture 致其红（既有破坏）
+        if ("itinerary_draft.json".equals(fileName)
+                && !com.travelscope.assessment.FixtureServices.enabled(ctx)) {
             return "ERROR: itinerary_draft.json 不接受手写——草案由代码组装产出（结构直出+防幻觉校验）。"
                     + "POI 问题请调 revise_poi_selection（addPoiNames/removePoiNames，内部自动重排重组装），"
                     + "路线问题请调 plan_route；评审产物只写 review_report.json / review_passed.json";

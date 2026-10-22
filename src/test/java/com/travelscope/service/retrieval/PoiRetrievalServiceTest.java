@@ -2,6 +2,7 @@ package com.travelscope.service.retrieval;
 
 import com.travelscope.agent.tools.AttractionTool;
 import com.travelscope.config.AppProperties;
+import com.travelscope.llm.ProviderProbeScheduler;
 import com.travelscope.dto.RetrievedFragment;
 import com.travelscope.service.RagServiceImpl;
 import com.travelscope.service.retrieval.dto.PoiCandidatePool;
@@ -35,7 +36,7 @@ class PoiRetrievalServiceTest {
         private final String throwOnQuery;
 
         ScriptRagService(Map<String, GatedResult> script, String throwOnQuery) {
-            super(new AppProperties(), null, null, "u", "p");
+            super(new AppProperties(), null, null, "u", "p", new ProviderProbeScheduler());
             this.script = script;
             this.throwOnQuery = throwOnQuery;
         }
@@ -203,7 +204,7 @@ class PoiRetrievalServiceTest {
         final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
 
         CountingRagService(Map<String, GatedResult> script) {
-            super(new AppProperties(), null, null, "u", "p");
+            super(new AppProperties(), null, null, "u", "p", new ProviderProbeScheduler());
             this.script = script;
         }
 

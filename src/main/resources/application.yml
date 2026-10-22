@@ -101,6 +101,60 @@ travelscope:
     native-structured-output: false
     native-structured-output-with-tools: true
 
+  # ---- 多模型熔断池（v5-F3，2026-10-22）：chat 双池（main/reviewer 独立列表独立熔断）
+  # + embedding 池。熔断口径：单次响应超时立即 OPEN；累计总调用 > min-calls 且成功率
+  # < min-success-rate 才统计熔断；OPEN 冷却到期由探针 CAS 抢单转半开测试，通过恢复 CLOSED。
+  # 全部 provider 熔断 → SSE「AI 服务暂时不可用，请联系管理员」（embedding 全灭 → RAG 退化 BM25） ----
+  model-pool:
+    breaker:
+      min-calls: 60
+      min-success-rate: 0.95
+      open-wait-seconds: 30
+      probe-interval-seconds: 10
+      first-packet-timeout-seconds: 10
+      chunk-timeout-seconds: 30
+      embedding-timeout-seconds: 15
+    chat:
+      # 主池：travel-master/planner/意图识别 L2+L3/需求抽取/会话摘要（glm 优先，kimi-k3 兜底）
+      # 注意：网关模型 id 为小写 kimi-k3（/models 实测），错写大小写会 model not found
+      main:
+        providers:
+          - id: glm
+            model: glm-5-3-260814
+            api-key: ${media_model_gateway_api_key:}
+            priority: 1
+            use-glm-formatter: true
+          - id: kimi
+            model: kimi-k3
+            api-key: ${media_model_gateway_api_key:}
+            priority: 2
+            use-glm-formatter: false
+            # Kimi/DeepSeek 系已知坑：tools + response_format 并存时优先 response_format
+            # 跳过工具调用——结构化+工具并存场景走合成工具路径
+            native-structured-output-with-tools: false
+      # reviewer 池：质检评分（glm 优先，kimi-k3 兜底；独立列表独立熔断，
+      # 将来换更强模型只改本池配置——如需 Kimi 优先仅调整 priority）
+      reviewer:
+        providers:
+          - id: glm
+            model: glm-5-3-260814
+            api-key: ${media_model_gateway_api_key:}
+            priority: 1
+            use-glm-formatter: true
+          - id: kimi
+            model: kimi-k3
+            api-key: ${media_model_gateway_api_key:}
+            priority: 2
+            use-glm-formatter: false
+            native-structured-output-with-tools: false
+    embedding:
+      # 列表顺序即优先级；当前 DashScope 单项，后续加备选只改这里
+      providers:
+        - id: dashscope
+          model: text-embedding-v3
+          api-key: ${API_KEY:}
+          dimensions: 1024
+
   # ---- 通义千问（DashScope）：仅 Embedding（text-embedding-v3）使用 ----
   dashscope:
     api-key: ${API_KEY:}
@@ -243,8 +297,8 @@ travelscope:
   # 真实上限同时受模型网关与上游模型配额钳制，超出配额会触发熔断/fallback，按实际配额调整。
   # 叠加 LoadShedService 三级过载降级（GREEN/YELLOW/RED，见 service/LoadShedService）兜底。
   # 快泳道（CHAT/TOOL_CALL/RAG）25s / 慢泳道（PLANNING）420s 对话级超时
-  # 模型调用层（LlmGatewayModel 装饰器）：熔断（窗口 10 次/失败率 50%/OPEN 10s）
-  # + 单次调用超时 30s + 失败 fallback → deepseek-v4-flash-0731 + SSE error 兜底文案
+  # 对话准入层（LlmGateway，FR-S09：与模型层熔断分层正交——并发/QPS/泳道在这里，
+  # 熔断/failover 在 model-pool 池装饰器）。模型超时/熔断/fallback 配置已迁 travelscope.model-pool
   llm-gateway:
     enabled: true
     global-concurrency: 200
@@ -257,18 +311,6 @@ travelscope:
     # 仍未到质检段，600s 为框架 spawn 同步等待 clamp 上限——泳道必须 ≥ 同步等待上限。
     # qwen 时期为 300→420；FR-S09 容量假设（2000 在线）待 B4 回归复核
     slow-lane-timeout-seconds: 600
-    model-timeout-seconds: 30
-    # 首包探测超时（2026-10-11 P2-G）：首个 token 的到达判据——挂死 10s 快速失败切 fallback；
-    # 首包到达后恢复 model-timeout-seconds 的间隙保护（区分「模型坏了」与「慢慢生成长行程」）
-    first-packet-timeout-seconds: 10
-    cb-sliding-window-size: 10
-    cb-failure-rate-threshold: 50
-    cb-minimum-number-of-calls: 5
-    cb-wait-duration-open-seconds: 10
-    fallback-enabled: true
-    # 探测回切间隔（2026-10-11 熔断统计漂移修复）：粘滞 fallback 期间每 30s 对主模型
-    # 发一次最小探测（走熔断器，OPEN 未到期零网络开销），成功即自动回切——替代重启恢复
-    probe-interval-seconds: 30
 
   # ---- 过载降级配置（2026-09-23 并发改造：弹性降级优先策略）----
   # 三级：GREEN 正常 → YELLOW（堆>75% 或网关剩余<10%）：拒绝新 PLANNING，快请求正常

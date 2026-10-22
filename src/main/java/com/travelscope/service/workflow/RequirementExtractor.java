@@ -24,8 +24,8 @@ import java.util.Locale;
  * 供 S2.2 RequirementWorkflowService merge 进需求状态机（清单卡片方案：抽取结果
  * 预填表单，全部字段亮给用户确认——抽取失败只意味着表单缺项显示，非致命）。
  * <p>
- * 模型走 {@code gatewayLightModel}（{@code travelscope.intent-cascade.l2-model}
- * 轻量档，deepseek-v4-flash-0731）。结构化输出采用仓库既有惯例
+ * 模型走主池（v5-F3 起 {@code gatewayChatModel}，glm 优先 + 池内 failover；旧
+ * gatewayLightModel 轻量档随单 fallback 装饰退役）。结构化输出采用仓库既有惯例
  * {@code agent.call(input, Class, ctx)}（同 LightweightIntentClassifier /
  * ConversationSummaryService / RubricScorer 三先例；当前配置
  * native-structured-output=false → 合成 generate_response 工具路径），
@@ -69,9 +69,9 @@ public class RequirementExtractor {
     private final Model lightModel;
     private final AppProperties appProperties;
 
-    public RequirementExtractor(@Qualifier("gatewayLightModel") Model lightModel,
+    public RequirementExtractor(@Qualifier("gatewayChatModel") Model mainModelPool,
                                 AppProperties appProperties) {
-        this.lightModel = lightModel;
+        this.lightModel = mainModelPool;
         this.appProperties = appProperties;
     }
 

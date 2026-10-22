@@ -2,6 +2,7 @@ package com.travelscope.service;
 
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
+import com.travelscope.llm.ProviderProbeScheduler;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,7 @@ class RagServiceImplTest {
         EsBm25Client esClient = new EsBm25Client(props);
         // DataSource 传 null——RagServiceImpl 构造语义路会失败并降级；
         // 本测试聚焦 ES BM25 路的端到端（pgvector 路经应用内验证）
-        ragService = new RagServiceImpl(props, esClient, null, "root", "root");
+        ragService = new RagServiceImpl(props, esClient, null, "root", "root", new ProviderProbeScheduler());
     }
 
     @Test

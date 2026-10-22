@@ -674,9 +674,16 @@ public class ChatService {
         Disposable disposable;
         try (var spanScope = turnSpan.inScope()) {
             disposable = Mono
-                    .fromCallable(() -> resolveIntent(conversation, userId, userMessage, observation))
+                    // Optional 包装（v5-F3 全灭兜底修复）：分类失败 resolveIntent 返回 null，
+                    // fromCallable(null) 是空 Mono、flatMapMany 会被整体跳过——用户只收到
+                    // 静默空 done。Optional 保证 lambda 必执行，null 意图按既有口径走主
+                    // Agent 自主路由（CHAT 档）：模型池全灭时错误经 mapAgentEventStream 的
+                    // 通用分支转 SSE error「AI 服务暂时不可用，请联系管理员」，不再白屏
+                    .fromCallable(() -> java.util.Optional.ofNullable(
+                            resolveIntent(conversation, userId, userMessage, observation)))
                     .subscribeOn(Schedulers.boundedElastic())
-                    .flatMapMany(intent -> {
+                    .flatMapMany(classified -> {
+                        IntentResult intent = classified.orElse(null);
                         // 意图分类完成，补标 chat-turn 的 intent 属性（含 UNKNOWN 兜底）
                         turnSpan.tag("intent", intent != null && intent.toIntentType() != null
                                 ? intent.toIntentType().name() : "UNKNOWN");
@@ -1343,10 +1350,15 @@ public class ChatService {
     }
 
     /**
-     * Agent 层异常 → SSE error 降级文案（FR-S09 兜底：熔断 OPEN / fallback 也失败时给用户明确提示，不白屏）
+     * Agent 层异常 → SSE error 降级文案（FR-S09 兜底：熔断 OPEN / fallback 也失败时给用户明确提示，不白屏）。
+     * 包私有：v5-F3 全灭文案（AllProvidersOpenException）单测直调。
      */
-    private String sseFallbackMessage(Throwable e) {
+    String sseFallbackMessage(Throwable e) {
         String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        if (isAllProvidersOpen(e)) {
+            // v5-F3 池内全部 provider 熔断（可能被 Reactor/框架包装，沿 cause 链判型）
+            return "AI 服务暂时不可用，请联系管理员。";
+        }
         if (msg.contains("CircuitBreaker") || msg.contains("CallNotPermitted")) {
             return "模型服务暂时不可用（已触发熔断保护），请稍等片刻再试；我们已自动降级重试。";
         }
@@ -1358,6 +1370,16 @@ public class ChatService {
             return "AI 服务账户余额不足，请联系管理员充值后重试（模型服务已拒绝请求）。";
         }
         return "处理失败，请稍后重试（" + msg + "）";
+    }
+
+    /** v5-F3：异常链上是否存在 AllProvidersOpenException（池内全部 provider 熔断） */
+    private static boolean isAllProvidersOpen(Throwable e) {
+        for (Throwable t = e; t != null; t = (t.getCause() == t ? null : t.getCause())) {
+            if (t instanceof com.travelscope.llm.AllProvidersOpenException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleError(SseEmitter emitter, StringBuilder replyBuf, Conversation conversation,

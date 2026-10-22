@@ -2,6 +2,7 @@ package com.travelscope.service;
 
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
+import com.travelscope.llm.ProviderProbeScheduler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -22,7 +23,7 @@ class EvidenceGateTest {
         AppProperties props = new AppProperties();
         props.getRag().setEvidenceGateEnabled(gateEnabled);
         props.getRag().setEvidenceGateMinScore(minScore);
-        return new RagServiceImpl(props, Mockito.mock(EsBm25Client.class), null, "u", "p");
+        return new RagServiceImpl(props, Mockito.mock(EsBm25Client.class), null, "u", "p", new ProviderProbeScheduler());
     }
 
     private static RetrievedFragment frag(String chunkId, Double vectorScore) {

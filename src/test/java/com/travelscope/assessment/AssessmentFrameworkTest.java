@@ -25,9 +25,14 @@ class AssessmentFrameworkTest {
     @Test void primaryAndFallbackAttemptsShareGroupButHaveSeparateUsage() throws Exception {
         var jdbc=mock(JdbcTemplate.class);var properties=new AssessmentProperties();properties.setEnabled(true);
         var store=new ObservationStore(jdbc,properties,new PayloadRedactor(new ObjectMapper()));
-        var gateway=new com.travelscope.agent.LlmGatewayModel(new ObservedModel(raw("primary",true),store),new ObservedModel(raw("fallback",false),store),io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("assessment-test"),Duration.ofSeconds(2),true);
+        // v5-F3：主/备双路改经模型池（首 provider 失败 → 池内 failover），两路各包 ObservedModel
+        var pool=new com.travelscope.llm.ModelProviderPool("assessment-test",List.of(
+            new com.travelscope.llm.ModelProviderPool.Provider("primary",1,new ObservedModel(raw("primary",true),store),
+                new com.travelscope.llm.ProviderCircuitBreaker("assessment-test/primary",60,0.95,30000),Duration.ofSeconds(2),Duration.ofSeconds(2)),
+            new com.travelscope.llm.ModelProviderPool.Provider("fallback",2,new ObservedModel(raw("fallback",false),store),
+                new com.travelscope.llm.ProviderCircuitBreaker("assessment-test/fallback",60,0.95,30000),Duration.ofSeconds(2),Duration.ofSeconds(2))));
         var root=store.begin("fallback",null);var runtime=RuntimeContext.builder().userId("test").sessionId("fallback").put(ObservationContext.KEY,root).build();
-        ReActAgent.builder().name("test-agent").model(gateway).middlewares(List.of(new ObservationMiddleware(store))).maxIters(1).build().call("input",runtime).block(Duration.ofSeconds(5));store.flush();
+        ReActAgent.builder().name("test-agent").model(pool).middlewares(List.of(new ObservationMiddleware(store))).maxIters(1).build().call("input",runtime).block(Duration.ofSeconds(5));store.flush();
         var updates=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().contains("SET attempt_group=")).toList();
         assertEquals(2,updates.size());assertEquals((UUID)updates.get(0).getArgument(1),(UUID)updates.get(1).getArgument(1));assertEquals(1,(Integer)updates.get(0).getArgument(2));assertEquals(2,(Integer)updates.get(1).getArgument(2));
         store.close();

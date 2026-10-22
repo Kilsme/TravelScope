@@ -2,6 +2,7 @@ package com.travelscope.service;
 
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
+import com.travelscope.llm.ProviderProbeScheduler;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -46,7 +47,7 @@ class EvidenceGateCalibrationTest {
         ds.setUsername("root");
         ds.setPassword("root");
         try {
-            RagServiceImpl rag = new RagServiceImpl(props, es, ds, "root", "root");
+            RagServiceImpl rag = new RagServiceImpl(props, es, ds, "root", "root", new ProviderProbeScheduler());
             try {
                 // 强相关（种子库覆盖）/ 弱相关（沾边城市）/ 不相关（无关领域）
                 String[] queries = {"杭州 必去景点", "杭州 亲子游 推荐", "西安 兵马俑 攻略",

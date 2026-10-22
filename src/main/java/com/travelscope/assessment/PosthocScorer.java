@@ -2,13 +2,10 @@ package com.travelscope.assessment;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.travelscope.config.AppProperties;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.model.Model;
-import io.agentscope.core.model.GenerateOptions;
-import io.agentscope.extensions.model.openai.OpenAIChatModel;
-import io.agentscope.extensions.model.openai.compat.glm.GLMFormatter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.jdbc.core.JdbcTemplate;
 import java.time.Duration;
@@ -29,15 +26,11 @@ public class PosthocScorer {
         """;
     private final Model model; private final ObservationMiddleware middleware; private final JdbcTemplate jdbc;
     private final ObjectMapper mapper; private final PayloadRedactor redactor;
-    public PosthocScorer(AppProperties config, ObservationStore store,ObservationMiddleware middleware,JdbcTemplate jdbc,ObjectMapper mapper,PayloadRedactor redactor,
-        @org.springframework.beans.factory.annotation.Value("${travelscope.assessment.scorer-model:}")String modelName) {
-        var mg=config.getModelGateway();
-        model=new ObservedModel(OpenAIChatModel.builder().baseUrl(mg.getBaseUrl()).apiKey(mg.getApiKey())
-            .modelName(modelName.isBlank()?mg.getReviewerModel():modelName).stream(true)
-            .formatter(new GLMFormatter())
-            .generateOptions(GenerateOptions.builder().additionalBodyParam("thinking",Map.of("type",mg.isThinkingEnabled()?"enabled":"disabled")).build())
-            .nativeStructuredOutput(mg.isNativeStructuredOutput()).nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-            .build(),store);
+    /** v5-F3：评分模型改注入 reviewer 池（原自建 OpenAIChatModel 退役，池内 provider 已含
+     *  ObservedModel 包装 + 熔断/failover，GLMFormatter 等差异随池配置生效） */
+    public PosthocScorer(ObservationMiddleware middleware,JdbcTemplate jdbc,ObjectMapper mapper,PayloadRedactor redactor,
+        @Qualifier("gatewayReviewerModel") Model reviewerModel) {
+        this.model=reviewerModel;
         this.middleware=middleware;this.jdbc=jdbc;this.mapper=mapper;this.redactor=redactor;
     }
     public record Score(int routeCoherence,int timeDensity,int preferenceMatch,String reason,List<String> evidence) {

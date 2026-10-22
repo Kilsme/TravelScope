@@ -76,7 +76,7 @@ public class ConversationSummaryService {
 
     public ConversationSummaryService(ConversationService conversationService,
                                       ConversationRepository conversationRepository,
-                                      @Qualifier("conversationSummaryModel") Model summaryModel,
+                                      @Qualifier("gatewayChatModel") Model summaryModel,
                                       AppProperties appProperties) {
         this.conversationService = conversationService;
         this.conversationRepository = conversationRepository;

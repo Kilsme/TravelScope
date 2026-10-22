@@ -2,6 +2,7 @@ package com.travelscope.service;
 
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
+import com.travelscope.llm.ProviderProbeScheduler;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -24,7 +25,7 @@ class RagServiceImplParallelTest {
     private static RagServiceImpl newService(EsBm25Client esClient, int laneTimeoutMs) {
         AppProperties props = new AppProperties();
         props.getRag().setLaneTimeoutMs(laneTimeoutMs);
-        return new RagServiceImpl(props, esClient, null, "root", "root");
+        return new RagServiceImpl(props, esClient, null, "root", "root", new ProviderProbeScheduler());
     }
 
     @Test
@@ -98,7 +99,7 @@ class RagServiceImplParallelTest {
 
         IllegalStateException ex = org.junit.jupiter.api.Assertions.assertThrows(
                 IllegalStateException.class,
-                () -> new RagServiceImpl(props, es, null, "root", "root"));
+                () -> new RagServiceImpl(props, es, null, "root", "root", new ProviderProbeScheduler()));
         assertTrue(ex.getMessage().contains("漏斗单调收窄"), "报错应点明不变式: " + ex.getMessage());
     }
 }

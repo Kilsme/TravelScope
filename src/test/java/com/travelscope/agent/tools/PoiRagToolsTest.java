@@ -1,6 +1,7 @@
 package com.travelscope.agent.tools;
 
 import com.travelscope.config.AppProperties;
+import com.travelscope.llm.ProviderProbeScheduler;
 import com.travelscope.dto.RetrievedFragment;
 import com.travelscope.service.EsBm25Client;
 import com.travelscope.service.RagServiceImpl;
@@ -44,7 +45,7 @@ class PoiRagToolsTest {
     /** 检索桩：固定返回带来源标记的片段（构造传 null 绕开 PG/ES 初始化——只在覆写方法中使用） */
     static class StubRagService extends RagServiceImpl {
         StubRagService() {
-            super(new AppProperties(), null, null, "u", "p");
+            super(new AppProperties(), null, null, "u", "p", new ProviderProbeScheduler());
         }
 
         @Override
@@ -67,7 +68,7 @@ class PoiRagToolsTest {
         private boolean gateEmpty;
 
         MutableStubRagService() {
-            super(new AppProperties(), null, null, "u", "p");
+            super(new AppProperties(), null, null, "u", "p", new ProviderProbeScheduler());
         }
 
         void setFragments(List<RetrievedFragment> fragments) {

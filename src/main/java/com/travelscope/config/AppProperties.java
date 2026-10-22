@@ -56,6 +56,9 @@ public class AppProperties {
     /** LLM Gateway 配置（FR-S09） */
     private LlmGatewayConfig llmGateway = new LlmGatewayConfig();
 
+    /** 多模型熔断池（v5-F3，2026-10-22）：chat 双池（main/reviewer 各自独立列表）+ embedding 池 */
+    private ModelPoolConfig modelPool = new ModelPoolConfig();
+
     /** 对话历史注入配置（多轮上下文，2026-09-21 失忆修复） */
     private ChatHistoryConfig chatHistory = new ChatHistoryConfig();
 
@@ -175,6 +178,94 @@ public class AppProperties {
         private String embeddingModel = "text-embedding-v3";
         /** Embedding 维度 */
         private int embeddingDimensions = 1024;
+    }
+
+    /**
+     * 多模型熔断池配置（v5-F3，2026-10-22）。
+     * <p>
+     * chat 双池独立列表独立熔断（main=主/规划/意图/轻量，reviewer=质检更强模型），当前
+     * 两池同为 glm-5-3-260814 + Kimi-k3（同网关，仅 model id 不同）；embedding 池列表
+     * 顺序即优先级。熔断口径：单次响应超时立即 OPEN；累计总调用 &gt; min-calls 且成功率
+     * &lt; min-success-rate 才统计熔断；OPEN 冷却到期由探针 CAS 抢单探测，通过恢复 CLOSED。
+     * </p>
+     */
+    @Data
+    public static class ModelPoolConfig {
+        private BreakerConfig breaker = new BreakerConfig();
+        private ChatPoolsConfig chat = new ChatPoolsConfig();
+        private EmbeddingPoolConfig embedding = new EmbeddingPoolConfig();
+    }
+
+    /** 熔断全局默认（provider 可逐项覆盖超时/冷却） */
+    @Data
+    public static class BreakerConfig {
+        /** 统计熔断门槛：累计总调用超过该值才允许按成功率熔断 */
+        private int minCalls = 60;
+        /** 统计熔断门槛：成功率低于该值才熔断（0.95 = 成功率 < 95%） */
+        private double minSuccessRate = 0.95;
+        /** OPEN 冷却时长（秒），到期转半开由探针测试 */
+        private int openWaitSeconds = 30;
+        /** 探针扫描间隔（秒） */
+        private int probeIntervalSeconds = 10;
+        /** 首包超时（秒）——挂死快速失败 */
+        private long firstPacketTimeoutSeconds = 10;
+        /** 块间超时（秒）——慢生成不误杀 */
+        private long chunkTimeoutSeconds = 30;
+        /** embedding 单次调用超时（秒） */
+        private long embeddingTimeoutSeconds = 15;
+    }
+
+    @Data
+    public static class ChatPoolsConfig {
+        /** 主池：travel-master/planner/意图识别 L2+L3/需求抽取/会话摘要 */
+        private ChatPoolSpec main = new ChatPoolSpec();
+        /** reviewer 池：质检评分（更强模型，独立列表独立熔断） */
+        private ChatPoolSpec reviewer = new ChatPoolSpec();
+    }
+
+    @Data
+    public static class ChatPoolSpec {
+        private List<ProviderSpec> providers = new ArrayList<>();
+    }
+
+    /** 池内一个 chat provider（走 OpenAI 兼容网关，本地部署模型同协议仅 base-url/key 不同） */
+    @Data
+    public static class ProviderSpec {
+        private String id;
+        private String model;
+        /** 网关 Base URL（空 = 沿用 travelscope.model-gateway.base-url） */
+        private String baseUrl;
+        private String apiKey;
+        /** 池内选路顺序，小者优先（兜底模型给大值） */
+        private int priority = 100;
+        /** GLM 系请求参数（GLMFormatter + thinking 透传）——非 GLM 模型（如 Kimi-k3）置 false */
+        private boolean useGlmFormatter = false;
+        /** 首包超时覆盖（秒，空=全局默认） */
+        private Long firstPacketTimeoutSeconds;
+        /** 块间超时覆盖（秒，空=全局默认） */
+        private Long chunkTimeoutSeconds;
+        /** OPEN 冷却覆盖（秒，空=全局默认；本地/兜底模型可给更短值尽快恢复） */
+        private Integer openWaitSeconds;
+        /** 原生结构化输出覆盖（空=model-gateway 默认） */
+        private Boolean nativeStructuredOutput;
+        /** 原生结构化输出与工具并存覆盖（Kimi/DeepSeek 系有 response_format 优先跳过工具的坑，空=默认） */
+        private Boolean nativeStructuredOutputWithTools;
+    }
+
+    @Data
+    public static class EmbeddingPoolConfig {
+        /** 列表顺序即优先级；当前 DashScope 单项，配置留扩展位 */
+        private List<EmbeddingProviderSpec> providers = new ArrayList<>();
+    }
+
+    @Data
+    public static class EmbeddingProviderSpec {
+        private String id;
+        private String model = "text-embedding-v3";
+        private String apiKey;
+        private int dimensions = 1024;
+        /** OPEN 冷却覆盖（秒，空=全局默认） */
+        private Integer openWaitSeconds;
     }
 
     @Data
@@ -351,15 +442,16 @@ public class AppProperties {
     }
 
     /**
-     * LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）
+     * LLM Gateway 配置（FR-S09：限流/快慢泳道/降级）
      * <p>
-     * 两层职责：对话准入层（ChatService 调 LlmGateway——全局/单用户并发 + 全局 QPS +
-     * 快慢泳道超时）；模型调用层（LlmGatewayModel 装饰器——熔断 + 单次超时 + fallback）。
+     * 对话准入层配置（ChatService 调 LlmGateway——全局/单用户并发 + 全局 QPS + 快慢泳道
+     * 超时）。模型调用层的熔断/超时/failover 配置 v5-F3（2026-10-22）起迁
+     * {@code travelscope.model-pool}（ModelProviderPool 池装饰器），本节不再承载。
      * </p>
      */
     @Data
     public static class LlmGatewayConfig {
-        /** 网关总开关（false 时准入直通、模型不装饰，保持旧行为） */
+        /** 准入层总开关（false 时准入直通） */
         private boolean enabled = true;
         /** 全局并发上限（同时在处理的对话数） */
         private int globalConcurrency = 50;
@@ -377,26 +469,6 @@ public class AppProperties {
          *  + RAG 语义路降级后再上调至 600（实测 450s 仍未到质检段；600 为 spawn
          *  同步等待 clamp 上限，泳道必须 ≥ 同步等待上限）。yml 显式配置以 yml 为准 */
         private int slowLaneTimeoutSeconds = 300;
-        /** 模型单次调用超时（秒，LlmGatewayModel 装饰器） */
-        private int modelTimeoutSeconds = 30;
-        /** 首包探测超时（秒，2026-10-11 P2-G）：首个 token 的到达判据——整流 30s 超时无法
-         *  区分「模型坏了」（挂死无响应）与「慢慢生成长行程」（慢但在流式输出），
-         *  首包限时内未到达即判失败切 fallback（快速失败）；首包后每块间隙仍用
-         *  modelTimeoutSeconds 保护。应明显小于 modelTimeoutSeconds */
-        private int firstPacketTimeoutSeconds = 10;
-        /** 熔断：滑动窗口大小（次） */
-        private int cbSlidingWindowSize = 10;
-        /** 熔断：失败率阈值（%，窗口内失败率超此值即 OPEN） */
-        private int cbFailureRateThreshold = 50;
-        /** 熔断：最小调用样本数（窗口内达到才计算失败率） */
-        private int cbMinimumNumberOfCalls = 5;
-        /** 熔断：OPEN 状态持续时间（秒），过后转 HALF_OPEN 探测 */
-        private int cbWaitDurationOpenSeconds = 10;
-        /** fallback 降级开关（主模型失败 → 轻量模型 deepseek-v4-flash-0731 重试一次） */
-        private boolean fallbackEnabled = true;
-        /** 主模型探测回切间隔（秒）：粘滞 fallback 期间定时对 primary 发最小探测调用
-         *  （走熔断器，HALF_OPEN 惰性触发），成功即自动回切——替代「重启恢复」 */
-        private int probeIntervalSeconds = 30;
     }
 
     /**

@@ -33,9 +33,10 @@ import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
-import com.travelscope.agent.LlmGatewayModel;
+import com.travelscope.llm.EmbeddingProviderPool;
+import com.travelscope.llm.ModelProviderPool;
+import com.travelscope.llm.ProviderCircuitBreaker;
+import com.travelscope.llm.ProviderProbeScheduler;
 import com.travelscope.service.LlmGateway;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -260,56 +261,33 @@ public class AgentConfig {
     }
 
     /**
-     * 创建主链路模型 Bean（glm-5-3-260814 @ 模型网关，经 LLM Gateway 装饰，FR-S09）
+     * 主链路模型池 Bean（v5-F3 main 池，@Primary：master/planner/意图 L2+L3/需求抽取/会话摘要）
      * <p>
-     * 2026-10-05 对话模型全量迁移：OpenAIChatModel 直连自建模型网关（标准 OpenAI
-     * chat completions 协议 + Bearer 认证；baseUrl 以 /v1 结尾时扩展自动去重，
-     * 最终请求 {base-url}/chat/completions，无需设置 endpointPath）。base-url/api-key 取自
-     * travelscope.model-gateway.*（api-key 即环境变量 media_model_gateway_api_key）。
-     * 外包 {@link LlmGatewayModel} 装饰器：熔断（滑动窗口失败率超阈值 → OPEN → HALF_OPEN）+
-     * 单次调用超时 + 失败 fallback → deepseek-v4-flash-0731 重流。master/planner/modelResolver/
-     * 4 个声明式子 Agent 全部收敛到本 Bean——包一个实例全链路生效（意图级联 L3 也经此）。
+     * 2026-10-22 多模型熔断池改造：原「ObservedModel(OpenAIChatModel) + LlmGatewayModel 单
+     * fallback 装饰」泛化为 N 路 provider 池（{@link ModelProviderPool}）。providers 来自
+     * {@code travelscope.model-pool.chat.main}（当前 glm-5-3-260814 优先 + Kimi-k3 兜底，同网关
+     * 仅 model id 不同）；per-provider：独立熔断器（超时立即 OPEN / 统计口径 OPEN / 探针恢复）、
+     * 首包+块间超时分段、use-glm-formatter 差异（GLM 系才挂 GLMFormatter + thinking 透传）。
+     * 池语义（选路/首包提交闸门/能力委托）见 {@link ModelProviderPool}；探针注册见
+     * {@link ProviderProbeScheduler}。旧 LlmGatewayModel 的粘滞 fallback + 30s ping 回切退役，
+     * 语义并入「池内 failover + OPEN 冷却探针」。model-pool 未配置时回落 model-gateway 单模型
+     * （GLMFormatter 兼容默认，测试/最小部署用）。
      * </p>
      * <p>
      * 返回类型为 {@link Model} 接口（装饰器模式；框架核验：Model 仅 2 抽象方法，
      * 框架自身的 fallbackModel 实现就是同款 implements Model 包装器）。
-     * @Primary：按 Model 类型注入的下游解析到本装饰后主链路模型。
+     * @Primary：按 Model 类型注入的下游解析到本池。
      * </p>
      */
     @Bean
     @org.springframework.context.annotation.Primary
-    public Model gatewayChatModel(@org.springframework.beans.factory.annotation.Qualifier("gatewayLightModel") Model gatewayLightModel) {
-        var mg = appProperties.getModelGateway();
-        Model primary = new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
-                .baseUrl(mg.getBaseUrl())
-                .apiKey(mg.getApiKey())
-                .modelName(mg.getModel())
-                .stream(true)
-                .formatter(new GLMFormatter())
-                .generateOptions(glmDefaults(mg))
-                .nativeStructuredOutput(mg.isNativeStructuredOutput())
-                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build(), observationStore);
-        var gw = appProperties.getLlmGateway();
-        if (!gw.isEnabled()) {
-            return primary;   // 网关关闭：裸模型，保持旧行为
-        }
-        CircuitBreaker cb = CircuitBreaker.of("llm-gateway-model",
-                CircuitBreakerConfig.custom()
-                        .slidingWindowSize(gw.getCbSlidingWindowSize())
-                        .failureRateThreshold(gw.getCbFailureRateThreshold())
-                        .minimumNumberOfCalls(gw.getCbMinimumNumberOfCalls())
-                        .waitDurationInOpenState(Duration.ofSeconds(gw.getCbWaitDurationOpenSeconds()))
-                        .build());
-        return new LlmGatewayModel(primary,
-                gw.isFallbackEnabled() ? gatewayLightModel : null, cb,
-                Duration.ofSeconds(gw.getModelTimeoutSeconds()),
-                Duration.ofSeconds(gw.getFirstPacketTimeoutSeconds()),
-                gw.isFallbackEnabled(), tracingHelper).assessment(observationStore);
+    public Model gatewayChatModel(ProviderProbeScheduler probeScheduler) {
+        return buildChatPool("main", appProperties.getModelPool().getChat().getMain(), probeScheduler);
     }
 
     /**
-     * LLM Gateway 对话准入层 Bean（FR-S09：全局/单用户并发 + QPS + 泳道超时）
+     * LLM Gateway 对话准入层 Bean（FR-S09：全局/单用户并发 + QPS + 泳道超时；
+     * v5-F3 起模型层熔断/failover 迁入 model-pool 池装饰器，准入层职责不变）
      */
     @Bean
     public LlmGateway llmGateway() {
@@ -317,70 +295,85 @@ public class AgentConfig {
     }
 
     /**
-     * L2 轻量分类模型 Bean（deepseek-v4-flash-0731 @ 模型网关，FR-S01 意图级联）
+     * 质检评分模型池 Bean（v5-F3 reviewer 池：standaloneReviewer / planner modelResolver 分流 /
+     * RubricScorer / PosthocScorer，独立列表独立熔断，将来换更强模型只改本池配置）
      * <p>
-     * 与主链路共用网关 base-url/api-key，仅模型名不同（travelscope.intent-cascade.l2-model）；
-     * 被意图级联的 L2 层使用（LightweightIntentClassifier），并作为主链路
-     * LlmGatewayModel 的 fallback 目标（fallback 是降级终点，自身不再套熔断；
-     * 主/备同网关——网关整体故障时 fallback 同失效，由熔断 OPEN 快速失败 + SSE error 兜底）。
+     * providers 来自 {@code travelscope.model-pool.chat.reviewer}（当前 Kimi-k3 优先 +
+     * glm-5-3-260814 兜底）；未配置时回落 model-gateway.reviewer-model 单模型（GLMFormatter）。
      * </p>
      */
     @Bean
-    public Model gatewayLightModel() {
-        var mg = appProperties.getModelGateway();
-        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
-                .baseUrl(mg.getBaseUrl())
-                .apiKey(mg.getApiKey())
-                .modelName(appProperties.getIntentCascade().getL2Model())
-                .stream(true)
-                .nativeStructuredOutput(mg.isNativeStructuredOutput())
-                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build(), observationStore);
+    public Model gatewayReviewerModel(ProviderProbeScheduler probeScheduler) {
+        return buildChatPool("reviewer", appProperties.getModelPool().getChat().getReviewer(), probeScheduler);
     }
 
     /**
-     * 记忆摘要生成模型 Bean（deepseek-v4-flash-0731 @ 模型网关，2026-09-29 失忆修复）
-     * <p>
-     * ConversationSummaryService 每满 10 轮后台折叠一次会话历史的低成本低延迟辅助调用，
-     * 与意图级联 L2 同级定位。独立实例而非复用轻量 Bean：模型名走
-     * chat-history.summary.model 独立配置（与 l2-model 各自可调，当前同档）。
-     * 裸模型不经 LlmGateway 装饰——后台任务不占对话准入槽位、不影响主链路熔断统计。
-     * </p>
+     * 构建一个 chat 模型池（v5-F3 统一装配）：逐 provider 建 ObservedModel(OpenAIChatModel)
+     * + 独立熔断器 + 超时覆盖，并注册探针目标（OPEN 冷却到期由调度器 CAS 抢单发最小探测）。
      */
-    @Bean
-    public Model conversationSummaryModel() {
+    private ModelProviderPool buildChatPool(String poolName, AppProperties.ChatPoolSpec spec,
+                                            ProviderProbeScheduler probes) {
         var mg = appProperties.getModelGateway();
-        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
-                .baseUrl(mg.getBaseUrl())
-                .apiKey(mg.getApiKey())
-                .modelName(appProperties.getChatHistory().getSummary().getModel())
-                .stream(true)
-                .nativeStructuredOutput(mg.isNativeStructuredOutput())
-                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build(), observationStore);
+        var bc = appProperties.getModelPool().getBreaker();
+        List<AppProperties.ProviderSpec> specs = spec.getProviders();
+        if (specs == null || specs.isEmpty()) {
+            // model-pool 未配置：回落 model-gateway 单模型（GLM + GLMFormatter 兼容默认）
+            specs = List.of(legacyChatProviderSpec(
+                    "reviewer".equals(poolName) ? mg.getReviewerModel() : mg.getModel()));
+        }
+        List<ModelProviderPool.Provider> providers = new java.util.ArrayList<>();
+        for (AppProperties.ProviderSpec p : specs) {
+            OpenAIChatModel.Builder builder = OpenAIChatModel.builder()
+                    .baseUrl(p.getBaseUrl() == null || p.getBaseUrl().isBlank()
+                            ? mg.getBaseUrl() : p.getBaseUrl())
+                    .apiKey(p.getApiKey() != null && !p.getApiKey().isBlank()
+                            ? p.getApiKey() : mg.getApiKey())
+                    .modelName(p.getModel())
+                    .stream(true)
+                    .nativeStructuredOutput(p.getNativeStructuredOutput() != null
+                            ? p.getNativeStructuredOutput() : mg.isNativeStructuredOutput())
+                    .nativeStructuredOutputWithTools(p.getNativeStructuredOutputWithTools() != null
+                            ? p.getNativeStructuredOutputWithTools() : mg.isNativeStructuredOutputWithTools());
+            if (p.isUseGlmFormatter()) {
+                // GLM 系专属：GLMFormatter + thinking 参数透传；非 GLM（Kimi-k3 等）走网关默认格式
+                builder.formatter(new GLMFormatter()).generateOptions(glmDefaults(mg));
+            }
+            Model raw = new com.travelscope.assessment.ObservedModel(builder.build(), observationStore);
+            ProviderCircuitBreaker breaker = new ProviderCircuitBreaker(
+                    poolName + "/" + p.getId(), bc.getMinCalls(), bc.getMinSuccessRate(),
+                    Duration.ofSeconds(p.getOpenWaitSeconds() != null
+                            ? p.getOpenWaitSeconds() : bc.getOpenWaitSeconds()).toMillis());
+            ModelProviderPool.Provider provider = new ModelProviderPool.Provider(
+                    p.getId(), p.getPriority(), raw, breaker,
+                    Duration.ofSeconds(p.getFirstPacketTimeoutSeconds() != null
+                            ? p.getFirstPacketTimeoutSeconds() : bc.getFirstPacketTimeoutSeconds()),
+                    Duration.ofSeconds(p.getChunkTimeoutSeconds() != null
+                            ? p.getChunkTimeoutSeconds() : bc.getChunkTimeoutSeconds()));
+            providers.add(provider);
+            registerProbeTarget(probes, breaker, () -> ModelProviderPool.probe(provider));
+        }
+        log.info("模型池 {} 构建完成: {}", poolName, providers.stream()
+                .map(p -> p.id() + "(" + p.raw().getModelName() + ",priority=" + p.priority() + ")").toList());
+        return new ModelProviderPool(poolName, providers, tracingHelper);
     }
 
-    /**
-     * 质检评分模型 Bean（glm-5-3-260814 @ 模型网关，FR-S08：reviewer-agent 专用）
-     * <p>
-     * 评分模型与主链路模型名独立配置（travelscope.model-gateway.reviewer-model，
-     * 当前同为 glm-5-3-260814）；由 buildPlannerAgent 的 modelResolver 按 agent name
-     * 分流到 reviewer-agent，EvalCase 的 Rubric 评分复用本 Bean。
-     * </p>
-     */
-    @Bean
-    public Model gatewayReviewerModel() {
-        var mg = appProperties.getModelGateway();
-        return new com.travelscope.assessment.ObservedModel(OpenAIChatModel.builder()
-                .baseUrl(mg.getBaseUrl())
-                .apiKey(mg.getApiKey())
-                .modelName(mg.getReviewerModel())
-                .stream(true)
-                .formatter(new GLMFormatter())
-                .generateOptions(glmDefaults(mg))
-                .nativeStructuredOutput(mg.isNativeStructuredOutput())
-                .nativeStructuredOutputWithTools(mg.isNativeStructuredOutputWithTools())
-                .build(), observationStore);
+    /** model-pool 缺省时的兼容单 provider（model-gateway 主/质检模型 + GLMFormatter） */
+    private static AppProperties.ProviderSpec legacyChatProviderSpec(String model) {
+        AppProperties.ProviderSpec s = new AppProperties.ProviderSpec();
+        s.setId("default");
+        s.setModel(model);
+        s.setPriority(1);
+        s.setUseGlmFormatter(true);
+        return s;
+    }
+
+    /** 探针目标注册（breaker 冷却到期 → 调度器 CAS 抢单 → 对该 provider 发最小探测） */
+    private static void registerProbeTarget(ProviderProbeScheduler probes,
+                                            ProviderCircuitBreaker breaker, Runnable action) {
+        probes.register(new ProviderProbeScheduler.ProbeTarget() {
+            @Override public ProviderCircuitBreaker breaker() { return breaker; }
+            @Override public void probe() { action.run(); }
+        });
     }
 
     /**
@@ -746,17 +739,19 @@ public class AgentConfig {
     /**
      * 创建意图级联路由器 Bean（FR-S01：L0 → L1 → L2 → L3，上层命中即短路）
      * <p>
-     * L2 注入 deepseek-v4-flash-0731 轻量分类器（模型网关轻量档）；L3 以方法引用包装现有
-     * IntentClassifier（零改动）；缓存为 RedisIntentCache（Redis 不可用时静默降级为无缓存模式）。
+     * v5-F3 起 L2 轻量分类改走主池（{@code gatewayChatModel}，glm 优先池内 failover；
+     * 旧 gatewayLightModel 专用轻量档 deepseek-v4-flash-0731 随单 fallback 装饰退役）；
+     * L3 以方法引用包装现有 IntentClassifier（零改动）。缓存为 RedisIntentCache
+     * （Redis 不可用时静默降级为无缓存模式）。
      * </p>
      */
     @Bean
     public IntentCascadeRouter intentCascadeRouter(
             IntentCache intentCache,
             IntentClassifier intentClassifier,
-            @org.springframework.beans.factory.annotation.Qualifier("gatewayLightModel")
-            Model gatewayLightModel) {
-        LightweightIntentClassifier l2 = new LightweightIntentClassifier(gatewayLightModel);
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
+            Model mainModelPool) {
+        LightweightIntentClassifier l2 = new LightweightIntentClassifier(mainModelPool);
         l2.setObservation(observationMiddleware);
         return new IntentCascadeRouter(appProperties, intentCache,
                 new IntentCascadeRouter.LlmClassifier() {

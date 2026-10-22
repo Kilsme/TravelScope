@@ -59,8 +59,10 @@ class AssessmentReviewRegressionTest {
         var config=new AgentConfig(properties,null,null,null,null,null,null,TracingHelper.NOOP);
         ReflectionTestUtils.setField(config,"observationStore",mock(ObservationStore.class));
         try(var context=new AnnotationConfigApplicationContext()){
-            context.registerBean("gatewayReviewerModel",Model.class,config::gatewayReviewerModel);context.refresh();
-            Model bean=context.getBean("gatewayReviewerModel",Model.class);assertInstanceOf(ObservedModel.class,bean);
+            // v5-F3：gatewayReviewerModel → reviewer 模型池（未配 model-pool 时回落单 provider）
+            context.registerBean("gatewayReviewerModel",Model.class,()->config.gatewayReviewerModel(new com.travelscope.llm.ProviderProbeScheduler()));context.refresh();
+            Model bean=context.getBean("gatewayReviewerModel",Model.class);assertInstanceOf(com.travelscope.llm.ModelProviderPool.class,bean);
+            assertEquals("reviewer",((com.travelscope.llm.ModelProviderPool)bean).poolName());
             var legacyField=Class.forName("com.travelscope.eval.EvalCaseRunnerTest").getDeclaredField("reviewerModel");
             assertEquals(Model.class,legacyField.getType());
             assertSame(bean,context.getDefaultListableBeanFactory().resolveDependency(new DependencyDescriptor(legacyField,true),"legacy-eval"));

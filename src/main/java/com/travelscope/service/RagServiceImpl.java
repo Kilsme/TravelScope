@@ -3,6 +3,9 @@ package com.travelscope.service;
 import com.travelscope.common.trace.TraceNode;
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.RetrievedFragment;
+import com.travelscope.llm.EmbeddingProviderPool;
+import com.travelscope.llm.ProviderCircuitBreaker;
+import com.travelscope.llm.ProviderProbeScheduler;
 import io.agentscope.core.embedding.dashscope.DashScopeTextEmbedding;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.rag.knowledge.SimpleKnowledge;
@@ -16,6 +19,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -85,7 +90,8 @@ public class RagServiceImpl implements RagService {
     public RagServiceImpl(AppProperties appProperties, EsBm25Client esBm25Client,
                           javax.sql.DataSource dataSource,
                           @Value("${spring.datasource.username}") String dbUsername,
-                          @Value("${spring.datasource.password}") String dbPassword) {
+                          @Value("${spring.datasource.password}") String dbPassword,
+                          ProviderProbeScheduler probeScheduler) {
         this.ragConfig = appProperties.getRag();
         this.esBm25Client = esBm25Client;
         // 启动校验（2026-10-11 P1-E，照 ragent RetrievalBudget 不变式）：漏斗单调收窄——
@@ -108,17 +114,46 @@ public class RagServiceImpl implements RagService {
                     .dimensions(as.getEmbeddingDimensions())    // 1024
                     .distanceType(PgVectorStore.DistanceType.COSINE)
                     .build();
-            DashScopeTextEmbedding embedding = DashScopeTextEmbedding.builder()
-                    .apiKey(ds.getApiKey())
-                    .modelName(ds.getEmbeddingModel())          // text-embedding-v3
-                    .dimensions(ds.getEmbeddingDimensions())
-                    .build();
+            // v5-F3 向量模型池：provider 列表 + per-provider 熔断 + 探针注册（全灭时 embed 抛
+            // AllProvidersOpenException → dualRetrieveInternal 既有 catch 把语义路本轮退化为
+            // BM25，零新降级代码）；未配列表时回落 dashscope 单模型兼容默认
+            List<AppProperties.EmbeddingProviderSpec> embeddingSpecs =
+                    appProperties.getModelPool().getEmbedding().getProviders();
+            if (embeddingSpecs == null || embeddingSpecs.isEmpty()) {
+                AppProperties.EmbeddingProviderSpec fallback = new AppProperties.EmbeddingProviderSpec();
+                fallback.setId("dashscope");
+                fallback.setModel(ds.getEmbeddingModel());
+                fallback.setDimensions(ds.getEmbeddingDimensions());
+                embeddingSpecs = List.of(fallback);
+            }
+            AppProperties.BreakerConfig bc = appProperties.getModelPool().getBreaker();
+            List<EmbeddingProviderPool.EmbeddingProvider> embeddingProviders = new ArrayList<>();
+            for (AppProperties.EmbeddingProviderSpec spec : embeddingSpecs) {
+                DashScopeTextEmbedding raw = DashScopeTextEmbedding.builder()
+                        .apiKey(spec.getApiKey() != null && !spec.getApiKey().isBlank()
+                                ? spec.getApiKey() : ds.getApiKey())
+                        .modelName(spec.getModel())                 // text-embedding-v3
+                        .dimensions(spec.getDimensions())
+                        .build();
+                ProviderCircuitBreaker breaker = new ProviderCircuitBreaker(
+                        "embedding/" + spec.getId(), bc.getMinCalls(), bc.getMinSuccessRate(),
+                        Duration.ofSeconds(spec.getOpenWaitSeconds() != null
+                                ? spec.getOpenWaitSeconds() : bc.getOpenWaitSeconds()).toMillis());
+                EmbeddingProviderPool.EmbeddingProvider provider = new EmbeddingProviderPool.EmbeddingProvider(
+                        spec.getId(), raw, breaker, Duration.ofSeconds(bc.getEmbeddingTimeoutSeconds()));
+                embeddingProviders.add(provider);
+                probeScheduler.register(new ProviderProbeScheduler.ProbeTarget() {
+                    @Override public ProviderCircuitBreaker breaker() { return breaker; }
+                    @Override public void probe() { EmbeddingProviderPool.probe(provider); }
+                });
+            }
             knowledge = SimpleKnowledge.builder()
-                    .embeddingModel(embedding)
+                    .embeddingModel(new EmbeddingProviderPool(embeddingProviders))
                     .embeddingStore(store)
                     .build();
-            log.info("RAG 语义路初始化: pgvector 表={}, dims={}, embedding={}",
-                    as.getVectorStoreTable(), as.getEmbeddingDimensions(), ds.getEmbeddingModel());
+            log.info("RAG 语义路初始化: pgvector 表={}, dims={}, embedding 池={}",
+                    as.getVectorStoreTable(), as.getEmbeddingDimensions(),
+                    embeddingProviders.stream().map(p -> p.id() + "(" + p.raw().getModelName() + ")").toList());
         } catch (Exception e) {
             log.warn("RAG 语义路初始化失败（降级为纯 BM25 路）: {}", e.getMessage());
         }
