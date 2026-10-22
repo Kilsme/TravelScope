@@ -9,9 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
- * parseTextLabel 三层解析纯单测（2026-10-22，无模型调用）：纯标签 → 带前缀形态
- * （kimi-k3 实测输出「**意图类别：PLANNING**」）→ 短输出词边界提取；长解释文本
- * 判空降级 L3（防多标签词误取首个）。
+ * parseTextLabel 四层解析纯单测（2026-10-22，无模型调用）：纯标签 → 带前缀形态
+ * （kimi-k3 实测输出「**意图类别：PLANNING**」）→ intent 字段形态（glm 把 JSON 整体
+ * 当纯文本输出/reason 先行后的长文本内字段）→ 短输出词边界提取；长解释文本判空
+ * 降级 L3（防多标签词误取首个）。
  */
 class LightweightIntentClassifierParseTest {
 
@@ -43,6 +44,21 @@ class LightweightIntentClassifierParseTest {
     void shortOutputWordBoundary() throws Exception {
         assertEquals(IntentType.RAG, parse("RAG（知识库问答）"));
         assertEquals(IntentType.TOOL_CALL, parse("标签: TOOL_CALL"));
+    }
+
+    @Test
+    @DisplayName("intent 字段形态兜底：glm 把 JSON 整体当纯文本输出（v7 reason 先行实测）")
+    void intentFieldFormRecoversJsonAsText() throws Exception {
+        // 2026-10-22 IntentCascadeRealApiTest 实测形态一：完整 JSON 当文本输出（长 reason + intent）
+        assertEquals(IntentType.PLANNING, parse(
+                "{\"reason\": \"用户回答长春是对反问的补充，属于规划流程的继续\", \"intent\": \"PLANNING\"}"));
+        // 实测形态二：reason 内引号弄畸形 JSON，intent 落在长文本尾部（>50 字符，
+        // 词边界层接不住，只有 intent 字段形态能救）
+        assertEquals(IntentType.PLANNING, parse(
+                "{\"reason\": \"当前状态为需求收集中，助手刚反问目的地，用户回复「长春」是对该反问的短回答，"
+                        + "属于正在进行的行程规划流程的继续。\" , \"intent\": \"PLANNING\"}"));
+        // 行内非 JSON 写法
+        assertEquals(IntentType.TOOL_CALL, parse("根据上下文判定 intent: TOOL_CALL，消息是天气查询"));
     }
 
     @Test

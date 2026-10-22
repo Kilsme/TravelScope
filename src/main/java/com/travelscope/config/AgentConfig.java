@@ -759,6 +759,7 @@ public class AgentConfig {
     public IntentCascadeRouter intentCascadeRouter(
             IntentCache intentCache,
             IntentClassifier intentClassifier,
+            TaskWorkspace taskWorkspaceService,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel")
             Model mainModelPool) {
         LightweightIntentClassifier l2 = new LightweightIntentClassifier(mainModelPool);
@@ -770,7 +771,9 @@ public class AgentConfig {
                 }, new IntentCascadeRouter.LlmClassifier() {
                     public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s) {return intentClassifier.classify(m,c,u,s);}
                     public com.travelscope.dto.IntentResult classify(String m,String c,String u,String s,com.travelscope.assessment.ObservationContext o) {return intentClassifier.classify(m,c,u,s,o);}
-                });
+                },
+                // v7 第六章 L0 完成态守卫：会话协作目录有行程草案 = 规划完成态
+                (uid, sid) -> taskWorkspaceService.readItineraryDraft(uid, sid).isPresent());
     }
 
 }

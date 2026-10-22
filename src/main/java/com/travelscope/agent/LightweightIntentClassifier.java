@@ -41,9 +41,15 @@ public class LightweightIntentClassifier {
             - RAG：旅游攻略、目的地介绍、文化风俗等知识型问题
 
             规则：
+            - intent 为唯一类别标签；reason 补一句简短判定依据（不超过 40 字：指代指什么/结合什么状态）
             - 优先按【当前用户消息】本身判定；消息自身意图明确时不被上下文带偏
+            - 消息含指示代词或省略主语（那个/这样/继续/可以吗）时，先从【对话上下文】解析
+              指代对象与所处流程，再判定类别
             - 消息本身不明确时（如只答地名/天数/日期/预算/人数的短回答），结合【对话上下文】
               理解——对助手上一轮反问的回答属于正在进行的流程，通常判 PLANNING
+            - 上下文含「需求收集中」：用户的确认、选择、短回答是对反问的回答 → PLANNING
+            - 上下文含「行程已生成」：对行程的追问、调整 → PLANNING；与行程无关的新查询
+              （天气/车票等）按消息本身判定
             - 无上下文时只看当前这条消息；拿不准时优先判 TOOL_CALL
 
             示例：
@@ -52,6 +58,10 @@ public class LightweightIntentClassifier {
             「查一下明天北京到上海的高铁票」 → TOOL_CALL
             「帮我规划成都五日游，预算 6000」 → PLANNING
             「成都必吃美食有哪些？」 → RAG
+            「那边下周天气怎么样」 → TOOL_CALL（含「那」但自身意图明确：天气查询）
+            （状态：需求收集中，助手反问出发日期）「这样可以吗」 → PLANNING（对反问的确认）
+            （状态：行程已生成）「第二天能加点博物馆吗」 → PLANNING（行程调整）
+            （状态：行程已生成）「那边天气如何」 → TOOL_CALL（与行程无关的新查询）
             （上下文：助手反问「您想去哪里玩？」）「长春」 → PLANNING
             （上下文：助手反问「您想去哪里玩？」）「长春今天天气怎么样？」 → TOOL_CALL
             """;
@@ -165,16 +175,25 @@ public class LightweightIntentClassifier {
     /** 兜底一：带前缀形态（kimi-k3 实测输出「**意图类别：PLANNING**」——markdown 加粗+中文前缀） */
     private static final java.util.regex.Pattern LABEL_WITH_PREFIX = java.util.regex.Pattern.compile(
             "意图[类别分类]*\\s*[:：]\\s*[\\*`\"'\\s]*(CHAT|TOOL_CALL|PLANNING|RAG)");
-    /** 兜底二：短输出内词边界提取（限 ≤50 字符——长解释可能提到多个标签词，误判不如判空降 L3） */
+    /**
+     * 兜底二：intent 字段形态——2026-10-22 v7 reason 先行后新增：模型（glm）常把
+     * {"reason": 长中文, "intent": "PLANNING"} 整体当纯文本输出，或 reason 内引号把
+     * JSON 弄畸形后 intent 落在长文本里。显式字段赋值（"intent": X / intent: X）
+     * 是模型明确的结论，不受长度限制约束。
+     */
+    private static final java.util.regex.Pattern INTENT_FIELD = java.util.regex.Pattern.compile(
+            "[\"'`]?intent[\"'`]?\\s*[:：]\\s*[\\*`\"'\\s]*(CHAT|TOOL_CALL|PLANNING|RAG)");
+    /** 兜底三：短输出内词边界提取（限 ≤50 字符——长解释可能提到多个标签词，误判不如判空降 L3） */
     private static final java.util.regex.Pattern LABEL_ANYWHERE = java.util.regex.Pattern.compile(
             "\\b(CHAT|TOOL_CALL|PLANNING|RAG)\\b");
     private static final int LABEL_ANYWHERE_MAX_LEN = 50;
 
     /**
-     * 纯文本标签解析（三层）：整串归一化 → 「意图X：LABEL」前缀形态提取 →
-     * 短输出（≤50 字符）词边界提取。多词或长解释文本返回 null（级联降 L3）。
+     * 纯文本标签解析（四层）：整串归一化 → 「意图X：LABEL」前缀形态 → intent 字段形态
+     * （JSON 整体当文本输出/行内 intent: X）→ 短输出（≤50 字符）词边界提取。
+     * 全部不中返回 null（级联降 L3）。包可见：{@link IntentClassifier}（L3）复用同款兜底。
      */
-    private static IntentType parseTextLabel(String text) {
+    static IntentType parseTextLabel(String text) {
         if (text == null) {
             return null;
         }
@@ -195,6 +214,10 @@ public class LightweightIntentClassifier {
             // 非纯标签形态，落正则兜底
         }
         java.util.regex.Matcher m = LABEL_WITH_PREFIX.matcher(text);
+        if (m.find()) {
+            return IntentType.valueOf(m.group(1));
+        }
+        m = INTENT_FIELD.matcher(text);
         if (m.find()) {
             return IntentType.valueOf(m.group(1));
         }

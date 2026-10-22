@@ -15,7 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * IntentContextBuilder 单测（2026-09-29 失忆修复 Fix 4：意图分类上下文注入）
  * <p>
  * 覆盖：空历史返回空串、末条（本轮）排除、最后一条 assistant 反问位于末尾、
- * 轮数窗口、单条/摘要截断、空内容消息跳过、仅有摘要时输出摘要。
+ * 轮数窗口、单条/摘要截断、空内容消息跳过、仅有摘要时输出摘要；
+ * 2026-10-22 v7 意图改造：会话状态行（渲染在最前/空态不渲染/仅有状态行）。
  * </p>
  */
 class IntentContextBuilderTest {
@@ -31,9 +32,9 @@ class IntentContextBuilderTest {
     @DisplayName("null / 空历史 / 仅 1 条（即本轮刚入库）→ 返回空串")
     void build_emptyHistory() {
         IntentContextBuilder b = new IntentContextBuilder(2, 200, 600);
-        assertEquals("", b.build(null, "有摘要也没用"));
-        assertEquals("", b.build(List.of(), "有摘要也没用"));
-        assertEquals("", b.build(List.of(msg(Message.ROLE_USER, "长春")), "有摘要也没用"));
+        assertEquals("", b.build(null, "有摘要也没用", null));
+        assertEquals("", b.build(List.of(), "有摘要也没用", null));
+        assertEquals("", b.build(List.of(msg(Message.ROLE_USER, "长春")), "有摘要也没用", null));
     }
 
     @Test
@@ -43,7 +44,7 @@ class IntentContextBuilderTest {
         String out = b.build(List.of(
                 msg(Message.ROLE_USER, "帮我规划一个行程"),
                 msg(Message.ROLE_ASSISTANT, "好的，请问您想去哪里玩？"),
-                msg(Message.ROLE_USER, "长春")), null);
+                msg(Message.ROLE_USER, "长春")), null, null);
         assertTrue(out.contains("用户：帮我规划一个行程"));
         assertTrue(out.contains("助手：好的，请问您想去哪里玩？"));
         assertFalse(out.contains("长春"));
@@ -59,7 +60,7 @@ class IntentContextBuilderTest {
                 msg(Message.ROLE_ASSISTANT, "第1轮回答"),
                 msg(Message.ROLE_USER, "第2轮问题"),
                 msg(Message.ROLE_ASSISTANT, "请问您想去哪里玩？"),
-                msg(Message.ROLE_USER, "本轮")), "用户正在规划旅行");
+                msg(Message.ROLE_USER, "本轮")), "用户正在规划旅行", null);
         assertTrue(out.endsWith("助手：请问您想去哪里玩？"), "最后一条 assistant 应在末尾: " + out);
         assertTrue(out.contains("会话摘要：用户正在规划旅行"));
     }
@@ -74,7 +75,7 @@ class IntentContextBuilderTest {
             history.add(msg(Message.ROLE_ASSISTANT, "第" + i + "轮回答"));
         }
         history.add(msg(Message.ROLE_USER, "本轮"));
-        String out = b.build(history, null);
+        String out = b.build(history, null, null);
         assertFalse(out.contains("第1轮"));
         assertFalse(out.contains("第2轮"));
         assertTrue(out.contains("第3轮问题"));
@@ -87,7 +88,7 @@ class IntentContextBuilderTest {
         IntentContextBuilder b = new IntentContextBuilder(2, 100, 600);
         String out = b.build(List.of(
                 msg(Message.ROLE_USER, "长".repeat(500)),
-                msg(Message.ROLE_USER, "本轮")), null);
+                msg(Message.ROLE_USER, "本轮")), null, null);
         assertTrue(out.contains("…（截断）"));
         String body = out.substring(out.indexOf("用户："));
         assertTrue(body.length() < 200);
@@ -99,7 +100,7 @@ class IntentContextBuilderTest {
         IntentContextBuilder b = new IntentContextBuilder(2, 200, 200);
         String out = b.build(List.of(
                 msg(Message.ROLE_USER, "你好"),
-                msg(Message.ROLE_USER, "本轮")), "记".repeat(500));
+                msg(Message.ROLE_USER, "本轮")), "记".repeat(500), null);
         assertTrue(out.contains("会话摘要："));
         assertTrue(out.contains("…（截断）"));
         int summaryStart = out.indexOf("会话摘要：");
@@ -114,7 +115,7 @@ class IntentContextBuilderTest {
         String out = b.build(List.of(
                 msg(Message.ROLE_ASSISTANT, "  "),
                 msg(Message.ROLE_USER, "你好"),
-                msg(Message.ROLE_USER, "本轮")), null);
+                msg(Message.ROLE_USER, "本轮")), null, null);
         assertFalse(out.contains("助手：\n"));
         assertTrue(out.contains("用户：你好"));
     }
@@ -125,7 +126,51 @@ class IntentContextBuilderTest {
         IntentContextBuilder b = new IntentContextBuilder(2, 200, 600);
         String out = b.build(List.of(
                 msg(Message.ROLE_ASSISTANT, ""),
-                msg(Message.ROLE_USER, "本轮")), "用户正在规划旅行");
+                msg(Message.ROLE_USER, "本轮")), "用户正在规划旅行", null);
         assertEquals("会话摘要：用户正在规划旅行", out);
+    }
+
+    // ==================== 2026-10-22 v7 意图改造：会话状态行 ====================
+
+    @Test
+    @DisplayName("状态行渲染在最前（状态+摘要+最近对话三件套，顺序：状态→摘要→对话）")
+    void build_rendersSessionStatusFirst() {
+        IntentContextBuilder b = new IntentContextBuilder(2, 200, 600);
+        String out = b.build(List.of(
+                msg(Message.ROLE_USER, "帮我规划一个行程"),
+                msg(Message.ROLE_ASSISTANT, "好的，请问您想去哪里玩？"),
+                msg(Message.ROLE_USER, "本轮")),
+                "用户正在规划旅行",
+                "需求收集中（已收集: 目的地=西安；待补: days, startDate；已反问 1/3 轮）");
+        assertTrue(out.startsWith("会话状态：需求收集中"), "状态行应在最前: " + out);
+        assertTrue(out.contains("会话摘要：用户正在规划旅行"));
+        assertTrue(out.contains("最近对话："));
+        int statusIdx = out.indexOf("会话状态：");
+        int summaryIdx = out.indexOf("会话摘要：");
+        int dialogIdx = out.indexOf("最近对话：");
+        assertTrue(statusIdx < summaryIdx && summaryIdx < dialogIdx, "顺序应为 状态→摘要→对话: " + out);
+    }
+
+    @Test
+    @DisplayName("状态行为 null/空白时不渲染，输出与旧格式一致")
+    void build_blankStatusNotRendered() {
+        IntentContextBuilder b = new IntentContextBuilder(2, 200, 600);
+        String expected = "会话摘要：摘要\n最近对话：\n用户：你好";
+        assertEquals(expected, b.build(List.of(
+                msg(Message.ROLE_USER, "你好"),
+                msg(Message.ROLE_USER, "本轮")), "摘要", null));
+        assertEquals(expected, b.build(List.of(
+                msg(Message.ROLE_USER, "你好"),
+                msg(Message.ROLE_USER, "本轮")), "摘要", "  "));
+    }
+
+    @Test
+    @DisplayName("窗口内无可渲染消息但有状态行时，仅输出状态行")
+    void build_statusOnlyWhenNoRenderableContent() {
+        IntentContextBuilder b = new IntentContextBuilder(2, 200, 600);
+        String out = b.build(List.of(
+                msg(Message.ROLE_ASSISTANT, ""),
+                msg(Message.ROLE_USER, "本轮")), null, "行程已生成");
+        assertEquals("会话状态：行程已生成", out);
     }
 }

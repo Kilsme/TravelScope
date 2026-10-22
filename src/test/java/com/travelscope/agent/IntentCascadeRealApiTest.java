@@ -19,11 +19,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * 意图级联端到端测试（真实 deepseek-v4-flash-0731 L2 + 真实 glm-5-3-260814 L3 @ 模型网关 + Fake 缓存）
+ * 意图级联端到端测试（真实主池 glm L2 + L3 @ 模型网关 + Fake 缓存，v5-F3 起与生产同款）
  * <p>
  * 验证级联接线正确：L1 未命中的真实消息在 L2 被真实模型分类（验收标准 c 的完整链路），
- * 并观测 L2 真实延迟（目标 < 200ms 的观测项，网络抖动大不作硬断言）。
+ * 并观测 L2 真实延迟（网络抖动大不作硬断言）。
  * 2026-09-29 失忆修复 Fix 4：反问语境下裸地名走带上下文的真实 L2 判 PLANNING。
+ * 2026-10-22 v7 意图改造：收集中确认短回答（「这样可以吗」）/ 完成态新查询
+ * （「那边天气如何」）两类场景的真模型验证（状态行上下文 + 新提示词）。
  * </p>
  */
 @EnabledIfEnvironmentVariable(named = ModelGatewayTestSupport.API_KEY_ENV, matches = ".+")
@@ -62,12 +64,27 @@ class IntentCascadeRealApiTest {
             用户：帮我规划一个行程
             助手：好的，请问您想去哪里玩？""";
 
+    /** v7 意图改造场景一：需求收集中，用户确认式短回答应回流规划流 */
+    private static final String COLLECTING_CONTEXT = """
+            会话状态：需求收集中（已收集: 目的地=西安; 天数=4；待补: startDate；已反问 1/3 轮）
+            最近对话：
+            用户：帮我规划西安四日游
+            助手：好的，请问打算哪天出发？""";
+
+    /** v7 意图改造场景二：行程已生成（完成态），自身意图明确的新查询不应被带回 PLANNING */
+    private static final String DRAFT_DONE_CONTEXT = """
+            会话状态：行程已生成（用户可能就现有行程追问、确认或要求调整）
+            最近对话：
+            用户：帮我规划西安四日游
+            助手：（已生成西安四日行程草案）""";
+
     private static IntentCascadeRouter router;
     private static FakeCache cache;
 
     @BeforeAll
     static void setUp() {
-        LightweightIntentClassifier l2 = new LightweightIntentClassifier(ModelGatewayTestSupport.lightModel());
+        // v5-F3 起生产 L2 走主池（glm 优先），E2E 与生产同款
+        LightweightIntentClassifier l2 = new LightweightIntentClassifier(ModelGatewayTestSupport.mainModel());
         IntentClassifier l3 = new IntentClassifier(ModelGatewayTestSupport.mainModel());
 
         AppProperties props = new AppProperties();
@@ -138,6 +155,38 @@ class IntentCascadeRealApiTest {
         // 这里通过缓存佐证：打招呼消息不产生 L2 文本缓存条目
         router.classify("你好", null, "1", "conv-e2e-3");
         assertNullCached("你好");
+    }
+
+    @Test
+    @DisplayName("E2E v7 场景一：收集中「这样可以吗」→ PLANNING（真实 L2 带状态行上下文）")
+    void testE2e_confirmationDuringCollecting_planning() {
+        long start = System.nanoTime();
+        IntentResult result = router.classify("这样可以吗", COLLECTING_CONTEXT, "1", "conv-e2e-v7a");
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        System.out.println("[E2E] 收集中确认短回答分类耗时: " + elapsedMs + "ms, intent="
+                + (result != null ? result.intent : "null")
+                + ", reason=" + (result != null ? result.reason : "null"));
+
+        assertNotNull(result, "级联不应全 miss");
+        assertEquals("PLANNING", result.intent,
+                "收集中确认式短回答应回流规划流（reason=" + result.reason + "）");
+    }
+
+    @Test
+    @DisplayName("E2E v7 场景二：行程已生成「那边天气如何」→ TOOL_CALL（消息自身意图明确）")
+    void testE2e_weatherAfterDraft_toolCall() {
+        long start = System.nanoTime();
+        IntentResult result = router.classify("那边天气如何", DRAFT_DONE_CONTEXT, "1", "conv-e2e-v7b");
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+
+        System.out.println("[E2E] 完成态新查询分类耗时: " + elapsedMs + "ms, intent="
+                + (result != null ? result.intent : "null")
+                + ", reason=" + (result != null ? result.reason : "null"));
+
+        assertNotNull(result, "级联不应全 miss");
+        assertEquals("TOOL_CALL", result.intent,
+                "天气查询应按消息本身判定，不被完成态带偏（reason=" + result.reason + "）");
     }
 
     private void assertNullCached(String msg) {

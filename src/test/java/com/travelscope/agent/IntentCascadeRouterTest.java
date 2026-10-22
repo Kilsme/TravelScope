@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiPredicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -125,6 +126,13 @@ class IntentCascadeRouterTest {
                                           IntentCascadeRouter.LlmClassifier l2,
                                           IntentCascadeRouter.LlmClassifier l3) {
         return new IntentCascadeRouter(props, cache, l2, l3);
+    }
+
+    private IntentCascadeRouter newRouter(AppProperties props, IntentCache cache,
+                                          IntentCascadeRouter.LlmClassifier l2,
+                                          IntentCascadeRouter.LlmClassifier l3,
+                                          BiPredicate<String, String> draftStateChecker) {
+        return new IntentCascadeRouter(props, cache, l2, l3, draftStateChecker);
     }
 
     // ==================== 验收标准 a：打招呼 → L1，零模型调用 ====================
@@ -416,6 +424,114 @@ class IntentCascadeRouterTest {
         l3Stub.next = null;
         IntentResult result = router.classify("安排一次旅行", null, USER, SESSION);
         assertNull(result, "全 miss 时返回 null，ChatService 保持既有容错");
+    }
+
+    // ==================== 2026-10-22 v7 意图改造：L0 词表收紧 / 完成态守卫 / L1 天气词 ====================
+
+    @Test
+    @DisplayName("L0 词表收紧：「那边下周天气怎么样」不再被「那」粘滞 → L1 新天气词直接 TOOL_CALL，零模型调用")
+    void testL0_naWeatherQuery_notSticky_l1Catches() {
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        IntentResult result = router.classify("那边下周天气怎么样", null, USER, SESSION);
+
+        assertEquals(IntentType.TOOL_CALL, result.toIntentType(), "应按消息本身判天气查询而非沿用 PLANNING");
+        assertEquals(0, l2Stub.calls.get());
+        assertEquals(0, l3Stub.calls.get());
+    }
+
+    @Test
+    @DisplayName("L0 词表收紧：「帮我查下天气」不再命中 L0（帮我移出延续词），落 L2 语义判定")
+    void testL0_helpMeWeather_notSticky() {
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        router.classify("帮我查下天气", null, USER, SESSION);
+
+        assertEquals(1, l2Stub.calls.get(), "应落 L2 语义判定而非 L0 沿用 PLANNING");
+    }
+
+    @Test
+    @DisplayName("L0 确认词：「这样可以吗」命中 L0 沿用最近意图，零模型调用")
+    void testL0_confirmationPhrase_reusesRecent() {
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        IntentResult result = router.classify("这样可以吗", null, USER, SESSION);
+
+        assertEquals(IntentType.PLANNING, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get());
+        assertEquals(0, l3Stub.calls.get());
+    }
+
+    @Test
+    @DisplayName("L0 完成态守卫：recent=PLANNING 且有行程草案 → 不沿用，降级 L2 且上下文透传")
+    void testL0_draftGuard_downgradesToL2WithContext() {
+        IntentCascadeRouter guarded = newRouter(new AppProperties(), cache, l2Stub, l3Stub, (u, s) -> true);
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+        String ctx = "会话状态：行程已生成（用户可能就现有行程追问、确认或要求调整）";
+
+        IntentResult result = guarded.classify("那个", ctx, USER, SESSION);
+
+        assertEquals(IntentType.PLANNING, result.toIntentType(), "L2 桩默认返回 PLANNING");
+        assertEquals(1, l2Stub.calls.get(), "守卫触发后应落 L2 而非 L0 沿用");
+        assertEquals("那个", l2Stub.lastMessage);
+        assertEquals(ctx, l2Stub.lastContext, "上下文应透传给 L2 供指代解析");
+        assertEquals(0, l3Stub.calls.get());
+    }
+
+    @Test
+    @DisplayName("L0 完成态守卫：收集期（无草案）不受影响，仍零成本沿用")
+    void testL0_draftGuard_collectingStillReuses() {
+        IntentCascadeRouter guarded = newRouter(new AppProperties(), cache, l2Stub, l3Stub, (u, s) -> false);
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        IntentResult result = guarded.classify("这样可以吗", null, USER, SESSION);
+
+        assertEquals(IntentType.PLANNING, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get(), "无草案（收集期）L0 照常沿用");
+    }
+
+    @Test
+    @DisplayName("L0 完成态守卫只护 PLANNING：recent=TOOL_CALL 有草案也照常沿用")
+    void testL0_draftGuard_nonPlanningUnaffected() {
+        IntentCascadeRouter guarded = newRouter(new AppProperties(), cache, l2Stub, l3Stub, (u, s) -> true);
+        cache.saveRecentIntent(USER, SESSION, "TOOL_CALL", Duration.ofMinutes(30));
+
+        IntentResult result = guarded.classify("那个", null, USER, SESSION);
+
+        assertEquals(IntentType.TOOL_CALL, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get());
+    }
+
+    @Test
+    @DisplayName("L0 完成态守卫未装配（旧构造器）：保持旧行为直接沿用")
+    void testL0_noDraftChecker_legacyBehavior() {
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        IntentResult result = router.classify("那个", null, USER, SESSION);
+
+        assertEquals(IntentType.PLANNING, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get());
+    }
+
+    @Test
+    @DisplayName("L0 完成态守卫：checker 抛异常按无草案处理（沿用），不阻断级联")
+    void testL0_draftCheckerThrows_fallsBackToReuse() {
+        IntentCascadeRouter guarded = newRouter(new AppProperties(), cache, l2Stub, l3Stub,
+                (u, s) -> { throw new IllegalStateException("workspace down"); });
+        cache.saveRecentIntent(USER, SESSION, "PLANNING", Duration.ofMinutes(30));
+
+        IntentResult result = guarded.classify("那个", null, USER, SESSION);
+
+        assertEquals(IntentType.PLANNING, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get(), "探测异常应按无草案沿用，不落 L2");
+    }
+
+    @Test
+    @DisplayName("L1 天气词补齐（G6）：「下周那边天气怎么样」L1 直接 TOOL_CALL，零模型调用")
+    void testL1_weatherNextWeek_hitsRule() {
+        IntentResult result = router.classify("下周那边天气怎么样", null, USER, SESSION);
+        assertEquals(IntentType.TOOL_CALL, result.toIntentType());
+        assertEquals(0, l2Stub.calls.get());
     }
 
     private static L1Rule rule(String pattern, String intent) {

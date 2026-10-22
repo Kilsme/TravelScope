@@ -12,10 +12,13 @@ import com.travelscope.agent.IntentType;
  */
 public class IntentResult {
 
-    /** 意图类别（模型输出的原始字符串，取值应为 CHAT/TOOL_CALL/PLANNING/RAG） */
+    /** 意图类别（模型输出的原始字符串，取值应为 CHAT/TOOL_CALL/PLANNING/RAG）。
+     * 声明在 reason 之前（intent-first）：2026-10-22 v7 实测 reason 先行时 glm 把 JSON
+     * 当纯文本输出会写完 reason 就收尾（reason-only JSON 漏掉 intent），标签先行对
+     * 输出截断/早停天然免疫——截断时标签已在前部。 */
     public String intent;
 
-    /** 分类理由（简要说明判定依据，用于日志与调试） */
+    /** 分类理由（一句简短判定依据，含指代解析结论，用于日志与调试） */
     public String reason;
 
     public IntentResult() {

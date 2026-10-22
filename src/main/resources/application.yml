@@ -260,7 +260,7 @@ travelscope:
     planning-cost: 200
     initial-balance: 500
 
-  # ---- 意图三层级联配置（FR-S01）----  # L0 会话延续（Redis 30min）→ L1 规则表 → L2 deepseek-v4-flash-0731 单标签 → L3 IntentClassifier 兜底
+  # ---- 意图三层级联配置（FR-S01）----  # L0 会话延续（Redis 30min，词表只留高精度延续/确认词，PLANNING 完成态守卫见 AgentConfig 装配）→ L1 规则表 → L2 主池轻量单标签 → L3 IntentClassifier 兜底
   # 上层命中即短路；规则表为空时代码内置同款默认规则
   intent-cascade:
     enabled: true
@@ -268,12 +268,13 @@ travelscope:
     l0-ttl-minutes: 30
     l0-max-message-length: 20
     l2-enabled: true
-    l2-model: deepseek-v4-flash-0731
+    l2-model: deepseek-v4-flash-0731  # 已退役占位：v5-F3 起 L2 实际走主池 gatewayChatModel（glm 优先池内 failover）
     l2-cache-enabled: true
     l2-cache-ttl-minutes: 60
-    # 分类上下文注入（2026-09-29 失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块
-    # 随消息送 L2/L3 语义判定——「长春」这类对 intake 反问的裸名词短回答在语境下判
-    # PLANNING，不再被判 CHAT 脱离规划流；带上下文时旁路 L2 全局文本缓存（防投毒）
+    # 分类上下文注入（2026-09-29 失忆修复 Fix 4 + 2026-10-22 v7 意图改造）：
+    # messages 表 + 记忆摘要 + 会话状态行（需求收集进度/行程草案，零 LLM）构建上下文块
+    # 随消息送 L2/L3——「长春」「这样可以吗」这类短回答/指代确认在语境下判 PLANNING；
+    # 带上下文时旁路 L2 全局文本缓存（防投毒）
     context-enabled: true
     # 上下文取最近几轮原文（1 轮 = 1 user + 1 assistant）
     context-rounds: 2
@@ -289,7 +290,7 @@ travelscope:
         intent: TOOL_CALL
       - pattern: "(查询|查一下|查查).{0,12}(火车票|高铁票|动车票|车票|机票|航班)"
         intent: TOOL_CALL
-      - pattern: "(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)"
+      - pattern: "(今天|明天|后天|大后天|周末|下周|这周|本周|未来).{0,8}(天气|气温|温度)"
         intent: TOOL_CALL
 
   # ---- 需求采集 workflow 配置（S2.1 清单卡片方案）----

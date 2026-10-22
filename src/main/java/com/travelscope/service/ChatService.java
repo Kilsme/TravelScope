@@ -966,8 +966,9 @@ public class ChatService {
     /**
      * 意图分类（阻塞调用，运行在 boundedElastic；FR-S01 三层级联入口）
      * <p>
-     * L0 会话延续 → L1 规则表 → L2 轻量模型（deepseek-v4-flash-0731）→ L3 IntentClassifier 兜底，
-     * 上层命中即短路（见 IntentCascadeRouter）；日志格式 cascade_hit=L{n} latency=xms。
+     * L0 会话延续（2026-10-22 v7 意图改造：词表收紧 + PLANNING 完成态守卫）→ L1 规则表 →
+     * L2 主池轻量单标签 → L3 IntentClassifier 兜底，上层命中即短路（见 IntentCascadeRouter）；
+     * 日志格式 cascade_hit=L{n} latency=xms。
      *
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
@@ -991,16 +992,21 @@ public class ChatService {
             return new com.travelscope.dto.IntentResult(IntentType.PLANNING.name(),
                     "清单卡片结构化提交");
         }
-        // 意图分类上下文注入（失忆修复 Fix 4）：messages 表 + 记忆摘要构建上下文块随消息
-        // 送 L2/L3——「长春」这类对 intake 反问的裸名词短回答在语境下判 PLANNING，不再
-        // 被判 CHAT 脱离规划流。messages 表是唯一可靠事实源（L0/状态机/缓存都是加速层，
-        // 丢失可由此兜回）；效果依赖 POST /chat/stream 回传正确 conversationId。
+        // 意图分类上下文注入（失忆修复 Fix 4 + 2026-10-22 v7 意图改造状态行）：
+        // messages 表 + 记忆摘要 + 会话状态（需求收集进度/行程草案，零 LLM）构建上下文块
+        // 随消息送 L2/L3——「长春」「这样可以吗」这类短回答/指代确认在语境下判 PLANNING，
+        // 「那边下周天气怎么样」这类消息自身意图明确的不被带偏。messages 表是唯一可靠
+        // 事实源（L0/状态机/缓存都是加速层，丢失可由此兜回）；效果依赖 POST /chat/stream
+        // 回传正确 conversationId。state 提前取一次，下方收集期意图保护复用（少一次 store 读）。
+        String reqSessionId = SESSION_PREFIX + conversation.getId();
+        TripRequirementState state = tripRequirementStore.get(String.valueOf(userId), reqSessionId);
         String contextBlock = "";
         if (intentContextEnabled && includePersonalHistory) {
             List<Message> messages = conversationService.listMessages(conversation.getId());
             String summary = appProperties.getChatHistory().getSummary().isEnabled()
                     ? conversation.getSummary() : null;
-            contextBlock = intentContextBuilder.build(messages, summary);
+            contextBlock = intentContextBuilder.build(messages, summary,
+                    buildIntentStatusLine(state, String.valueOf(userId), reqSessionId));
         }
         IntentResult result = observation == null
                 ? intentCascadeRouter.classify(userMessage, contextBlock, String.valueOf(userId),
@@ -1014,17 +1020,15 @@ public class ChatService {
         // （如「长春」「三天」）不含 L0 延续词、单条消息 L2 也判不出 PLANNING → 被判 CHAT
         // → 脱离规划流（master 只回通用文本）。这里在代码层覆盖：需求状态机处于 COLLECTING
         // 且分类为 CHAT → 强制 PLANNING（回流 intake 更新状态机）。TOOL_CALL/RAG 不覆盖
-        // （用户明确要查天气/查票时正常放行）。Fix 4 上下文注入后本保护降级为第二道防线
-        // （状态机是加速层，Redis 丢失时 Fix 4 的 messages+摘要路径仍可靠）。
+        // （用户明确要查天气/查票时正常放行）。Fix 4 上下文注入（含 v7 状态行）后本保护
+        // 降级为第二道防线（状态机是加速层，Redis 丢失时 messages+摘要+状态行路径仍可靠）。
         if (result != null && result.toIntentType() == IntentType.CHAT) {
-            String reqSessionId = SESSION_PREFIX + conversation.getId();
-            TripRequirementState state = tripRequirementStore.get(String.valueOf(userId), reqSessionId);
             // COLLECTING 且已开始收集（有任一已收集字段或已反问过）才覆盖——
             // 全新会话的真闲聊不应被拉进规划流
             boolean collecting = state != null
                     && state.status == TripRequirementState.Status.COLLECTING
                     && (state.missingFields().size() < TripRequirementState.REQUIRED_FIELDS.size()
-                    || state.clarifyCycles > 0);
+                        || state.clarifyCycles > 0);
             if (collecting) {
                 log.info("intent_override=PLANNING reason=requirement_collecting 会话={} 原判定=CHAT"
                                 + "（已收集: {}，反问第 {} 轮）", reqSessionId,
@@ -1034,6 +1038,37 @@ public class ChatService {
             }
         }
         return result;
+    }
+
+    /**
+     * 意图分类上下文的会话状态行（2026-10-22 v7 意图改造：零 LLM 状态事实，随上下文块送 L2/L3）
+     * <p>
+     * 需求收集中 → 已收集/待补/反问轮数；有行程草案 → 完成态提示（L2 据此区分「行程追问
+     * → PLANNING」与「无关新查询 → 按消息本身」）；需求已收齐但无草案 → 对应提示。
+     * 摘要 10 轮才折叠，规划刚完成的窗口期摘要是空的——状态行补上这个盲区（v7 Z2 的
+     * 轻量前置，不动摘要折叠节奏）。草案文件读取仅在本方法发生（每轮至多一次）。
+     * </p>
+     */
+    private String buildIntentStatusLine(TripRequirementState state, String userId, String sessionId) {
+        if (state != null && state.status == TripRequirementState.Status.COLLECTING) {
+            return "需求收集中（已收集: " + state.collectedDescription()
+                    + "；待补: " + String.join(", ", state.missingFields())
+                    + "；已反问 " + state.clarifyCycles + "/3 轮）";
+        }
+        boolean hasDraft = false;
+        try {
+            hasDraft = taskWorkspaceService.readItineraryDraft(userId, sessionId).isPresent();
+        } catch (Exception e) {
+            log.warn("意图状态行草案探测失败（按无草案处理）: 会话={}, 原因: {}", sessionId, e.getMessage());
+        }
+        if (hasDraft) {
+            return "行程已生成（用户可能就现有行程追问、确认或要求调整）";
+        }
+        if (state != null && (state.status == TripRequirementState.Status.DONE
+                || state.status == TripRequirementState.Status.DEGRADED)) {
+            return "需求已收齐，行程尚未生成";
+        }
+        return null;
     }
 
     /**

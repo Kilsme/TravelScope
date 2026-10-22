@@ -12,14 +12,17 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiPredicate;
 import java.util.regex.Pattern;
 
 /**
  * 意图三层级联路由器（FR-S01 核心：L0 → L1 → L2 → L3，上层命中即短路）
  * <pre>
- * L0 会话延续：短追问（长度 ≤ 上限 且 含代词/语气词）+ Redis 有 TTL 内该会话最近意图 → 沿用，0 计算
+ * L0 会话延续：短追问（长度 ≤ 上限 且 含延续词/确认词）+ Redis 有 TTL 内该会话最近意图 → 沿用，0 计算
+ *   （2026-10-22 v7 意图改造：词表移除高误伤单字/语气词/请求开场词；recent=PLANNING 且
+ *    会话已有行程草案时完成态守卫降级走语义层，不再盲目沿用）
  * L1 规则表：保守正则集（打招呼/命令前缀/极固定句式），首个命中即返回
- * L2 轻量语义：轻量模型（deepseek-v4-flash-0731 @ 模型网关）单标签分类 + Redis 文本缓存（SHA-256 键）
+ * L2 轻量语义：主池 gatewayChatModel 单标签分类 + Redis 文本缓存（SHA-256 键）
  * L3 LLM 兜底：现有 IntentClassifier 原样包装（方法引用适配，零改动）
  * </pre>
  * <p>
@@ -46,11 +49,15 @@ public class IntentCascadeRouter {
     }
 
     /**
-     * L0 短追问判定：消息含代词/语气词/延续词才视为「对上一轮的追问」。
-     * 刻意不含疑问词（怎么/什么/吗），避免「北京天气怎么样」被误判为追问。
+     * L0 短追问判定：消息含延续词/确认词才视为「对上一轮的追问/确认」。
+     * 刻意不含疑问词（怎么/什么/吗）与高误伤词——单字代词/语气词（那/它/他/她/再/呢/吧/呗，
+     * v7 6.1 实证「那边下周天气怎么样」被「那」粘滞成 PLANNING）和请求开场词（帮我，
+     * 「帮我查下天气」自身意图明确）都会把新查询错误沿用最近意图；这类消息必须落
+     * L1/L2 语义层。2026-10-22 v7 意图改造同步新增确认词（这样/可以吗/行吗/好吗）——
+     * 「这样可以吗」类对反问的确认短回答零成本回流当前流程。
      */
     private static final Pattern FOLLOWUP_HINT = Pattern.compile(
-            "那|这个|那个|它|他|她|再|还是|还有|帮我|刚才|前面|上面|继续|接着|换个|改成|另外|呢|吧|呗");
+            "这个|那个|这样|可以吗|行吗|好吗|还是|还有|刚才|前面|上面|继续|接着|换个|改成|另外");
 
     /** 代码内置默认 L1 规则（yml 未配置/为空时兜底；与 application.yml 保持一致） */
     private static final List<L1Rule> DEFAULT_L1_RULES = List.of(
@@ -58,7 +65,7 @@ public class IntentCascadeRouter {
             rule("^/规划", "PLANNING"),
             rule("^/天气", "TOOL_CALL"),
             rule("(查询|查一下|查查).{0,12}(火车票|高铁票|动车票|车票|机票|航班)", "TOOL_CALL"),
-            rule("(今天|明天|后天|大后天|周末).{0,8}(天气|气温|温度)", "TOOL_CALL"));
+            rule("(今天|明天|后天|大后天|周末|下周|这周|本周|未来).{0,8}(天气|气温|温度)", "TOOL_CALL"));
 
     /** 预编译的 L1 规则（构造时一次编译，非法正则/意图 warn 后跳过） */
     private record CompiledRule(Pattern pattern, IntentType intent) {
@@ -69,19 +76,37 @@ public class IntentCascadeRouter {
     private final LlmClassifier l2;
     private final LlmClassifier l3;
     private final List<CompiledRule> compiledRules;
+    /** v7 第六章 L0 完成态守卫的草案探测（null = 守卫关闭，保持旧行为） */
+    private final BiPredicate<String, String> draftStateChecker;
 
     public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
                                LlmClassifier l2, LlmClassifier l3) {
+        this(appProperties, cache, l2, l3, null);
+    }
+
+    /**
+     * v7 第六章 L0 完成态守卫版本
+     * <p>
+     * draftStateChecker 返回 true（会话协作目录已有行程草案 = 规划完成态）时，L0 命中且
+     * recent=PLANNING 不再直接沿用，降级走 L1/L2 语义判定——规划完成后「那/这个」类短
+     * 消息可能指向全新话题（v7 6.1 场景 a：弹表单卡/误扣 200 积分），交给带上下文的语义层；
+     * 收集期（无草案）不受影响，短回答仍零成本回流规划流。传 null = 守卫关闭（旧行为）。
+     * </p>
+     */
+    public IntentCascadeRouter(AppProperties appProperties, IntentCache cache,
+                               LlmClassifier l2, LlmClassifier l3,
+                               BiPredicate<String, String> draftStateChecker) {
         this.config = appProperties.getIntentCascade();
         this.cache = cache;
         this.l2 = l2;
         this.l3 = l3;
+        this.draftStateChecker = draftStateChecker;
         this.compiledRules = compileRules(config.getL1Rules());
-        log.info("意图级联初始化: enabled={}, L1 规则 {} 条（{}）, L0={}, L2={} (model={}), L2 缓存={}",
+        log.info("意图级联初始化: enabled={}, L1 规则 {} 条（{}）, L0={}, L2=主池 gatewayChatModel, "
+                        + "L2 缓存={}, L0 完成态守卫={}",
                 config.isEnabled(), compiledRules.size(),
                 config.getL1Rules().isEmpty() ? "内置默认" : "yml 配置",
-                config.isL0Enabled(), config.isL2Enabled(), config.getL2Model(),
-                config.isL2CacheEnabled());
+                config.isL0Enabled(), config.isL2CacheEnabled(), draftStateChecker != null);
     }
 
     /**
@@ -125,11 +150,20 @@ public class IntentCascadeRouter {
             if (recent != null) {
                 IntentType type = parseIntent(recent);
                 if (type != null) {
-                    IntentResult result = new IntentResult(type.name(), "L0 会话延续");
-                    // 刷新 TTL：延续窗口随交互滚动
-                    safeSaveRecent(userId, sessionId, type.name());
-                    logHit("L0", start, userId, sessionId, result);
-                    return result;
+                    // v7 第六章 L0 完成态守卫：规划已产出草案（完成态）时，短追问不再
+                    // 盲目沿用 PLANNING——「那个」可能指向全新话题，交给 L2 带上下文判定；
+                    // 收集期（无草案）不受影响，短回答仍零成本回流规划流
+                    if (type == IntentType.PLANNING && hasItineraryDraft(userId, sessionId)) {
+                        log.info("cascade_l0_guarded latency={}ms userId={} sessionId={}"
+                                        + "（行程已生成，PLANNING 沿用降级走语义层）",
+                                elapsedMs(start), userId, sessionId);
+                    } else {
+                        IntentResult result = new IntentResult(type.name(), "L0 会话延续");
+                        // 刷新 TTL：延续窗口随交互滚动
+                        safeSaveRecent(userId, sessionId, type.name());
+                        logHit("L0", start, userId, sessionId, result);
+                        return result;
+                    }
                 }
             }
         }
@@ -197,7 +231,7 @@ public class IntentCascadeRouter {
     }
 
     /**
-     * L0 触发条件：长度 ≤ 上限 且 含代词/语气词（避免长句和无指向消息白查 Redis）
+     * L0 触发条件：长度 ≤ 上限 且 含延续词/确认词（避免长句和无指向消息白查 Redis）
      */
     private boolean isLikelyFollowup(String userMessage) {
         if (userMessage == null || userMessage.isBlank()) {
@@ -206,6 +240,19 @@ public class IntentCascadeRouter {
         String trimmed = userMessage.trim();
         return trimmed.length() <= config.getL0MaxMessageLength()
                 && FOLLOWUP_HINT.matcher(trimmed).find();
+    }
+
+    /** 完成态守卫的草案探测（checker 未注入时恒 false = 守卫关闭，保持旧行为） */
+    private boolean hasItineraryDraft(String userId, String sessionId) {
+        if (draftStateChecker == null) {
+            return false;
+        }
+        try {
+            return draftStateChecker.test(userId, sessionId);
+        } catch (Exception e) {
+            log.warn("L0 完成态守卫草案探测失败（按无草案处理）: {}", e.getMessage());
+            return false;
+        }
     }
 
     private void saveRecent(String userId, String sessionId, IntentType type) {
