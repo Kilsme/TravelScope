@@ -59,7 +59,13 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
         String token = header.substring(BEARER_PREFIX.length()).trim();
-        java.util.Optional<User> userOpt = authService.resolveUser(token);
+        java.util.Optional<User> userOpt;
+        try {userOpt=authService.resolveUser(token);}
+        catch(AuthService.AuthUnavailable unavailable) {
+            response.setHeader("Retry-After","5");
+            reject(response,HttpServletResponse.SC_SERVICE_UNAVAILABLE,unavailable.getMessage());
+            return false;
+        }
         if (userOpt.isEmpty()) {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "未授权或账号已禁用");
             log.info("认证拒绝: {} {}（无效/过期/禁用 token）", request.getMethod(), request.getRequestURI());

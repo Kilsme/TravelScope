@@ -38,6 +38,11 @@ public class AuthController {
         this.authService = authService;
     }
 
+    @org.springframework.web.bind.annotation.GetMapping("/me")
+    public Object me(HttpServletRequest request) {
+        var user=(com.travelscope.entity.User)request.getAttribute(com.travelscope.security.AuthInterceptor.ATTR_CURRENT_USER);
+        return Map.of("userId",user.getId(),"role",user.getRole(),"nickname",java.util.Objects.toString(user.getNickname(),""));
+    }
     /**
      * 登录：返回 token / userId / role / nickname
      */
