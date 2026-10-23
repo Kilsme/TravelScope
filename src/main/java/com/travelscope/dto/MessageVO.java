@@ -25,6 +25,8 @@ public class MessageVO {
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private Long id;
+    private java.util.UUID turnId;
+    private String turnStatus;
     private String role;
     private String content;
     private String createdAt;
@@ -34,6 +36,7 @@ public class MessageVO {
     public static MessageVO from(Message m) {
         MessageVO vo = new MessageVO();
         vo.setId(m.getId());
+        vo.setTurnId(m.getTurnId());
         vo.setRole(m.getRole());
         vo.setContent(m.getContent());
         vo.setCreatedAt(m.getCreatedAt() != null ? m.getCreatedAt().format(FMT) : null);

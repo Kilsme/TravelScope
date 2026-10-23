@@ -1,5 +1,7 @@
 package com.travelscope.service.workflow;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.alibaba.fastjson2.JSON;
 import com.travelscope.config.AppProperties;
 import com.travelscope.service.workflow.dto.RequirementExtraction;
@@ -99,6 +101,7 @@ public class RequirementExtractor {
             log.info("需求抽取完成: 字段数={}, 消息长度={}", extraction.fields().size(), userMessage.length());
             return extraction;
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, observation);
             log.warn("需求抽取失败（按空结果降级，表单/反问兜底）: {}", e.getMessage());
             return RequirementExtraction.EMPTY;
         }
@@ -126,6 +129,8 @@ public class RequirementExtractor {
                 .userId("requirement-extractor")
                 .sessionId("requirement-extraction")
                 .build();
+        var cancellation = TurnCancellation.from(null);
+        if (cancellation != null) ctx.put(TurnCancellation.KEY, cancellation);
         if (observation != null) {
             ctx.put(com.travelscope.assessment.ObservationContext.KEY, observation);
         }
@@ -142,7 +147,7 @@ public class RequirementExtractor {
             invocation = invocation.contextWrite(c -> c.put(
                     com.travelscope.assessment.ObservationContext.KEY, observation));
         }
-        Msg reply = invocation.block(EXTRACT_TIMEOUT);
+        Msg reply = TurnCancellation.await(invocation, EXTRACT_TIMEOUT, observation);
         if (reply == null) {
             log.warn("需求抽取模型返回为空");
             return "";

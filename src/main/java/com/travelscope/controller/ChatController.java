@@ -37,6 +37,8 @@ import java.util.List;
 @RequestMapping("/chat")
 public class ChatController {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private org.springframework.beans.factory.ObjectProvider<com.travelscope.chat.ChatTurnService> durableTurns;
     private final ChatService chatService;
     private final ConversationService conversationService;
     private final MinioService minioService;
@@ -56,17 +58,21 @@ public class ChatController {
      * 认证：AuthInterceptor 已把当前用户注入 request attribute（不再走 guest 共享）。
      * </p>
      */
-    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter streamChat(@Valid @RequestBody ChatRequest request,
                                  HttpServletRequest httpRequest) {
         User user = currentUser(httpRequest);
 
-        Conversation conversation = request.getConversationId() != null
-                ? conversationService.getOwnedConversation(request.getConversationId(), user.getId())
-                : conversationService.createConversation(user.getId());
-
-        return chatService.streamChat(conversation, user.getId(), request.getMessage(),
-                request.getImageBase64());
+        var tasks = durableTurns.getObject();
+        if (request.getTurnId() == null) request.setTurnId(java.util.UUID.randomUUID());
+        // Old callers did not send form provenance; select the current card for compatibility.
+        if (request.getSourceTurnId() == null && request.getConversationId() != null
+                && com.travelscope.chat.ChatTurnStore.isForm(request.getMessage())) {
+            var turns = tasks.list(user.getId(), request.getConversationId(), false);
+            if (!turns.isEmpty()) request.setSourceTurnId(turns.getLast().turnId());
+        }
+        var turn = tasks.submit(user.getId(), request);
+        return tasks.subscribe(user.getId(), turn.turnId(), 0, true);
     }
 
     /**
@@ -143,8 +149,14 @@ public class ChatController {
     public List<MessageVO> listMessages(@PathVariable Long id, HttpServletRequest httpRequest) {
         User user = currentUser(httpRequest);
         Conversation conversation = conversationService.getOwnedConversation(id, user.getId());
-        return conversationService.listMessages(conversation.getId())
-                .stream().map(MessageVO::from).toList();
+        java.util.Map<java.util.UUID, String> states = new java.util.HashMap<>();
+        if (durableTurns != null) durableTurns.getObject().list(user.getId(), id, false)
+                .forEach(t -> states.put(t.turnId(), t.status()));
+        return conversationService.listMessages(conversation.getId()).stream().map(message -> {
+            MessageVO view = MessageVO.from(message);
+            view.setTurnStatus(states.get(message.getTurnId()));
+            return view;
+        }).toList();
     }
 
     /**

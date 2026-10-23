@@ -1,5 +1,7 @@
 package com.travelscope.service;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.travelscope.config.AppProperties;
 import com.travelscope.dto.SummaryResult;
 import com.travelscope.entity.Conversation;
@@ -120,10 +122,13 @@ public class ConversationSummaryService {
      */
     public void maybeSummarizeAsync(Long conversationId, Long userId) { maybeSummarizeAsync(conversationId,userId,null); }
     public void maybeSummarizeAsync(Long conversationId,Long userId,com.travelscope.assessment.ObservationContext observation) {
+        var cancellation = TurnCancellation.from(observation);
+        if (cancellation != null && cancellation.isCancelled()) return;
         if (!tryBeginFold(conversationId)) {
             return;
         }
-        Mono.fromCallable(() -> doFold(conversationId, userId, observation))
+        Mono.fromCallable(() -> cancellation == null ? doFold(conversationId, userId, observation)
+                : cancellation.call(() -> doFold(conversationId, userId, observation)))
                 .subscribeOn(summaryScheduler)
                 .subscribe(outcome -> log.debug("记忆摘要结算: conversationId={}, outcome={}",
                                 conversationId, outcome),
@@ -199,6 +204,7 @@ public class ConversationSummaryService {
                 return FoldOutcome.DROPPED_BLANK;
             }
             String prompt = buildFoldPrompt(conv.getSummary(), newRounds);
+            TurnCancellation.check(observation);
             String summary = callSummarizer(prompt, String.valueOf(userId), conversationId, cfg, observation);
             if (summary == null || summary.isBlank()) {
                 log.warn("记忆摘要生成为空，保留原状（下个到期点重试）: conversationId={}", conversationId);
@@ -218,6 +224,8 @@ public class ConversationSummaryService {
                     conversationId, messages.size(), summary.length());
             return FoldOutcome.COMMITTED;
         } catch (Exception e) {
+            var cancellation = TurnCancellation.from(observation);
+            if (cancellation != null && cancellation.isCancelled()) return FoldOutcome.SKIPPED;
             log.warn("记忆摘要折叠失败（保留原状，下个到期点重试）: conversationId={}, 原因: {}",
                     conversationId, e.getMessage());
             return FoldOutcome.FAILED;
@@ -287,8 +295,7 @@ public class ConversationSummaryService {
                 .model(summaryModel)
                 .maxIters(2)
                 .build();
-        Msg reply = summarizer.call(prompt, SummaryResult.class, ctx)
-                .block(Duration.ofSeconds(cfg.getTimeoutSeconds()));
+        Msg reply = TurnCancellation.await(summarizer.call(prompt, SummaryResult.class, ctx), Duration.ofSeconds(cfg.getTimeoutSeconds()), observation);
         if (reply == null) {
             return null;
         }

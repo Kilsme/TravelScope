@@ -85,7 +85,9 @@ public class ConversationService {
      * 获取会话消息列表（按时间升序）
      */
     public List<Message> listMessages(Long conversationId) {
-        return messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
+        return messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId).stream()
+                .sorted(java.util.Comparator.comparing(Message::getCreatedAt).thenComparing(Message::getId))
+                .toList();
     }
 
     /**

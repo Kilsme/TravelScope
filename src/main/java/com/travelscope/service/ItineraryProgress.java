@@ -46,11 +46,9 @@ public class ItineraryProgress {
     private final Map<Integer, String> emittedDayMarkdown = new LinkedHashMap<>();
     /** 各天当前版本号（从 1 起，重推 +1） */
     private final Map<Integer, Integer> dayVersions = new HashMap<>();
-    /** 全局事件序号（从 1 轮级单调递增；v5-F1 断线重连幂等位的协议预留，前端可忽略） */
-    private final java.util.concurrent.atomic.AtomicInteger seq =
-            new java.util.concurrent.atomic.AtomicInteger();
     /** 渲染分段化（v6 阶段五）：逐天出口来自 ItineraryAssembler */
     private final ItineraryAssembler assembler;
+    private final String locale;
 
     public ItineraryProgress() {
         this(new ItineraryAssembler());
@@ -58,7 +56,10 @@ public class ItineraryProgress {
 
     public ItineraryProgress(ItineraryAssembler assembler) {
         this.assembler = assembler;
+        this.locale = "zh-CN";
     }
+
+    public ItineraryProgress(String locale) { this.assembler=new ItineraryAssembler(); this.locale=locale; }
 
     /**
      * 读工作区产物 → 产出增量进度事件（骨架首推/变化重推 + 变化天版本递增）。
@@ -71,7 +72,7 @@ public class ItineraryProgress {
                 String key = skeletonKey(plan);
                 if (!key.equals(lastSkeletonKey)) {
                     lastSkeletonKey = key;
-                    events.add(skeletonEvent(plan, seq.incrementAndGet()));
+                    events.add(skeletonEvent(plan));
                 }
             });
             workspace.readItineraryDraft(userId, sessionId).ifPresent(draft ->
@@ -100,7 +101,7 @@ public class ItineraryProgress {
             if (!markdown.equals(emittedDayMarkdown.get(day))) {
                 emittedDayMarkdown.put(day, markdown);
                 int version = dayVersions.merge(day, 1, Integer::sum);
-                events.add(dayEvent(day, version, markdown, seq.incrementAndGet()));
+                events.add(dayEvent(day, version, markdown));
             }
         });
         return events;
@@ -121,12 +122,12 @@ public class ItineraryProgress {
     private Map<Integer, String> renderDaySections(ItineraryDraft draft) {
         Map<Integer, String> sections = new LinkedHashMap<>();
         for (ItineraryDraft.DraftDay day : draft.days()) {
-            sections.put(day.day(), assembler.renderDaySection(day).strip());
+            sections.put(day.day(), assembler.renderDaySection(day,locale).strip());
         }
         return sections;
     }
 
-    static ChatEvent skeletonEvent(RoutePlan plan, int seq) {
+    static ChatEvent skeletonEvent(RoutePlan plan) {
         List<JSONObject> days = new ArrayList<>();
         plan.days().forEach(d -> {
             JSONObject o = new JSONObject();
@@ -137,16 +138,14 @@ public class ItineraryProgress {
         JSONObject payload = new JSONObject();
         payload.put("dayCount", plan.days().size());
         payload.put("days", days);
-        payload.put("seq", seq);
         return ChatEvent.of(ChatEvent.TYPE_ITINERARY_SKELETON, payload.toJSONString());
     }
 
-    static ChatEvent dayEvent(int day, int version, String markdown, int seq) {
+    static ChatEvent dayEvent(int day, int version, String markdown) {
         JSONObject payload = new JSONObject();
         payload.put("day", day);
         payload.put("version", version);
         payload.put("markdown", markdown);
-        payload.put("seq", seq);
         return ChatEvent.of(ChatEvent.TYPE_ITINERARY_DAY, payload.toJSONString());
     }
 

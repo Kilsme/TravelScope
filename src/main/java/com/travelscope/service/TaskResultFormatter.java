@@ -47,7 +47,8 @@ public final class TaskResultFormatter {
      * append 多段（往返双查）按段分组，段标题取首段「出发站 → 到达站」。
      * 非车票/机票 JSON 的内容剥头行后透传。
      */
-    public static String formatTrain(String raw) {
+    public static String formatTrain(String raw) { return formatTrain(raw,"zh-CN"); }
+    public static String formatTrain(String raw,String locale) {
         if (raw == null || raw.isBlank()) {
             return raw;
         }
@@ -62,7 +63,7 @@ public final class TaskResultFormatter {
                 sb.append(seg).append("\n\n");
                 continue;
             }
-            appendTicketGroup(sb, tickets);
+            appendTicketGroup(sb, tickets,locale);
             rendered = true;
         }
         if (!rendered) {
@@ -73,7 +74,8 @@ public final class TaskResultFormatter {
     }
 
     /** 住宿摘要：hotels[] 渲染为表格（前 {@value #MAX_HOTELS} 家）；非酒店 JSON 剥头行透传 */
-    public static String formatHotel(String raw) {
+    public static String formatHotel(String raw) { return formatHotel(raw,"zh-CN"); }
+    public static String formatHotel(String raw,String locale) {
         if (raw == null || raw.isBlank()) {
             return raw;
         }
@@ -83,7 +85,7 @@ public final class TaskResultFormatter {
             return stripMetaHeaders(raw);
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("| 酒店 | 类型 | 参考价 | 地址 | 来源 |\n");
+        sb.append(("en".equals(locale)?"| Hotel | Type | Indicative price | Address | Source |\n":"| 酒店 | 类型 | 参考价 | 地址 | 来源 |\n"));
         sb.append("| --- | --- | --- | --- | --- |\n");
         StringBuilder gallery = new StringBuilder();
         int shown = 0;
@@ -111,26 +113,27 @@ public final class TaskResultFormatter {
         }
         int total = json.getIntValue("count") > 0 ? json.getIntValue("count") : hotels.size();
         if (total > shown) {
-            sb.append("\n共 ").append(total).append(" 家可选");
+            sb.append(("en".equals(locale)?"\nTotal ":"\n共 ")).append(total).append(("en".equals(locale)?" hotels available":" 家可选"));
             JSONObject sources = json.getJSONObject("sources");
             if (sources != null && !sources.isEmpty()) {
                 sb.append("（");
                 List<String> parts = new ArrayList<>();
                 for (String key : sources.keySet()) {
-                    parts.add(key + " " + sources.get(key) + " 家");
+                    parts.add(key + " " + sources.get(key) + ("en".equals(locale)?" hotels":" 家"));
                 }
                 sb.append(String.join("、", parts)).append("）");
             }
-            sb.append("，以上按工具返回顺序取前 ").append(shown).append(" 家");
+            sb.append(("en".equals(locale)?", showing the first ":"，以上按工具返回顺序取前 ")).append(shown).append(("en".equals(locale)?" hotels":" 家"));
         }
         if (gallery.length() > 0) {
-            sb.append("\n\n📷 图集：").append(gallery);
+            sb.append(("en".equals(locale)?"\n\n📷 Gallery: ":"\n\n📷 图集：")).append(gallery);
         }
         return sb.toString().strip();
     }
 
     /** 天气摘要：forecasts[] 渲染为表格 + 按全程最低温给一行穿衣建议；非天气 JSON 剥头行透传 */
-    public static String formatWeather(String raw) {
+    public static String formatWeather(String raw) { return formatWeather(raw,"zh-CN"); }
+    public static String formatWeather(String raw,String locale) {
         if (raw == null || raw.isBlank()) {
             return raw;
         }
@@ -140,7 +143,7 @@ public final class TaskResultFormatter {
             return stripMetaHeaders(raw);
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("| 日期 | 白天 | 夜间 | 气温 | 风 | 湿度 |\n");
+        sb.append(("en".equals(locale)?"| Date | Day | Night | Temperature | Wind | Humidity |\n":"| 日期 | 白天 | 夜间 | 气温 | 风 | 湿度 |\n"));
         sb.append("| --- | --- | --- | --- | --- | --- |\n");
         Integer overallMin = null;
         int maxUv = -1;
@@ -160,13 +163,13 @@ public final class TaskResultFormatter {
                     .append(" | ").append(nvl(f.getString("text_night"), "—"))
                     .append(" | ").append(tMin == null ? "?" : tMin).append("~")
                     .append(tMax == null ? "?" : tMax).append("℃")
-                    .append(" | ").append(windText(f))
+                    .append(" | ").append(windText(f,locale))
                     .append(" | ").append(nvl(f.getString("humidity"), "?")).append("%")
                     .append(" |\n");
         }
-        String advice = clothingAdvice(overallMin, maxUv);
+        String advice = clothingAdvice(overallMin, maxUv,locale);
         if (advice != null) {
-            sb.append("\n穿衣建议：").append(advice);
+            sb.append(("en".equals(locale)?"\nClothing advice: ":"\n穿衣建议：")).append(advice);
         }
         return sb.toString().strip();
     }
@@ -195,7 +198,7 @@ public final class TaskResultFormatter {
     }
 
     /** 渲染一组车票/机票方案（同一查询方向）；标题取首条的首段出发站→末段到达站 */
-    private static void appendTicketGroup(StringBuilder sb, JSONArray tickets) {
+    private static void appendTicketGroup(StringBuilder sb, JSONArray tickets,String locale) {
         JSONObject first = tickets.getJSONObject(0);
         String title = directionTitle(first);
         if (title != null) {
@@ -206,24 +209,24 @@ public final class TaskResultFormatter {
             if (shown >= MAX_TICKET_OPTIONS) {
                 break;
             }
-            sb.append("- ").append(ticketLine((JSONObject) item)).append("\n");
+            sb.append("- ").append(ticketLine((JSONObject) item,locale)).append("\n");
             shown++;
         }
         int omitted = tickets.size() - shown;
         if (omitted > 0) {
-            sb.append("- 另有 ").append(omitted).append(" 个方案未列出\n");
+            sb.append(("en".equals(locale)?"- Another ":"- 另有 ")).append(omitted).append(("en".equals(locale)?" options omitted\n":" 个方案未列出\n"));
         }
         sb.append("\n");
     }
 
     /** 单条方案行：价格 · 全程时长 · 直达/中转 + 各段明细 + 来源 + 预订链接 */
-    private static String ticketLine(JSONObject t) {
+    private static String ticketLine(JSONObject t,String locale) {
         StringBuilder line = new StringBuilder();
         String price = t.getString("price");
-        line.append(price == null || price.isBlank() ? "票价待确认" : trimPrice(price) + "元");
-        String duration = durationText(t.getString("totalDuration"));
+        line.append(price == null || price.isBlank() ? ("en".equals(locale)?"Fare to be confirmed":"票价待确认") : trimPrice(price) + ("en".equals(locale)?" CNY":"元"));
+        String duration = durationText(t.getString("totalDuration"),locale);
         if (duration != null) {
-            line.append(" · 全程约").append(duration);
+            line.append(("en".equals(locale)?" · Total approx. ":" · 全程约")).append(duration);
         }
         String journeyType = t.getString("journeyType");
         if (journeyType != null && !journeyType.isBlank()) {
@@ -233,9 +236,9 @@ public final class TaskResultFormatter {
         if (legs != null && !legs.isEmpty()) {
             List<String> legTexts = new ArrayList<>();
             for (Object item : legs) {
-                legTexts.add(legText((JSONObject) item));
+                legTexts.add(legText((JSONObject) item,locale));
             }
-            line.append("：").append(String.join("，中转 ", legTexts));
+            line.append("：").append(String.join(("en".equals(locale)?", transfer ":"，中转 "), legTexts));
         }
         String source = t.getString("source");
         if (source != null && !source.isBlank()) {
@@ -243,13 +246,13 @@ public final class TaskResultFormatter {
         }
         String url = t.getString("jumpUrl");
         if (url != null && !url.isBlank()) {
-            line.append("（[预订链接](").append(url).append(")）");
+            line.append(("en".equals(locale)?" ([Book](":"（[预订链接](")).append(url).append(")）");
         }
         return line.toString();
     }
 
     /** 段明细：G1224 杭州东站→沈阳北站（10-22 08:29→18:46，二等座）；跨天到达标次日/第三日 */
-    private static String legText(JSONObject leg) {
+    private static String legText(JSONObject leg,String locale) {
         String no = firstNonNull(leg, "trainNo", "flightNo");
         String dep = firstNonNull(leg, "depStation", "depAirport");
         String arr = firstNonNull(leg, "arrStation", "arrAirport");
@@ -263,7 +266,7 @@ public final class TaskResultFormatter {
         String arrTime = leg.getString("arrTime");
         if (depTime != null && arrTime != null) {
             sb.append("（").append(shortDateTime(depTime)).append("→")
-                    .append(dayOffsetPrefix(depTime, arrTime)).append(timeOf(arrTime));
+                    .append(dayOffsetPrefix(depTime, arrTime,locale)).append(timeOf(arrTime));
             if (seat != null && !seat.isBlank()) {
                 sb.append("，").append(seat);
             }
@@ -289,23 +292,23 @@ public final class TaskResultFormatter {
     }
 
     /** 穿衣建议：按全程最低温分档；紫外线峰值 ≥5 追加防晒提示 */
-    private static String clothingAdvice(Integer overallMin, int maxUv) {
+    private static String clothingAdvice(Integer overallMin, int maxUv,String locale) {
         if (overallMin == null) {
             return null;
         }
         String base;
         if (overallMin <= 0) {
-            base = "最低温 " + overallMin + "℃，羽绒服/厚棉衣必备，注意防寒保暖";
+            base = ("en".equals(locale)?"Minimum temperature ":"最低温 ") + overallMin + ("en".equals(locale)?"°C; bring a down jacket or thick coat and keep warm":"℃，羽绒服/厚棉衣必备，注意防寒保暖");
         } else if (overallMin <= 8) {
-            base = "最低温 " + overallMin + "℃，需厚外套或薄羽绒，早晚注意添衣";
+            base = ("en".equals(locale)?"Minimum temperature ":"最低温 ") + overallMin + ("en".equals(locale)?"°C; bring a thick coat or light down jacket, with extra layers for mornings and evenings":"℃，需厚外套或薄羽绒，早晚注意添衣");
         } else if (overallMin <= 15) {
-            base = "最低温 " + overallMin + "℃，外套/风衣即可，昼夜温差大时备薄衫";
+            base = ("en".equals(locale)?"Minimum temperature ":"最低温 ") + overallMin + ("en".equals(locale)?"°C; bring a coat and an extra layer for day/night temperature changes":"℃，外套/风衣即可，昼夜温差大时备薄衫");
         } else if (overallMin <= 22) {
-            base = "最低温 " + overallMin + "℃，长袖加薄外套";
+            base = ("en".equals(locale)?"Minimum temperature ":"最低温 ") + overallMin + ("en".equals(locale)?"°C; wear long sleeves with a light jacket":"℃，长袖加薄外套");
         } else {
-            base = "最低温 " + overallMin + "℃，轻薄衣物即可";
+            base = ("en".equals(locale)?"Minimum temperature ":"最低温 ") + overallMin + ("en".equals(locale)?"°C; light clothing is suitable":"℃，轻薄衣物即可");
         }
-        return maxUv >= 5 ? base + "；白天紫外线较强，注意防晒" : base;
+        return maxUv >= 5 ? base + ("en".equals(locale)?"; strong daytime UV: use sun protection":"；白天紫外线较强，注意防晒") : base;
     }
 
     /** 酒店类型清洗：飞猪给「经济型/舒适型」保留；高德的 POI 分类串（含 ; 分层）无信息量置 — */
@@ -316,13 +319,13 @@ public final class TaskResultFormatter {
         return type;
     }
 
-    private static String windText(JSONObject f) {
+    private static String windText(JSONObject f,String locale) {
         String dir = f.getString("wind_dir_day");
         String scale = f.getString("wind_scale_day");
         if (dir == null && scale == null) {
             return "—";
         }
-        return nvl(dir, "") + (scale == null ? "" : " " + scale + "级");
+        return nvl(dir, "") + (scale == null ? "" : " " + scale + ("en".equals(locale)?" Beaufort":"级"));
     }
 
     private static JSONObject tryParse(String text) {
@@ -355,14 +358,14 @@ public final class TaskResultFormatter {
     }
 
     /** 分钟数 → 「17小时37分」；非数字返回 null */
-    private static String durationText(String minutes) {
+    private static String durationText(String minutes,String locale) {
         Long total = parseLong(minutes);
         if (total == null || total <= 0) {
             return null;
         }
         long h = total / 60;
         long m = total % 60;
-        return h > 0 ? h + "小时" + (m > 0 ? m + "分" : "") : m + "分";
+        return h > 0 ? h + ("en".equals(locale)?"h ":"小时") + (m > 0 ? m + ("en".equals(locale)?"min":"分") : "") : m + ("en".equals(locale)?"min":"分");
     }
 
     /** "910.00" → "910"；保留非整小数（"1049.50" → "1049.5"） */
@@ -409,8 +412,8 @@ public final class TaskResultFormatter {
         return time.length() >= 5 ? time.substring(0, 5) : time;
     }
 
-    /** 跨天到达前缀：同日 ""，+1 天 "次日"，+2 天 "第三日"，更多 "（+N 日）" */
-    private static String dayOffsetPrefix(String depTime, String arrTime) {
+    /** 跨天到达前缀：同日 ""，+1 天 ("en".equals(locale)?"next day ":"次日")，+2 天 ("en".equals(locale)?"day 3 ":"第三日")，更多 "（+N 日）" */
+    private static String dayOffsetPrefix(String depTime, String arrTime,String locale) {
         try {
             LocalDate dep = LocalDate.parse(depTime.trim().substring(0, 10));
             LocalDate arr = LocalDate.parse(arrTime.trim().substring(0, 10));
@@ -419,12 +422,12 @@ public final class TaskResultFormatter {
                 return "";
             }
             if (diff == 1) {
-                return "次日";
+                return ("en".equals(locale)?"next day ":"次日");
             }
             if (diff == 2) {
-                return "第三日";
+                return ("en".equals(locale)?"day 3 ":"第三日");
             }
-            return "+" + diff + "日 ";
+            return "+" + diff + ("en".equals(locale)?" days ":"日 ");
         } catch (Exception e) {
             return "";
         }

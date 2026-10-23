@@ -26,11 +26,26 @@ class AssessmentFixtureServicesTest {
         var retrieval = new PoiRetrievalService(rag, attractions);
         var writer = new CollabFileWriter(directory.toString());
         var workspace = new TaskWorkspace(writer, new CollabFileReader());
+        var cache = new com.travelscope.service.TaskResultCache(null);
+        var copyModel = mock(io.agentscope.core.model.Model.class);
+        when(copyModel.getModelName()).thenReturn("fixture-copy-model");
+        when(copyModel.stream(anyList(), anyList(), any())).thenReturn(reactor.core.publisher.Flux.just(
+                io.agentscope.core.model.ChatResponse.builder().content(List.of(
+                        io.agentscope.core.message.TextBlock.builder().text(
+                                "{\"theme\":\"固定测试\",\"notes\":[],\"costs\":[],\"budget\":null,\"pendingConfirm\":[]}")
+                                .build())).build()));
         var tools = new CollabTools(retrieval, livePlanner, workspace, writer,
                 new com.travelscope.service.ItineraryAssembler(),
-                org.mockito.Mockito.mock(com.travelscope.service.TaskResultCache.class),
-                org.mockito.Mockito.mock(io.agentscope.core.model.Model.class),
-                org.mockito.Mockito.mock(com.travelscope.agent.tools.AttractionTool.class));
+                cache,
+                copyModel,
+                attractions);
+        var toolkit = new io.agentscope.core.tool.Toolkit();
+        toolkit.registerTool(tools);
+        var select = toolkit.getTool("select_poi_shortlist");
+        var revise = toolkit.getTool("revise_poi_selection");
+        FixtureTools.install(toolkit);
+        assertSame(select, toolkit.getTool("select_poi_shortlist"));
+        assertSame(revise, toolkit.getTool("revise_poi_selection"));
         var runtime = RuntimeContext.builder().userId("fixture-user").sessionId("fixture-session")
                 .put("assessment.toolMode", "FIXTURE").build();
         var pool = JSON.parseObject(tools.retrieve_poi_candidates("杭州", 2, "自然风景", runtime));
@@ -41,16 +56,29 @@ class AssessmentFixtureServicesTest {
                 IntakeResult.Status.DONE, 0, new IntakeResult.RequirementFields(
                 field("杭州"), field("2"), field("2026-10-24"), field("上海"),
                 field(null), field(null), field(null), field(null)), false, "test"));
-        workspace.writePoiShortlist("fixture-user", "fixture-session", new PoiShortlist("杭州", "FIXTURE", List.of(
-                new PoiShortlist.PoiItem("测试景点一", 120.16, 30.25, 4.5, "09:00-18:00", 60, "FIXTURE", null),
-                new PoiShortlist.PoiItem("测试景点二", 120.17, 30.25, 4.5, "09:00-18:00", 60, "FIXTURE", null))));
+        String rejected = tools.select_poi_shortlist("fixture-session", "不存在的景点", null, null, runtime);
+        assertTrue(rejected.startsWith("ERROR"), rejected);
+        assertTrue(workspace.readPoiShortlist("fixture-user", "fixture-session").isEmpty());
+        String selected = tools.select_poi_shortlist("fixture-session",
+                "杭州固定测试景点1,杭州固定测试景点2", "60,60", null, runtime);
+        assertTrue(selected.startsWith("POI 筛选完成"), selected);
+        var shortlist = workspace.readPoiShortlist("fixture-user", "fixture-session").orElseThrow();
+        assertEquals(2, shortlist.pois().size());
+        assertNotNull(shortlist.pois().getFirst().lng());
         String route = tools.plan_route("fixture-session", null, null, runtime);
         assertFalse(route.startsWith("ERROR"), route);
         var plan = workspace.readRoutePlan("fixture-user", "fixture-session").orElseThrow();
         assertEquals(2, plan.days().size());
         assertEquals("NN+2opt", plan.solverMeta().algorithm());
+        assertTrue(workspace.readItineraryDraft("fixture-user", "fixture-session").isPresent(), route);
+        verifyNoInteractions(rag, attractions, livePlanner);
+        String revised = tools.revise_poi_selection("fixture-session", "杭州固定测试景点3", "杭州固定测试景点1", runtime);
+        assertTrue(revised.startsWith("POI 修订完成"), revised);
+        assertTrue(workspace.readPoiShortlist("fixture-user", "fixture-session").orElseThrow().pois()
+                .stream().anyMatch(p -> p.name().equals("杭州固定测试景点3")), revised);
         verifyNoInteractions(rag, attractions, livePlanner);
         runtime.put("assessment.toolFailure", true);
+        assertTrue(tools.select_poi_shortlist("fixture-session", "杭州固定测试景点2", null, null, runtime).startsWith("ERROR"));
         assertTrue(tools.plan_route("fixture-session", null, null, runtime).startsWith("ERROR"));
     }
 

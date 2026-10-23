@@ -77,7 +77,7 @@ class ItineraryProgressTest {
     }
 
     @Test
-    @DisplayName("首推（结构化渲染）：骨架+全部天 v1，seq 单调 1/2/3；内容未变重推为空（幂等）")
+    @DisplayName("首推（结构化渲染）：骨架+全部天 v1，传输序号交给任务日志；内容未变重推为空（幂等）")
     void firstEmitThenIdempotent() {
         seed(routePlan("拙政园", "平江路"), draft("古迹", "D2 v1"));
 
@@ -87,7 +87,7 @@ class ItineraryProgressTest {
         assertThat(first.get(0).getType()).isEqualTo(ChatEvent.TYPE_ITINERARY_SKELETON);
         JSONObject skeleton = JSON.parseObject(first.get(0).getPayload());
         assertThat(skeleton.getIntValue("dayCount")).isEqualTo(1);
-        assertThat(skeleton.getIntValue("seq")).isEqualTo(1);
+        assertThat(skeleton.containsKey("seq")).isFalse();
         assertThat(skeleton.getJSONArray("days").getJSONObject(0).getJSONArray("poiNames"))
                 .containsExactly("拙政园", "平江路");
         for (int i = 1; i <= 2; i++) {
@@ -95,7 +95,7 @@ class ItineraryProgressTest {
             JSONObject day = JSON.parseObject(first.get(i).getPayload());
             assertThat(day.getIntValue("day")).isEqualTo(i);
             assertThat(day.getIntValue("version")).isEqualTo(1);
-            assertThat(day.getIntValue("seq")).isEqualTo(i + 1);
+            assertThat(day.containsKey("seq")).isFalse();
             // 逐天出口结构化渲染：标题带 date/theme，表格含 POI 名
             assertThat(day.getString("markdown")).startsWith("## Day " + i + "（2026-10-2" + (3 + i) + "）")
                     .contains("| 时间 | 活动 | 地点 | 费用 |");
@@ -107,7 +107,7 @@ class ItineraryProgressTest {
     }
 
     @Test
-    @DisplayName("变化天重推（结构化渲染）：Day 2 结构变化仅重推该天，version 2 / seq 递增")
+    @DisplayName("变化天重推（结构化渲染）：Day 2 结构变化仅重推该天，version 2")
     void changedDayReEmittedWithVersionBump() {
         seed(routePlan("拙政园", "平江路"), draft("古迹", "D2 v1"));
         progress.emit(workspace, "u1", "conv-p");
@@ -120,12 +120,12 @@ class ItineraryProgressTest {
         JSONObject day = JSON.parseObject(updates.get(0).getPayload());
         assertThat(day.getIntValue("day")).isEqualTo(2);
         assertThat(day.getIntValue("version")).isEqualTo(2);
-        assertThat(day.getIntValue("seq")).isEqualTo(4);
+        assertThat(day.containsKey("seq")).isFalse();
         assertThat(day.getString("markdown")).contains("水巷夜游").contains("D2 v2 修订后");
     }
 
     @Test
-    @DisplayName("骨架重排（POI 名单变化）→ 骨架事件重发（seq 递增）")
+    @DisplayName("骨架重排（POI 名单变化）→ 骨架事件重发（版本独立于传输序号）")
     void skeletonReEmittedWhenPlanChanges() {
         seed(routePlan("拙政园", "平江路"), draft("古迹", "D2 v1"));
         progress.emit(workspace, "u1", "conv-p");
@@ -136,7 +136,7 @@ class ItineraryProgressTest {
         assertThat(updates).isNotEmpty();
         assertThat(updates.get(0).getType()).isEqualTo(ChatEvent.TYPE_ITINERARY_SKELETON);
         JSONObject skeleton = JSON.parseObject(updates.get(0).getPayload());
-        assertThat(skeleton.getIntValue("seq")).isEqualTo(4);
+        assertThat(skeleton.containsKey("seq")).isFalse();
         assertThat(skeleton.getJSONArray("days").getJSONObject(0).getJSONArray("poiNames"))
                 .containsExactly("拙政园", "同里古镇");
     }

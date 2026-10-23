@@ -118,7 +118,7 @@ class ChatServiceReviewEventTest {
         });
         org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(eventNames(items)).contains("review_report");
@@ -138,7 +138,7 @@ class ChatServiceReviewEventTest {
         seedPlanningChain();
         // 不写任何 review 产物
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(eventNames(items)).doesNotContain("review_report");
@@ -167,7 +167,7 @@ class ChatServiceReviewEventTest {
         });
         org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(eventNames(items)).contains("review_report");
@@ -201,7 +201,7 @@ class ChatServiceReviewEventTest {
                 null, List.of(), List.of(),
                 "# 杭州两日游完整方案\n\n## Day 1（2026-10-24）西湖环线\n\n| 时间 | 活动 |\n| --- | --- |\n| 09:00 | 环湖 |\n"));
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         List<String> names = eventNames(items);
@@ -245,7 +245,7 @@ class ChatServiceReviewEventTest {
         });
         org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         // ① 契约标记落盘：deliveryMode=DEGRADED + 未解决清单=两失败段 issues 汇总

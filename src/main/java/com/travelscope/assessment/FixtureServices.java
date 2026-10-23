@@ -43,6 +43,22 @@ public final class FixtureServices {
                 workspace);
     }
 
+    /** Validate fixture names against the retrieved pool; never query live POI providers. */
+    public static com.travelscope.collab.PoiShortlist.PoiItem resolvePoi(
+            PoiCandidatePool pool, String name, RuntimeContext runtime) {
+        if (pool == null || Boolean.TRUE.equals(runtime.get("assessment.toolFailure"))) return null;
+        for (var candidate : pool.candidates()) {
+            if (!"FIXTURE".equals(candidate.source()) || !candidate.content().startsWith(name + "｜")) continue;
+            var coordinates = java.util.regex.Pattern.compile("坐标=([0-9.]+),([0-9.]+)")
+                    .matcher(candidate.content());
+            if (!coordinates.find()) return null;
+            return new com.travelscope.collab.PoiShortlist.PoiItem(name,
+                    Double.parseDouble(coordinates.group(1)), Double.parseDouble(coordinates.group(2)),
+                    null, "09:00-18:00", 60, "FIXTURE", "固定测试数据，不代表真实景点");
+        }
+        return null;
+    }
+
     private static final TransportTool TRANSPORT = new TransportTool(new AppProperties()) {
         @Override public String geocode(String address) {
             return "{\"fixture\":true,\"location\":\"120.16,30.25\"}";

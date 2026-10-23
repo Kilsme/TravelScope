@@ -77,6 +77,9 @@ class AdminApiWebMvcTest {
     private ChatService chatService;
 
     @MockBean
+    private com.travelscope.chat.ChatTurnService chatTurnService;
+
+    @MockBean
     private ConversationService conversationService;
 
     // ChatController 的图片能力端点依赖（私人讲解员，2026-10-22）

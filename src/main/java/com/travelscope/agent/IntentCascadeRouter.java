@@ -1,5 +1,7 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.travelscope.common.trace.TraceNode;
 import com.travelscope.config.AppProperties;
 import com.travelscope.config.AppProperties.IntentCascadeConfig;
@@ -197,7 +199,9 @@ public class IntentCascadeRouter {
                     return result;
                 }
             }
+            TurnCancellation.check(observation);
             IntentResult l2Result = l2.classify(userMessage, contextBlock, userId, sessionId, observation);
+            TurnCancellation.check(observation);
             IntentType l2Type = l2Result != null ? l2Result.toIntentType() : null;
             if (l2Type != null) {
                 if (useCache) {
@@ -218,6 +222,7 @@ public class IntentCascadeRouter {
      * L3 兜底并补埋点（enabled=false 直通时也走这里，保持旧链路）
      */
     private IntentResult viaL3(String userMessage, String contextBlock, String userId, String sessionId, long start, com.travelscope.assessment.ObservationContext observation) {
+        TurnCancellation.check(observation);
         IntentResult result = l3.classify(userMessage, contextBlock, userId, sessionId, observation);
         if (result != null && result.toIntentType() != null) {
             saveRecent(userId, sessionId, result.toIntentType());

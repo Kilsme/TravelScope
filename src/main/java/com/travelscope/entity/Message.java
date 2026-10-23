@@ -27,6 +27,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "messages")
 public class Message {
+    @Column(name="turn_id")
+    private java.util.UUID turnId;
 
     /** 消息角色 */
     public static final String ROLE_USER = "user";

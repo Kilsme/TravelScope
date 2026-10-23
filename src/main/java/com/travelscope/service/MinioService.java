@@ -34,6 +34,11 @@ public class MinioService {
         this.minioClient = MinioClient.builder()
                 .endpoint(config.getEndpoint())
                 .credentials(config.getAccessKey(), config.getSecretKey())
+                .httpClient(new okhttp3.OkHttpClient.Builder()
+                        .connectTimeout(java.time.Duration.ofSeconds(10))
+                        .readTimeout(java.time.Duration.ofSeconds(45))
+                        .writeTimeout(java.time.Duration.ofSeconds(45))
+                        .callTimeout(java.time.Duration.ofSeconds(55)).build())
                 .build();
         ensureBucket();
     }
@@ -81,6 +86,10 @@ public class MinioService {
         }
     }
 
+    public void delete(String objectKey) {
+        try { minioClient.removeObject(io.minio.RemoveObjectArgs.builder().bucket(bucketName).object(objectKey).build()); }
+        catch(Exception e) { throw new IllegalStateException("图片清理失败",e); }
+    }
     /**
      * 幂等创建 bucket（启动时执行一次）
      */

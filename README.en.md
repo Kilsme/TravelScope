@@ -14,6 +14,12 @@ Three agents + code orchestration · JSON-contract-driven · Rule-based review w
 
 ---
 
+## Durable chat recovery
+
+Text, images and requirement forms use persistent turns, idempotent admission and SSE replay. Before deployment, apply `src/main/resources/chat-reconnect-upgrade.sql`, then update the backend and frontend. A restart preserves partial output and interrupts unfinished turns without rerunning models. See [deployment, protocol and tests](CHAT_RECONNECT.md).
+
+
+
 > You say: "**Plan a 2-day Hangzhou + Shanghai trip, budget ¥700, into nature and history**" —
 > the orchestration layer collects requirements in code, registers tasks, and pre-checks the cache;
 > the planning agent fetches weather, hotels, round-trip train tickets, and the POI candidate pool

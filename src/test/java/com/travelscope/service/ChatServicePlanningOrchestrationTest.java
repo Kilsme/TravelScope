@@ -121,7 +121,7 @@ class ChatServicePlanningOrchestrationTest {
                         new RequirementFormSpec.FieldSpec("fromCity", "出发城市", "text", null,
                                 false, true, List.of(), "如：上海")), "请补全出发城市"));
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(eventNames(items)).containsExactly("intent", "requirement_form", "done");
@@ -142,7 +142,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         // 编排顺序：step1 workflow.handle → step2 planner.plan → step3 itinerary.streamEvents
@@ -180,7 +180,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         // R4：终检 FAIL → 编排层标记 DEGRADED，标注升级为「评分 + 未解决问题数」指针
@@ -210,7 +210,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.cancelled());
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "取消规划");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "取消规划");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(eventNames(items)).containsExactly("intent", "done");
@@ -230,7 +230,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.needUserInput(List.of(), null));
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "杭州");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "杭州");
         List<String> items = awaitEvent(emitter, "done");
 
         // 短回答没有落到 master，而是被意图保护拽进编排 step1
@@ -252,7 +252,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        SseEmitter emitter = chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案")
@@ -286,7 +286,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+        awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
         verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
@@ -318,7 +318,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划西安四日游"), "done");
+        awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划西安四日游"), "done");
 
         // 状态机被重开为 COLLECTING 并保存（旧字段保留待 workflow 增量合并）
         ArgumentCaptor<TripRequirementState> saved = ArgumentCaptor.forClass(TripRequirementState.class);
@@ -339,7 +339,7 @@ class ChatServicePlanningOrchestrationTest {
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+        awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
         verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
@@ -370,7 +370,7 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(Flux.empty());
         workspace.writeItineraryDraft("1", "conv-13", draftForTest());
 
-        awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+        awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         // 结果缓存按关键字段变化全清
         verify(cache).invalidate("1", "conv-13", null);
@@ -388,22 +388,22 @@ class ChatServicePlanningOrchestrationTest {
     void observedPlanningKeepsWorkflowAndPassesContextToPlanner() throws Exception {
         seedIntakeAndArtifacts(true);
         ObservationContext observation = observeTurns();
-        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), eq(observation)))
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(new IntentResult("PLANNING", "行程规划"));
-        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), eq(observation)))
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
-        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, "帮我规划杭州两日游"), "done");
+        List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案");
         ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
         verify(itineraryPlanningAgent).streamEvents(any(UserMessage.class), runtime.capture());
-        assertThat((Object) runtime.getValue().get(ObservationContext.KEY)).isSameAs(observation);
+        assertThat(((ObservationContext) runtime.getValue().get(ObservationContext.KEY)).withCancellation(null)).isEqualTo(observation);
         assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("LIVE");
-        verify(requirementWorkflowService).handle("帮我规划杭州两日游", "1", "conv-13", observation);
+        verify(requirementWorkflowService).handle(eq("帮我规划杭州两日游"), eq("1"), eq("conv-13"), sameObservation(observation));
         verifyNoInteractions(travelMasterAgent);
     }
 
@@ -411,10 +411,10 @@ class ChatServicePlanningOrchestrationTest {
     void observedFormSubmissionStillBypassesIntentClassifier() throws Exception {
         ObservationContext observation = observeTurns();
         String message = "{\"__form__\":{\"__action__\":\"cancel\"}}";
-        when(requirementWorkflowService.handle(message, "1", "conv-13", observation))
+        when(requirementWorkflowService.handle(eq(message), eq("1"), eq("conv-13"), sameObservation(observation)))
                 .thenReturn(CollectOutcome.cancelled());
 
-        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, message), "done");
+        List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, message), "done");
 
         assertThat(payloadOf(items, "done")).isEqualTo("已取消规划。");
         verifyNoInteractions(intentCascadeRouter, taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
@@ -424,19 +424,19 @@ class ChatServicePlanningOrchestrationTest {
     void observedTimeoutKeepsOuterBestEffortRendering() throws Exception {
         seedIntakeAndArtifacts(false);
         ObservationContext observation = observeTurns();
-        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), eq(observation)))
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(new IntentResult("PLANNING", "行程规划"));
-        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), eq(observation)))
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.error(new java.util.concurrent.TimeoutException("synthetic timeout")));
 
-        List<String> items = awaitEvent(chatService.streamChat(conversation(), 1L, "规划杭州两日游"), "done");
+        List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "规划杭州两日游"), "done");
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案").contains("已尽力");
         assertThat(eventNames(items)).doesNotContain("error");
-        verify(observationStore).timeout(observation);
+        verify(observationStore).timeout(sameObservation(observation));
     }
 
     @Test
@@ -451,9 +451,9 @@ class ChatServicePlanningOrchestrationTest {
         workspace.writeIntakeResult("13", "conv-13", intakeResult());
         Files.writeString(workspace.getTaskDir("13", "conv-13").resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
                 "# 隔离评测的行程方案");
-        when(intentCascadeRouter.classify(anyString(), eq(""), eq("13"), eq("conv-13"), eq(observation)))
+        when(intentCascadeRouter.classify(anyString(), eq(""), eq("13"), eq("conv-13"), sameObservation(observation)))
                 .thenReturn(new IntentResult("PLANNING", "行程规划"));
-        when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), eq(observation),
+        when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), sameObservation(observation),
                 any(com.travelscope.agent.tools.TransportTool.class)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("13"), any(IntakeResult.class))).thenReturn(backlog());
@@ -466,12 +466,39 @@ class ChatServicePlanningOrchestrationTest {
         assertThat(result).contains("隔离评测的行程方案");
         ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
         verify(isolatedPlanner).streamEvents(any(UserMessage.class), runtime.capture());
-        assertThat((Object) runtime.getValue().get(ObservationContext.KEY)).isSameAs(observation);
+        assertThat(((ObservationContext) runtime.getValue().get(ObservationContext.KEY)).withCancellation(null)).isEqualTo(observation);
         assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("FIXTURE");
         assertThat((Object) runtime.getValue().get("assessment.toolFailure")).isEqualTo(true);
         assertThat((Object) runtime.getValue().get("assessment.fixtureCase")).isEqualTo("EC-018");
         verifyNoInteractions(conversationService, conversationSummaryService, pointsService,
                 travelMasterAgent, itineraryPlanningAgent, isolatedMaster);
+    }
+
+    @Test
+    void cancellingRequirementExtractionNeverStartsPlanningOrMasterFallback() throws Exception {
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var disconnected = new java.util.concurrent.CountDownLatch(1);
+        var ended = new java.util.concurrent.CountDownLatch(1);
+        when(intentCascadeRouter.classify(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new IntentResult("PLANNING", "test"));
+        when(requirementWorkflowService.handle(anyString(), anyString(), anyString())).thenAnswer(inv -> {
+            return com.travelscope.common.TurnCancellation.await(
+                    reactor.core.publisher.Mono.<CollectOutcome>never().doOnSubscribe(s -> started.countDown()).doOnCancel(disconnected::countDown),
+                    java.time.Duration.ofSeconds(5), null);
+        });
+        var execution = chatService.execution(conversation(), 1L, "plan a trip", null, UUID.randomUUID(), cost -> true);
+        var subscription = execution.events.doFinally(signal -> ended.countDown()).subscribe(event -> {}, error -> {});
+        try {
+            assertThat(started.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            execution.cancel();
+            assertThat(disconnected.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(ended.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+        } finally { subscription.dispose(); }
+    }
+
+    private static ObservationContext sameObservation(ObservationContext expected) {
+        return org.mockito.ArgumentMatchers.argThat(actual -> actual != null && actual.withCancellation(null).equals(expected));
     }
 
     private ObservationContext observeTurns() {
@@ -480,6 +507,8 @@ class ChatServicePlanningOrchestrationTest {
                 "synthetic-trace", null, null);
         when(observationStore.enabled()).thenReturn(true);
         when(observationStore.begin(anyString(), any(), any())).thenReturn(observation);
+        when(observationStore.begin(anyString(), any(), any(), any(UUID.class))).thenReturn(observation);
+        when(observationStore.begin(anyString(), any(), any(), any(UUID.class), any())).thenReturn(observation);
         ReflectionTestUtils.setField(chatService, "observationStore", observationStore);
         return observation;
     }
@@ -612,4 +641,20 @@ class ChatServicePlanningOrchestrationTest {
         }
         return null;
     }
+    @Test void englishPlanningPropagatesLocaleAndInstructionToPlanner() throws Exception {
+        seedIntakeAndArtifacts(true);
+        when(intentCascadeRouter.classify(anyString(),anyString(),anyString(),anyString())).thenReturn(new IntentResult("PLANNING","plan"));
+        when(requirementWorkflowService.handle(anyString(),anyString(),anyString())).thenReturn(CollectOutcome.collected());
+        when(taskBacklogPlanner.plan(eq("1"),any(IntakeResult.class))).thenReturn(backlog());
+        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class),any(RuntimeContext.class))).thenReturn(Flux.empty());
+        var execution=chatService.execution(conversation(),1L,"Plan a trip",null,UUID.randomUUID(),"en",cost->true);
+        var events=execution.events.collectList().block(Duration.ofSeconds(5));
+        ArgumentCaptor<RuntimeContext> context=ArgumentCaptor.forClass(RuntimeContext.class);
+        ArgumentCaptor<UserMessage> input=ArgumentCaptor.forClass(UserMessage.class);
+        verify(itineraryPlanningAgent).streamEvents(input.capture(),context.capture());
+        assertThat((Object)context.getValue().get(com.travelscope.common.ReplyLanguage.KEY)).isEqualTo("en");
+        assertThat(input.getValue().getTextContent()).contains("Use English");
+        assertThat(events.stream().filter(e->"itinerary_day".equals(e.getType())).map(e->e.getPayload()).toList()).allMatch(body->body.contains("Time | Activity"));
+    }
+
 }

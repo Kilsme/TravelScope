@@ -1,5 +1,7 @@
 package com.travelscope.agent.tools;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.collab.CollabFileWriter;
@@ -118,6 +120,7 @@ public class CollabTools {
             taskResultCache.register(ctx.getUserId(), ctx.getSessionId(),
                     com.travelscope.service.TaskResultCache.TaskType.POI, "T3", JSON.toJSONString(pool));
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.debug("候选池全量缓存登记失败（不影响返回）: {}", e.getMessage());
         }
         return pool.toSlimView(160);
@@ -146,6 +149,7 @@ public class CollabTools {
                     required = false)
             String reasons,
             RuntimeContext ctx) {
+        return TurnCancellation.inRuntime(ctx, () -> {
         String userId = ctx.getUserId();
         try {
             Optional<IntakeResult> intake = taskWorkspace.readIntakeResult(userId, sessionId);
@@ -172,6 +176,7 @@ public class CollabTools {
                         pool = parsed;
                     }
                 } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
                     log.debug("候选池缓存解析失败（仅丢 source 继承，不阻断）: {}", e.getMessage());
                 }
             }
@@ -202,7 +207,14 @@ public class CollabTools {
             // L1a（v6 轮次合并）：实证解析并行化——resolvePoiItem 内部 = flyai CLI 子进程
             // + 高德 HTTP（IO 密集按约定走虚拟线程），按提交序 join 保序；
             // 失败拒绝语义不变（任一实证失败该名整体拒绝、零落盘）
-            List<com.travelscope.collab.PoiShortlist.PoiItem> resolved = resolveNamesParallel(destination, selected);
+            List<com.travelscope.collab.PoiShortlist.PoiItem> resolved;
+            if (com.travelscope.assessment.FixtureServices.enabled(ctx)) {
+                resolved = new ArrayList<>();
+                for (String name : selected) resolved.add(
+                        com.travelscope.assessment.FixtureServices.resolvePoi(pool, name, ctx));
+            } else {
+                resolved = resolveNamesParallel(destination, selected);
+            }
             List<String> rejected = new ArrayList<>();
             List<com.travelscope.collab.PoiShortlist.PoiItem> items = new ArrayList<>();
             for (int i = 0; i < selected.size(); i++) {
@@ -248,9 +260,11 @@ public class CollabTools {
             return "POI 筛选完成：已落盘 poi_shortlist.json 共 " + items.size() + " 个（候选池 "
                     + pool.candidates().size() + " 个）" + warn + truncNote + "。下一步调 plan_route。";
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("select_poi_shortlist 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: POI 筛选落盘失败: " + e.getMessage();
         }
+        });
     }
 
     /**
@@ -277,6 +291,7 @@ public class CollabTools {
     private List<com.travelscope.collab.PoiShortlist.PoiItem> resolveNamesParallel(
             String destination, List<String> selected) {
         java.util.concurrent.Semaphore permits = new java.util.concurrent.Semaphore(RESOLVE_MAX_PARALLEL);
+        var cancellation = TurnCancellation.from(null);
         try (java.util.concurrent.ExecutorService executor =
                      java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             List<java.util.concurrent.CompletableFuture<com.travelscope.collab.PoiShortlist.PoiItem>> futures =
@@ -320,6 +335,7 @@ public class CollabTools {
             try {
                 out.add(Integer.parseInt(t.trim()));
             } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
                 out.add(null);
             }
         }
@@ -340,6 +356,7 @@ public class CollabTools {
         try {
             return Integer.parseInt(daysStr.trim());
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             return 1;
         }
     }
@@ -368,7 +385,9 @@ public class CollabTools {
                     required = false)
             Boolean preferTransit,
             RuntimeContext ctx) {
+        return TurnCancellation.inRuntime(ctx, () -> {
         return planRouteInternal(sessionId, maxDailyCommuteMin, preferTransit, ctx, true);
+        });
     }
 
     /** plan_route 主体；autoChain=false 供 revise_poi_selection 内部调用（重组装由它自己收尾，防双重组装） */
@@ -407,6 +426,7 @@ public class CollabTools {
             }
             return routeJson;
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("plan_route 求解失败: 用户={}, 会话={}, 原因={}", prep.userId(), sessionId, e.getMessage());
             return "ERROR: 路线求解失败: " + e.getMessage();
         }
@@ -437,6 +457,7 @@ public class CollabTools {
         try {
             days = Integer.parseInt(daysStr);
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             return new RoutePrep("ERROR: intake_result.json 中天数缺失或非法: " + daysStr,
                     userId, 0, null, null, null, false);
         }
@@ -495,6 +516,7 @@ public class CollabTools {
                     prep.userId(), sessionId, prep.pois(), prep.constraints(),
                     prep.destination(), previous));
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("plan_route 增量重排失败: 用户={}, 会话={}, 原因={}",
                     prep.userId(), sessionId, e.getMessage());
             return new IncrementalRouteResult("ERROR: 路线增量重排失败: " + e.getMessage(), null);
@@ -515,7 +537,9 @@ public class CollabTools {
             @ToolParam(name = "sessionId", description = "本轮会话 ID，使用委派说明中给出的值")
             String sessionId,
             RuntimeContext ctx) {
+        return TurnCancellation.inRuntime(ctx, () -> {
         return doAssembleItinerary(sessionId, ctx);
+        });
     }
 
     /** assemble_itinerary 主体（R2 起 revise 链走增量版 doAssembleItineraryIncremental，本方法为其全量兜底） */
@@ -536,10 +560,10 @@ public class CollabTools {
             // 返回 null 仅当 LLM 完全不可用（全部降级）——代码内整体重试 1 次（粒度兜底，
             // 惊动 planner 层重试要烧一整个 agent 轮次，conv-46 实测 ~20s）
             com.travelscope.collab.ItineraryDraft skeleton = produceDraftSkeleton(
-                    userId, sessionId, routePlan.get(), intake.get());
+                    userId, sessionId, routePlan.get(), intake.get(),com.travelscope.common.ReplyLanguage.from(ctx));
             if (skeleton == null) {
                 log.info("assemble_itinerary 结构字段首次生成失败，代码内重试: 用户={}, 会话={}", userId, sessionId);
-                skeleton = produceDraftSkeleton(userId, sessionId, routePlan.get(), intake.get());
+                skeleton = produceDraftSkeleton(userId, sessionId, routePlan.get(), intake.get(),com.travelscope.common.ReplyLanguage.from(ctx));
             }
             if (skeleton == null) {
                 return "ERROR: 草案结构字段生成失败（模型未返回有效结构，已自动重试 1 次），请重试一次";
@@ -549,13 +573,14 @@ public class CollabTools {
             // 缓存原文是工具返回的原始 JSON（记账去 LLM 化后不再经 LLM 消化）——进组装器前
             // 必须过 TaskResultFormatter 转摘要，否则 raw JSON 直通最终方案上屏（2026-10-20 实证）
             ItineraryDraft draft = renderAndWriteDraft(userId, sessionId, skeleton,
-                    routePlan.get(), intake.get());
+                    routePlan.get(), intake.get(),com.travelscope.common.ReplyLanguage.from(ctx));
             log.info("assemble_itinerary 已组装落盘: 用户={}, 会话={}, {} 天, markdownBody={} 字符",
                     userId, sessionId, draft.days().size(), draft.markdownBody().length());
             return "已组装并写入 itinerary_draft.json（" + draft.days().size()
                     + " 天，markdownBody " + draft.markdownBody().length()
                     + " 字符，代码渲染）。核对本摘要无误后直接进入第 5 步一行收尾，严禁 read_file 复查草案文件。";
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("assemble_itinerary 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: 草案组装失败: " + e.getMessage();
         }
@@ -567,26 +592,26 @@ public class CollabTools {
      */
     private ItineraryDraft renderAndWriteDraft(String userId, String sessionId,
                                                ItineraryDraft skeleton, RoutePlan routePlan,
-                                               IntakeResult intake) {
+                                               IntakeResult intake,String locale) {
         String weather = com.travelscope.service.TaskResultFormatter.formatWeather(
                 taskResultCache.get(userId, sessionId,
-                        com.travelscope.service.TaskResultCache.TaskType.WEATHER));
+                        com.travelscope.service.TaskResultCache.TaskType.WEATHER),locale);
         String hotel = com.travelscope.service.TaskResultFormatter.formatHotel(
                 taskResultCache.get(userId, sessionId,
-                        com.travelscope.service.TaskResultCache.TaskType.HOTEL));
+                        com.travelscope.service.TaskResultCache.TaskType.HOTEL),locale);
         String train = com.travelscope.service.TaskResultFormatter.formatTrain(
                 taskResultCache.get(userId, sessionId,
-                        com.travelscope.service.TaskResultCache.TaskType.TRAIN));
+                        com.travelscope.service.TaskResultCache.TaskType.TRAIN),locale);
         if (train == null) {
             train = com.travelscope.service.TaskResultFormatter.formatTrain(
                     taskResultCache.get(userId, sessionId,
-                            com.travelscope.service.TaskResultCache.TaskType.FLIGHT));
+                            com.travelscope.service.TaskResultCache.TaskType.FLIGHT),locale);
         }
         // 防幻觉与偏好硬约束的校验输入
         PoiShortlist shortlist = taskWorkspace.readPoiShortlist(userId, sessionId).orElse(null);
         List<String> preferences = extractPreferences(intake);
         ItineraryDraft draft = itineraryAssembler.assemble(
-                skeleton, routePlan, weather, hotel, train, shortlist, preferences);
+                skeleton, routePlan, weather, hotel, train, shortlist, preferences,locale);
         taskWorkspace.writeItineraryDraft(userId, sessionId, draft);
         return draft;
     }
@@ -616,11 +641,11 @@ public class CollabTools {
 
             // ① 增量骨架：只产变化天结构 + 全局 budget/notes；失败代码内重试 1 次
             ItineraryDraft partial = produceDraftSkeletonIncremental(
-                    userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft);
+                    userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft,com.travelscope.common.ReplyLanguage.from(ctx));
             if (partial == null) {
                 log.info("增量骨架首次生成失败，代码内重试: 用户={}, 会话={}", userId, sessionId);
                 partial = produceDraftSkeletonIncremental(
-                        userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft);
+                        userId, sessionId, routePlan.get(), intake.get(), changedDays, oldDraft,com.travelscope.common.ReplyLanguage.from(ctx));
             }
             ItineraryDraft skeleton = partial == null ? null
                     : mergeIncrementalSkeleton(oldDraft, partial, changedDays);
@@ -631,12 +656,13 @@ public class CollabTools {
 
             // ② 渲染 + 校验 + 落盘：与全量路径共用（防幻觉/偏好校验/缓存摘要全保留，质量门不缩水）
             ItineraryDraft draft = renderAndWriteDraft(userId, sessionId, skeleton,
-                    routePlan.get(), intake.get());
+                    routePlan.get(), intake.get(),com.travelscope.common.ReplyLanguage.from(ctx));
             log.info("增量重组装已落盘: 用户={}, 会话={}, 变化天={}, 其余天沿用旧草案, markdownBody={} 字符",
                     userId, sessionId, changedDays, draft.markdownBody().length());
             return "已增量重组装并写入 itinerary_draft.json（重排天 " + joinDayNumbers(changedDays)
                     + "，其余天沿用原草案条目）。请重新评审。";
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("增量重组装失败（降级全量）: 用户={}, 会话={}, 原因={}",
                     userId, sessionId, e.getMessage());
             return doAssembleItinerary(sessionId, ctx);
@@ -684,14 +710,14 @@ public class CollabTools {
     private ItineraryDraft produceDraftSkeletonIncremental(String userId, String sessionId,
                                                            RoutePlan routePlan, IntakeResult intake,
                                                            Set<Integer> changedDays,
-                                                           ItineraryDraft oldDraft) {
+                                                           ItineraryDraft oldDraft,String locale) {
         List<RoutePlan.RouteDay> changedRoute = routePlan.days().stream()
                 .filter(d -> changedDays.contains(d.day())).toList();
         long t0 = System.nanoTime();
         // 变化天：结构代码直出 + 文案并行（关思考，单天重试+降级）
         List<ItineraryDraft.DraftDay> skeletonDays =
                 changedRoute.stream().map(com.travelscope.service.ItineraryAssembler::skeletonDay).toList();
-        String intakeView = compactIntakeView(intake);
+        String intakeView = compactIntakeView(intake)+com.travelscope.common.ReplyLanguage.instruction(locale);
         List<DayCopy> copies = produceDayCopiesParallel(changedRoute, intakeView);
         List<ItineraryDraft.DraftDay> days = new ArrayList<>();
         List<String> degradeNotes = new ArrayList<>();
@@ -745,6 +771,7 @@ public class CollabTools {
                     required = false)
             String removePoiNames,
             RuntimeContext ctx) {
+        return TurnCancellation.inRuntime(ctx, () -> {
         String userId = ctx.getUserId();
         try {
             var shortlistOpt = taskWorkspace.readPoiShortlist(userId, sessionId);
@@ -774,7 +801,15 @@ public class CollabTools {
             List<String> added = new java.util.ArrayList<>();
             List<String> failed = new java.util.ArrayList<>();
             for (String name : splitNames(addPoiNames)) {
-                com.travelscope.collab.PoiShortlist.PoiItem item = resolvePoiItem(destination, name);
+                com.travelscope.collab.PoiShortlist.PoiItem item;
+                if (com.travelscope.assessment.FixtureServices.enabled(ctx)) {
+                    String cached = taskResultCache.get(userId, sessionId,
+                            com.travelscope.service.TaskResultCache.TaskType.POI);
+                    var pool = cached == null ? null : JSON.parseObject(cached, PoiCandidatePool.class);
+                    item = com.travelscope.assessment.FixtureServices.resolvePoi(pool, name, ctx);
+                } else {
+                    item = resolvePoiItem(destination, name);
+                }
                 if (item == null) {
                     failed.add(name);
                 } else if (pois.stream().noneMatch(p -> p.name().equals(item.name()))) {
@@ -830,9 +865,11 @@ public class CollabTools {
                             : "，第 " + joinDayNumbers(reusedDays) + " 天沿用原路线（输入未变）"))
                     + "；已重组装 itinerary_draft.json，请重新评审。";
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("revise_poi_selection 失败: 用户={}, 会话={}, 原因={}", userId, sessionId, e.getMessage());
             return "ERROR: POI 修订失败: " + e.getMessage();
         }
+        });
     }
 
     /** 逗号/顿号分隔的 POI 名列表拆分（去空） */
@@ -880,6 +917,7 @@ public class CollabTools {
                             ? 120 : best.getInteger("durationMin"),
                     source, "reviewer 修订补入", best.getString("imageUrl"));
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("POI 硬字段补全失败: {}/{}, 原因={}", destination, poiName, e.getMessage());
             return null;
         }
@@ -895,6 +933,7 @@ public class CollabTools {
             return java.util.Arrays.stream(fv.value().split("[,，、\\s]+"))
                     .map(String::trim).filter(s -> !s.isEmpty()).toList();
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             return List.of();
         }
     }
@@ -1021,14 +1060,15 @@ public class CollabTools {
      * 返回表与 days 同序，元素恒不为异常（invoke 内部全捕获）。
      */
     List<DayCopy> produceDayCopiesParallel(List<RoutePlan.RouteDay> days, String intakeView) {
+        var cancellation = TurnCancellation.from(null);
         try (java.util.concurrent.ExecutorService executor =
                      java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             List<java.util.concurrent.CompletableFuture<DayCopy>> futures = new ArrayList<>();
             for (RoutePlan.RouteDay d : days) {
                 final String dayView = compactRouteDaysView(List.of(d));
                 futures.add(java.util.concurrent.CompletableFuture.supplyAsync(
-                        () -> invokeWithRetry(() -> dayCopyWriter.apply(dayView, intakeView),
-                                "每日文案 day=" + d.day()), executor));
+                        () -> cancellation == null ? invokeWithRetry(() -> dayCopyWriter.apply(dayView, intakeView), "每日文案 day=" + d.day())
+                                : cancellation.call(() -> invokeWithRetry(() -> dayCopyWriter.apply(dayView, intakeView), "每日文案 day=" + d.day())), executor));
             }
             return futures.stream().map(java.util.concurrent.CompletableFuture::join).toList();
         }
@@ -1036,18 +1076,22 @@ public class CollabTools {
 
     /** 单元调用重试一次（首次 null/异常→再来一次；再败返回 null 交由调用方降级） */
     private <T> T invokeWithRetry(java.util.function.Supplier<T> call, String what) {
+        TurnCancellation.check(null);
         T first = null;
         try {
             first = call.get();
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.info("{} 首次调用异常（重试一次）: {}", what, e.getMessage());
         }
         if (first != null) {
             return first;
         }
+        TurnCancellation.check(null);
         try {
             return call.get();
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.info("{} 重试仍异常（降级）: {}", what, e.getMessage());
         }
         return null;
@@ -1075,8 +1119,7 @@ public class CollabTools {
                     .maxIters(1)
                     .generateOptions(ASSEMBLER_NO_THINKING)
                     .build();
-            var reply = agent.call(prompt, DayCopy.class, callCtx)
-                    .block(java.time.Duration.ofSeconds(45));
+            var reply = TurnCancellation.await(agent.call(prompt, DayCopy.class, callCtx), java.time.Duration.ofSeconds(45), null);
             if (reply == null) {
                 return null;
             }
@@ -1086,6 +1129,7 @@ public class CollabTools {
                 return parseTextReply(reply.getTextContent(), DayCopy.class);
             }
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.info("每日文案调用失败: {}", e.getMessage());
             return null;
         }
@@ -1107,8 +1151,7 @@ public class CollabTools {
                     .maxIters(1)
                     .generateOptions(ASSEMBLER_NO_THINKING)
                     .build();
-            var reply = agent.call(prompt, GlobalCopy.class, callCtx)
-                    .block(java.time.Duration.ofSeconds(45));
+            var reply = TurnCancellation.await(agent.call(prompt, GlobalCopy.class, callCtx), java.time.Duration.ofSeconds(45), null);
             if (reply == null) {
                 return null;
             }
@@ -1118,6 +1161,7 @@ public class CollabTools {
                 return parseTextReply(reply.getTextContent(), GlobalCopy.class);
             }
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.info("全局段调用失败: {}", e.getMessage());
             return null;
         }
@@ -1149,13 +1193,14 @@ public class CollabTools {
     private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(
             String userId, String sessionId,
             com.travelscope.collab.RoutePlan routePlan,
-            com.travelscope.collab.IntakeResult intake) {
+            com.travelscope.collab.IntakeResult intake) { return produceDraftSkeleton(userId,sessionId,routePlan,intake,"zh-CN"); }
+    private com.travelscope.collab.ItineraryDraft produceDraftSkeleton(String userId,String sessionId,RoutePlan routePlan,IntakeResult intake,String locale) {
         long t0 = System.nanoTime();
         // ① 结构代码直出
         List<com.travelscope.collab.ItineraryDraft.DraftDay> skeletonDays =
                 routePlan.days().stream().map(com.travelscope.service.ItineraryAssembler::skeletonDay).toList();
         // ② 每日文案并行（保序；null=该天降级）
-        String intakeView = compactIntakeView(intake);
+        String intakeView = compactIntakeView(intake)+com.travelscope.common.ReplyLanguage.instruction(locale);
         List<DayCopy> copies = produceDayCopiesParallel(routePlan.days(), intakeView);
         List<com.travelscope.collab.ItineraryDraft.DraftDay> days = new ArrayList<>();
         List<String> degradeNotes = new ArrayList<>();
@@ -1232,12 +1277,14 @@ public class CollabTools {
             json.putIfAbsent("schemaVersion", 4);
             dto = json.toJavaObject(type);
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             return "ERROR: contentJson 解析为 " + type.getSimpleName() + " 失败: " + e.getMessage()
                     + "（检查字段名与契约结构）";
         }
         try {
             collabFileWriter.write(taskWorkspace.getTaskDir(userId, sessionId), fileName, dto);
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, null);
             log.warn("write_collab_file 校验/落盘失败: 用户={}, 会话={}, file={}, 原因={}",
                     userId, sessionId, fileName, e.getMessage());
             return "ERROR: " + fileName + " 校验未通过: " + e.getMessage();

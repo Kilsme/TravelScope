@@ -72,6 +72,15 @@ server:
 # ======================== 应用统一配置 ========================
 ## 所有第三方 API Key 通过环境变量 / 高级设置注入，不在配置文件中硬编码
 travelscope:
+  # ---- 持久化对话与断线恢复（先执行 chat-reconnect-upgrade.sql） ----
+  reconnect:
+    enabled: true
+    preparation-seconds: 60
+    queue-seconds: 30
+    execution-seconds: 900
+    retention-hours: 24
+    sse-timeout-seconds: 120
+
   # ---- 评估中心：日常调用采集与管理员手动评测批次 ----
   assessment:
     enabled: true

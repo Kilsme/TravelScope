@@ -153,7 +153,7 @@ class ChatServiceImageGuideTest {
         when(guideModel.stream(anyList(), anyList(), any()))
                 .thenReturn(Flux.just(guideChunk(GUIDE_TEXT), guideChunk("建议清晨游览。")));
 
-        SseEmitter emitter = service.streamChat(conversation(), 1L, "这是哪里", JPEG_BASE64);
+        SseEmitter emitter = ChatExecutionTestSupport.stream(service, conversation(), 1L, "这是哪里", JPEG_BASE64);
         List<String> items = awaitEvent(emitter, "done");
         String flattened = String.join("\n", items);
 
@@ -163,19 +163,9 @@ class ChatServiceImageGuideTest {
         assertTrue(flattened.contains("event:done"), "done 事件不缺");
         verifyNoInteractions(masterAgent);
 
-        // MinIO：chat-images/ 前缀 + image/jpeg
-        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
-        verify(minioService).upload(keyCaptor.capture(), any(), anyLong(), anyString());
-        assertTrue(keyCaptor.getValue().startsWith("chat-images/"), "对象 key 前缀: " + keyCaptor.getValue());
-        assertTrue(keyCaptor.getValue().endsWith(".jpg"), "扩展名按魔数映射: " + keyCaptor.getValue());
-
-        // 落库：占位文本 + 引用（无 base64 本体）
-        ArgumentCaptor<String> contentCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> blocksCaptor = ArgumentCaptor.forClass(String.class);
-        verify(conversationService).saveUserMessage(any(), any(), contentCaptor.capture(), blocksCaptor.capture());
-        assertEquals("[图片] 这是哪里", contentCaptor.getValue());
-        assertTrue(blocksCaptor.getValue().contains(keyCaptor.getValue()), "引用含 objectKey");
-        assertTrue(!blocksCaptor.getValue().contains(JPEG_BASE64), "base64 绝不落库");
+        // Durable admission owns upload and message persistence; execution cannot repeat them.
+        verifyNoInteractions(minioService);
+        verify(conversationService, never()).saveUserMessage(any(), any(), anyString(), any());
     }
 
     @Test
@@ -195,7 +185,7 @@ class ChatServiceImageGuideTest {
                                 null, false, true, List.of(), "如：杭州")),
                         "请补全目的地"));
 
-        SseEmitter emitter = service.streamChat(conversation(), 1L, "帮我规划去这里的三天行程", JPEG_BASE64);
+        SseEmitter emitter = ChatExecutionTestSupport.stream(service, conversation(), 1L, "帮我规划去这里的三天行程", JPEG_BASE64);
         List<String> items = awaitEvent(emitter, "requirement_form");
         // 等 done 收尾（handleComplete 发 done）
         long deadline = System.currentTimeMillis() + 10_000;
@@ -231,21 +221,18 @@ class ChatServiceImageGuideTest {
         when(guideModel.stream(anyList(), anyList(), any()))
                 .thenReturn(Flux.just(guideChunk(GUIDE_TEXT)));
 
-        SseEmitter emitter = service.streamChat(conversation(), 1L, "", JPEG_BASE64);
+        SseEmitter emitter = ChatExecutionTestSupport.stream(service, conversation(), 1L, "", JPEG_BASE64);
         awaitEvent(emitter, "done");
 
         // 意图分类收到的输入是补齐后的问题文本（非空串）
         ArgumentCaptor<String> classifyInput = ArgumentCaptor.forClass(String.class);
         verify(router).classify(classifyInput.capture(), any(), anyString(), anyString());
         assertEquals("讲解一下这个景点", classifyInput.getValue());
-        // 落库占位同口径
-        ArgumentCaptor<String> contentCaptor = ArgumentCaptor.forClass(String.class);
-        verify(conversationService).saveUserMessage(any(), any(), contentCaptor.capture(), any());
-        assertEquals("[图片] 讲解一下这个景点", contentCaptor.getValue());
+        verify(conversationService, never()).saveUserMessage(any(), any(), anyString(), any());
     }
 
     @Test
-    @DisplayName("讲解调用失败 → error 事件（sseFallbackMessage 口径）+ done 正常收尾")
+    @DisplayName("讲解调用失败 → error 结束，不能再成功收尾")
     void guideFailureMapsToErrorEvent() throws Exception {
         IntentCascadeRouter router = mock(IntentCascadeRouter.class);
         when(router.classify(anyString(), any(), anyString(), anyString()))
@@ -255,10 +242,11 @@ class ChatServiceImageGuideTest {
         when(guideModel.stream(anyList(), anyList(), any()))
                 .thenReturn(Flux.error(new RuntimeException("讲解模型不可用")));
 
-        SseEmitter emitter = service.streamChat(conversation(), 1L, "这是哪里", JPEG_BASE64);
-        List<String> items = awaitEvent(emitter, "done");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(service, conversation(), 1L, "这是哪里", JPEG_BASE64);
+        List<String> items = awaitEvent(emitter, "error");
         String flattened = String.join("\n", items);
         assertTrue(flattened.contains("event:error"), "失败转 error 事件: " + items);
+        assertTrue(!flattened.contains("event:done"), "失败不能按成功收尾");
         assertTrue(flattened.contains("处理失败"), "sseFallbackMessage 口径文案: " + items);
     }
 
@@ -272,7 +260,7 @@ class ChatServiceImageGuideTest {
         stubAdmission(service);
         when(masterAgent.streamEvents(any(io.agentscope.core.message.UserMessage.class), any())).thenReturn(Flux.empty());
 
-        service.streamChat(conversation(), 1L, "你好", null);
+        ChatExecutionTestSupport.stream(service, conversation(), 1L, "你好", null);
         // runAgent 在快泳道异步订阅——轮询等待 master Agent 被调起（未调起超时由最终 verify 抛出）
         long deadline = System.currentTimeMillis() + 10_000;
         while (System.currentTimeMillis() < deadline) {
@@ -286,6 +274,19 @@ class ChatServiceImageGuideTest {
         verify(masterAgent).streamEvents(any(io.agentscope.core.message.UserMessage.class), any());
         verify(minioService, never()).upload(anyString(), any(), anyLong(), anyString());
         // 无图轮走 3 参落库（无 content_blocks）
-        verify(conversationService).saveUserMessage(any(), any(), anyString());
+        verify(conversationService, never()).saveUserMessage(any(), any(), anyString());
     }
+    @Test void englishImageReplyUsesPerTurnSystemInstruction() throws Exception {
+        IntentCascadeRouter router=mock(IntentCascadeRouter.class);
+        when(router.classify(anyString(),any(),anyString(),anyString())).thenReturn(new IntentResult("TOOL_CALL","image"));
+        ChatService service=newService(router);stubAdmission(service);
+        when(guideModel.stream(anyList(),anyList(),any())).thenReturn(Flux.just(guideChunk("A garden.")));
+        var execution=service.execution(conversation(),1L,"Explain this image",JPEG_BASE64,java.util.UUID.randomUUID(),"en",cost->true);
+        execution.events.blockLast(Duration.ofSeconds(5));
+        @SuppressWarnings("unchecked") ArgumentCaptor<List<Msg>> messages=ArgumentCaptor.forClass(List.class);
+        verify(guideModel).stream(messages.capture(),anyList(),any());
+        assertTrue(messages.getValue().getFirst().getTextContent().contains("Use English"));
+        assertEquals("A garden.",service.executionResult(execution).content());
+    }
+
 }

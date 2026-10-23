@@ -1,5 +1,7 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.travelscope.dto.IntentResult;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -106,6 +108,8 @@ public class IntentClassifier {
                 .userId(userId)
                 .sessionId(sessionId + "-intent")
                 .build();
+        var cancellation = TurnCancellation.from(null);
+        if (cancellation != null) ctx.put(TurnCancellation.KEY, cancellation);
         if(observationContext!=null)ctx.put(com.travelscope.assessment.ObservationContext.KEY,observationContext);
         try {
             ReActAgent classifier = ReActAgent.builder()
@@ -116,8 +120,7 @@ public class IntentClassifier {
                     .maxIters(2)
                     .build();
 
-            Msg reply = classifier.call(buildInput(userMessage, contextBlock), IntentResult.class, ctx)
-                    .block(CLASSIFY_TIMEOUT);
+            Msg reply = TurnCancellation.await(classifier.call(buildInput(userMessage, contextBlock), IntentResult.class, ctx), CLASSIFY_TIMEOUT, observationContext);
             if (reply == null) {
                 log.warn("意图分类返回为空: userId={}, sessionId={}", userId, sessionId);
                 return null;
@@ -147,6 +150,7 @@ public class IntentClassifier {
                     reply.getTextContent(), userId, sessionId);
             return result;
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, observationContext);
             log.warn("意图分类失败，回退为主 Agent 自主路由: userId={}, sessionId={}, 原因: {}",
                     userId, sessionId, e.getMessage());
             return null;

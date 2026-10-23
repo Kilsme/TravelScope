@@ -34,6 +34,13 @@ public class RequirementFormSpec {
                             boolean filled, boolean required, List<String> options,
                             String placeholder) {
 
+        public String getLabelKey() { return "requirements."+name+".label"; }
+        public String getPlaceholderKey() { return "requirements."+name+".placeholder"; }
+        public java.util.Map<String,String> getOptionKeys() {
+            var keys=new java.util.LinkedHashMap<String,String>();
+            for(int i=0;i<options.size();i++)keys.put(options.get(i),"requirements."+name+".option."+i);
+            return keys;
+        }
         public FieldSpec {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(label, "label");

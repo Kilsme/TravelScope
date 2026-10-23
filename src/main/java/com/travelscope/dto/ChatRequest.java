@@ -16,6 +16,10 @@ import lombok.Setter;
 @Getter
 @Setter
 public class ChatRequest {
+    private java.util.UUID turnId;
+    @jakarta.validation.constraints.Pattern(regexp="zh-CN|en", message="Unsupported locale")
+    private String locale;
+    private java.util.UUID sourceTurnId;
 
     /** 会话 ID；为空表示新建会话（自动创建并回传会话信息） */
     private Long conversationId;

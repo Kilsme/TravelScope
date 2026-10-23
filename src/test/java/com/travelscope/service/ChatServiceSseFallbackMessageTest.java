@@ -116,9 +116,9 @@ class ChatServiceSseFallbackMessageTest {
         com.travelscope.entity.Conversation conversation = new com.travelscope.entity.Conversation();
         conversation.setId(901L);
         conversation.setUserId(1L);
-        SseEmitter emitter = service.streamChat(conversation, 1L, "帮我看看天气");
+        SseEmitter emitter = ChatExecutionTestSupport.stream(service, conversation, 1L, "帮我看看天气");
 
-        List<String> items = awaitEvent(emitter, "done");
+        List<String> items = awaitEvent(emitter, "error");
         String flattened = String.join("\n", items);
         assertTrue(flattened.contains("event:intent"),
                 "分类失败也应发 intent 事件（UNKNOWN 兜底），实际: " + items);
@@ -126,7 +126,7 @@ class ChatServiceSseFallbackMessageTest {
                 "intent 载荷应为 UNKNOWN 兜底，实际: " + items);
         assertTrue(flattened.contains("AI 服务暂时不可用，请联系管理员"),
                 "主 Agent 模型错误应转全灭 SSE 文案，实际: " + items);
-        assertTrue(flattened.contains("event:done"), "终态 done 事件不缺");
+        assertTrue(!flattened.contains("event:done"), "失败不可再按成功收尾");
     }
 
     @Test

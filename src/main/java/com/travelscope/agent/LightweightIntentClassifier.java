@@ -1,5 +1,7 @@
 package com.travelscope.agent;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.travelscope.dto.IntentResult;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -94,7 +96,9 @@ public class LightweightIntentClassifier {
         return classify(userMessage,contextBlock,userId,sessionId,null);
     }
     public IntentResult classify(String userMessage,String contextBlock,String userId,String sessionId,com.travelscope.assessment.ObservationContext observationContext) {
+        TurnCancellation.check(observationContext);
         IntentResult result = classifyOnce(userMessage, contextBlock, userId, sessionId, observationContext);
+        TurnCancellation.check(observationContext);
         if (result != null) {
             return result;
         }
@@ -103,6 +107,7 @@ public class LightweightIntentClassifier {
         // 重试 1 次同款兜底，单次成功率 ~80% → 重试后 ~96%；级联场景本层空值本就有
         // L3 兜底，重试进一步降低打到 L3（更贵）的概率
         result = classifyOnce(userMessage, contextBlock, userId, sessionId, observationContext);
+        TurnCancellation.check(observationContext);
         if (result != null) {
             log.info("L2 轻量分类重试成功: userId={}, sessionId={}", userId, sessionId);
             return result;
@@ -116,6 +121,8 @@ public class LightweightIntentClassifier {
                 .userId(userId)
                 .sessionId(sessionId + "-intent-l2")
                 .build();
+        var cancellation = TurnCancellation.from(null);
+        if (cancellation != null) ctx.put(TurnCancellation.KEY, cancellation);
         if(observationContext!=null)ctx.put(com.travelscope.assessment.ObservationContext.KEY,observationContext);
         try {
             ReActAgent classifier = ReActAgent.builder()
@@ -126,8 +133,7 @@ public class LightweightIntentClassifier {
                     .maxIters(2)
                     .build();
 
-            Msg reply = classifier.call(buildInput(userMessage, contextBlock), IntentResult.class, ctx)
-                    .block(CLASSIFY_TIMEOUT);
+            Msg reply = TurnCancellation.await(classifier.call(buildInput(userMessage, contextBlock), IntentResult.class, ctx), CLASSIFY_TIMEOUT, observationContext);
             if (reply == null) {
                 log.warn("L2 轻量分类返回为空: userId={}, sessionId={}", userId, sessionId);
                 return null;
@@ -155,6 +161,7 @@ public class LightweightIntentClassifier {
                     reply.getTextContent(), userId, sessionId);
             return null;
         } catch (Exception e) {
+            TurnCancellation.rethrow(e, observationContext);
             log.warn("L2 轻量分类失败（将降级到 L3 兜底）: userId={}, sessionId={}, 原因: {}",
                     userId, sessionId, e.getMessage());
             return null;

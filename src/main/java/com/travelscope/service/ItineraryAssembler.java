@@ -50,6 +50,9 @@ public class ItineraryAssembler {
                                    String trainSummary,
                                    com.travelscope.collab.PoiShortlist shortlist,
                                    List<String> preferences) {
+        return assemble(skeleton,routePlan,weatherSummary,hotelSummary,trainSummary,shortlist,preferences,"zh-CN");
+    }
+    public ItineraryDraft assemble(ItineraryDraft skeleton,RoutePlan routePlan,String weatherSummary,String hotelSummary,String trainSummary,com.travelscope.collab.PoiShortlist shortlist,List<String> preferences,String locale) {
         // 已核验 POI 名集合（防幻觉）+ POI 名+主题文本（偏好匹配，只看 name，不看 reason 的取舍描述）
         java.util.Set<String> knownPoiNames = new java.util.HashSet<>();
         StringBuilder poiNames = new StringBuilder();
@@ -78,12 +81,12 @@ public class ItineraryAssembler {
                 skeleton.notes(), pending, skeleton.markdownBody());
         // 分段化组合（v6 阶段五）：标题 + Σ 逐天节 + 全局节——与原 renderMarkdown 逐字节等价
         StringBuilder sb = new StringBuilder();
-        sb.append("# ").append(cleaned.days().isEmpty() ? "行程方案"
+        sb.append("# ").append("en".equals(locale) ? "Itinerary (" + cleaned.days().size() + " days)" : cleaned.days().isEmpty() ? "行程方案"
                 : "行程方案（" + cleaned.days().size() + " 天）").append("\n\n");
         for (DraftDay day : cleaned.days()) {
-            sb.append(renderDaySection(day));
+            sb.append(renderDaySection(day,locale));
         }
-        sb.append(renderGlobalSections(cleaned, weatherSummary, hotelSummary, trainSummary));
+        sb.append(renderGlobalSections(cleaned, weatherSummary, hotelSummary, trainSummary,locale));
         String markdown = sb.toString();
 
         List<String> notes = new ArrayList<>(cleaned.notes());
@@ -237,7 +240,8 @@ public class ItineraryAssembler {
      * 末尾一个空行）。与 assemble 组合的拼接序逐字节等价于原 renderMarkdown 天循环体；
      * ItineraryProgress 以它做逐天事件的精确按构造渲染（替代正则切分）。
      */
-    public String renderDaySection(DraftDay day) {
+    public String renderDaySection(DraftDay day) { return renderDaySection(day,"zh-CN"); }
+    public String renderDaySection(DraftDay day,String locale) {
         StringBuilder sb = new StringBuilder();
         sb.append("## Day ").append(day.day());
         if (day.date() != null && !day.date().isBlank()) {
@@ -247,7 +251,7 @@ public class ItineraryAssembler {
             sb.append(" ").append(day.theme());
         }
         sb.append("\n\n");
-        sb.append("| 时间 | 活动 | 地点 | 费用 |\n");
+        sb.append("en".equals(locale)?"| Time | Activity | Place | Cost |\n":"| 时间 | 活动 | 地点 | 费用 |\n");
         sb.append("| --- | --- | --- | --- |\n");
         for (DraftItem item : day.items()) {
             sb.append("| ").append(nvl(item.time())).append(" | ")
@@ -266,7 +270,7 @@ public class ItineraryAssembler {
             }
         }
         if (!withImages.isEmpty()) {
-            sb.append("\n📷 图集：");
+            sb.append("en".equals(locale)?"\n📷 Gallery: ":"\n📷 图集：");
             for (DraftItem item : withImages) {
                 sb.append("![").append(galleryAlt(item)).append("](").append(item.imageUrl()).append(") ");
             }
@@ -343,24 +347,25 @@ public class ItineraryAssembler {
      * 逐天事件不携带这些节（随 done 全文交付）。
      */
     public String renderGlobalSections(ItineraryDraft skeleton, String weatherSummary,
-                                       String hotelSummary, String trainSummary) {
+                                       String hotelSummary, String trainSummary) { return renderGlobalSections(skeleton,weatherSummary,hotelSummary,trainSummary,"zh-CN"); }
+    public String renderGlobalSections(ItineraryDraft skeleton,String weatherSummary,String hotelSummary,String trainSummary,String locale) {
         StringBuilder sb = new StringBuilder();
         // 交通/住宿/天气块（代码按缓存数据插入，来源标注保留）
         if (trainSummary != null && !trainSummary.isBlank()) {
-            sb.append("## 大交通\n\n").append(trainSummary).append("\n\n");
+            sb.append("en".equals(locale)?"## Intercity transport\n\n":"## 大交通\n\n").append(trainSummary).append("\n\n");
         }
         if (hotelSummary != null && !hotelSummary.isBlank()) {
-            sb.append("## 住宿\n\n").append(hotelSummary).append("\n\n");
+            sb.append("en".equals(locale)?"## Accommodation\n\n":"## 住宿\n\n").append(hotelSummary).append("\n\n");
         }
         if (weatherSummary != null && !weatherSummary.isBlank()) {
-            sb.append("## 天气与穿衣建议\n\n").append(weatherSummary).append("\n\n");
+            sb.append("en".equals(locale)?"## Weather and clothing\n\n":"## 天气与穿衣建议\n\n").append(weatherSummary).append("\n\n");
         }
 
         // 预算汇总
         Budget budget = skeleton.budget();
         if (budget != null) {
-            sb.append("## 预算汇总\n\n");
-            sb.append("- 总预算：").append(budget.totalEstimate()).append("（")
+            sb.append("en".equals(locale)?"## Budget\n\n":"## 预算汇总\n\n");
+            sb.append("en".equals(locale)?"- Total budget: ":"- 总预算：").append(budget.totalEstimate()).append("（")
                     .append(budget.currency()).append("）\n");
             for (BudgetItem bi : budget.breakdown()) {
                 sb.append("- ").append(bi.category()).append("：").append(bi.amount());
@@ -374,7 +379,7 @@ public class ItineraryAssembler {
 
         // 待确认项
         if (!skeleton.pendingConfirm().isEmpty()) {
-            sb.append("## 待确认\n\n");
+            sb.append("en".equals(locale)?"## To confirm\n\n":"## 待确认\n\n");
             for (String p : skeleton.pendingConfirm()) {
                 sb.append("- ").append(p).append("\n");
             }
@@ -383,7 +388,7 @@ public class ItineraryAssembler {
 
         // 注意事项
         if (!skeleton.notes().isEmpty()) {
-            sb.append("## 注意事项\n\n");
+            sb.append("en".equals(locale)?"## Notes\n\n":"## 注意事项\n\n");
             for (String n : skeleton.notes()) {
                 sb.append("- ").append(n).append("\n");
             }
