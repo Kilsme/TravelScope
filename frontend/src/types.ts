@@ -8,6 +8,10 @@ export interface Conversation {
 /** 历史消息 */
 export interface ChatMessage {
   id?: number
+  turnId?: string
+  turnStatus?: string
+  createdAt?: string
+  notice?: string
   role: 'user' | 'assistant'
   content: string
   /** 用户图片（私人讲解员图片轮）：当前会话为 data URL（内存压缩结果），历史回显为后端
@@ -81,6 +85,9 @@ export interface IntentPayload {
 
 /** 需求清单单字段规格（requirement_form 载荷；与后端 RequirementFormSpec.FieldSpec 对应） */
 export interface RequirementFormField {
+  labelKey?: string
+  placeholderKey?: string
+  optionKeys?: Record<string,string>
   name: string
   label: string
   type: 'text' | 'number' | 'date' | 'select' | 'multi-select' | string

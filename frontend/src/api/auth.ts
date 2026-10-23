@@ -1,3 +1,5 @@
+import { clearRecovery } from '../chat/storage'
+
 /**
  * 认证 API：登录/登出 + token 存取 + 公共 apiFetch helper
  * <p>
@@ -34,6 +36,7 @@ export function isLoggedIn(): boolean {
 }
 
 function saveAuth(result: LoginResult) {
+  localStorage.setItem('travelscope_user_id', String(result.userId))
   localStorage.setItem(TOKEN_KEY, result.token)
   localStorage.setItem(ROLE_KEY, result.role)
   localStorage.setItem(NICKNAME_KEY, result.nickname)
@@ -82,10 +85,17 @@ export async function login(username: string, password: string): Promise<LoginRe
 
 /** 登出 */
 export async function logout(): Promise<void> {
+  const owner = Number(localStorage.getItem('travelscope_user_id'))
+  window.dispatchEvent(new Event('travelscope:logout'))
   try {
     await apiFetch('/api/auth/logout', { method: 'POST' })
   } finally {
-    clearAuth()
+    try {
+      if (owner) { await clearRecovery(owner); localStorage.removeItem(`travelscope:last-chat:${owner}`) }
+    } finally {
+      localStorage.removeItem('travelscope_user_id')
+      clearAuth()
+    }
   }
 }
 

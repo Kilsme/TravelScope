@@ -1,64 +1,46 @@
-import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { login } from '../api/auth'
-
+import { usePreferences } from '../preferences/PreferencesProvider'
+import { t, ui } from '../preferences/i18n'
+import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { login } from '../api/auth';
 /**
  * 登录页（FR-A01~A03 管理端认证入口）
  */
 export default function LoginPage() {
-  const navigate = useNavigate()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
-    try {
-      const result = await login(username, password)
-      navigate(result.role === 'admin' ? '/admin' : '/', { replace: true })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败')
-    } finally {
-      setLoading(false)
+    usePreferences();
+    const navigate = useNavigate();
+    const [username, setUsername] = useState('admin');
+    const [password, setPassword] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+    async function handleSubmit(e: React.FormEvent) {
+        e.preventDefault();
+        setError('');
+        setLoading(true);
+        try {
+            const result = await login(username, password);
+            navigate(result.role === 'admin' ? '/admin' : '/', { replace: true });
+        }
+        catch (err) {
+            setError(err instanceof Error ? err.message : '登录失败');
+        }
+        finally {
+            setLoading(false);
+        }
     }
-  }
-
-  return (
-    <div className="login-page">
+    return (<div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h2>TravelScope 登录</h2>
-        {error && <div className="login-error">{error}</div>}
-        <label>
-          用户名
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="admin"
-            autoComplete="username"
-            required
-          />
+        <h2>{t("TravelScope 登录")}</h2>
+        {ui(error && <div className="login-error">{ui(error)}</div>)}
+        <label>{t("用户名")}<input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" autoComplete="username" required/>
         </label>
-        <label>
-          密码
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="请输入密码"
-            autoComplete="current-password"
-            required
-          />
+        <label>{t("密码")}<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("请输入密码")} autoComplete="current-password" required/>
         </label>
         <button type="submit" disabled={loading}>
-          {loading ? '登录中…' : '登录'}
+          {ui(loading ? t("登录中\u2026") : t("登录"))}
         </button>
-        <p className="login-link">
-          没有账号？<Link to="/register">凭邀请码注册</Link>
+        <p className="login-link">{t("没有账号\uFF1F")}<Link to="/register">{t("凭邀请码注册")}</Link>
         </p>
       </form>
-    </div>
-  )
+    </div>);
 }

@@ -12,5 +12,5 @@ body,
 }
 
 body {
-  background: #f5f6fa;
+  background: var(--page-bg);
 }
