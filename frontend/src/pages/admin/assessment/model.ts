@@ -1,3 +1,4 @@
+import { ui, intlLocale } from '../../../preferences/i18n'
 import { useEffect, useState } from 'react'
 import { apiFetch } from '../../../api/auth'
 
@@ -102,21 +103,21 @@ export const statusNames: Record<string, string> = {
   QUEUED: '排队中', RUNNING: '运行中', CANCELLING: '取消中', COMPLETED: '已结束', SUCCEEDED: '运行完成', SUCCESS: '运行完成',
   PENDING: '等待评分', SKIPPED: '未评分', ERROR: '评分失败', PASS: '通过', FAIL: '未通过', UNKNOWN: '无法判断',
 }
-export const modeName = (value: string) => value === 'FIXTURE' ? '固定工具数据' : value === 'LIVE' ? '真实工具' : '未记录'
-export const sourceName = (value: string) => value === 'ONLINE' ? '日常使用' : value === 'ASSESSMENT' ? '测试运行' : '未记录'
+export const modeName = (value: string) => value === 'FIXTURE' ? '固定工具数据' : value === 'LIVE' ? '真实工具' : ui('未记录')
+export const sourceName = (value: string) => value === 'ONLINE' ? '日常使用' : value === 'ASSESSMENT' ? '测试运行' : ui('未记录')
 export const activeStatus = (status: string) => ['QUEUED', 'RUNNING', 'CANCELLING'].includes(status)
 export const endedStatus = (status: string) => ['COMPLETED', 'CANCELLED', 'INTERRUPTED'].includes(status)
 export const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
-export const number = (v: unknown) => finite(v) ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(v) : '未记录'
-export const percent = (v: unknown) => finite(v) ? `${(v * 100).toFixed(1)}%` : '暂无数据'
-export const duration = (v: unknown) => finite(v) ? `${(v / 1000).toFixed(v < 10000 ? 2 : 1)} 秒` : '未记录'
-export const cost = (v: unknown) => finite(v) ? new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 6 }).format(v) : '未记录'
-export const shortId = (v?: string) => v ? v.length > 12 ? `${v.slice(0, 8)}…${v.slice(-4)}` : v : '未记录'
+export const number = (v: unknown) => finite(v) ? new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 2 }).format(v) : ui('未记录')
+export const percent = (v: unknown) => finite(v) ? `${(v * 100).toFixed(1)}%` : ui('暂无数据')
+export const duration = (v: unknown) => finite(v) ? ui(`${(v / 1000).toFixed(v < 10000 ? 2 : 1)} 秒`) : ui('未记录')
+export const cost = (v: unknown) => finite(v) ? new Intl.NumberFormat(intlLocale(), { maximumFractionDigits: 6 }).format(v) : ui('未记录')
+export const shortId = (v?: string) => v ? v.length > 12 ? `${v.slice(0, 8)}…${v.slice(-4)}` : v : ui('未记录')
 export function date(v?: string) {
-  if (!v || !Number.isFinite(Date.parse(v))) return '未记录'
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(v))
+  if (!v || !Number.isFinite(Date.parse(v))) return ui('未记录')
+  return new Intl.DateTimeFormat(intlLocale(), { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(v))
 }
-export const json = (value: unknown) => JSON.stringify(value, null, 2) ?? '未记录'
+export const json = (value: unknown) => JSON.stringify(value, null, 2) ?? ui('未记录')
 export function parse<T>(value: string | T | null | undefined): T | null {
   if (value == null) return null
   if (typeof value !== 'string') return value
