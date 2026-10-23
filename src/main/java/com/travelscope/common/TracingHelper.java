@@ -216,6 +216,7 @@ public class TracingHelper {
 
         /** Exact provider trace ID for database-to-Jaeger correlation; unavailable remains null. */
         public String traceId() { return span == null ? null : span.context().traceId(); }
+        public String spanId() { return span == null ? null : span.context().spanId(); }
 
         /** 补充/覆盖属性 */
         public void tag(String key, String value) {

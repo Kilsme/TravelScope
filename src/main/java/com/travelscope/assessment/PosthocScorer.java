@@ -88,6 +88,8 @@ public class PosthocScorer {
                 var reply=judge.call("需求："+input+"\n行程："+artifact+correction,ctx).block(Duration.ofSeconds(120));
                 if(reply==null)throw new IllegalStateException();
                 Score score=parseScore(mapper,reply.getTextContent(),artifact);
+                try { middleware.flush(observation); }
+                catch(Exception incomplete) { throw new ScoreFailure("TRACE_INCOMPLETE","评分调用的采集记录未完整保存，请恢复采集后重试。"); }
                 jdbc.update("UPDATE assessment_evaluations SET status='SUCCEEDED',result_json=? WHERE id=?",redactor.redact(Map.of("score",score,"total",score.total(),"threshold",80,"passed",score.total()>=80)),evaluation);
                 return evaluation;
             }catch(Exception e){
@@ -97,7 +99,7 @@ public class PosthocScorer {
                 else if(e.getCause() instanceof java.util.concurrent.TimeoutException||e instanceof java.util.concurrent.TimeoutException){lastCode="MODEL_TIMEOUT";lastMessage="评分模型未在 120 秒内完成响应。";}
                 else {lastCode="MODEL_CALL_FAILED";lastMessage="评分模型调用失败，请检查模型服务与连接。";}
                 log.warn("Assessment score attempt failed: evaluation={}, model={}, attempt={}, code={}, type={}",evaluation,model.getModelName(),attempts,lastCode,lastError);
-                if(Thread.currentThread().isInterrupted())break;
+                if(Thread.currentThread().isInterrupted()||"TRACE_INCOMPLETE".equals(lastCode))break;
             }
         }
         jdbc.update("UPDATE assessment_evaluations SET status='ERROR',result_json=? WHERE id=?",jsonError(lastError,lastCode,lastMessage,attempts),evaluation);

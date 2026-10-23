@@ -1,4 +1,6 @@
 package com.travelscope.assessment;
+
+import com.travelscope.common.TurnCancellation;
 import io.agentscope.core.agent.*;
 import io.agentscope.core.middleware.*;
 import io.agentscope.core.event.*;
@@ -13,15 +15,19 @@ public class ObservationMiddleware implements MiddlewareBase {
     private final ObservationStore store;
     private final com.fasterxml.jackson.databind.ObjectMapper toolJson=new com.fasterxml.jackson.databind.ObjectMapper();
     public ObservationMiddleware(ObservationStore store){this.store=store;}
+    public void flush(ObservationContext ctx) throws Exception {store.flush(ctx);}
     public int order(){return -800;}
     public Flux<AgentEvent> onAgent(Agent agent,RuntimeContext ctx,AgentInput input,Function<AgentInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
+            var cancellation=TurnCancellation.runtime(ctx);
+            if(cancellation!=null) cancellation.check();
             String mode=ctx.get("assessment.toolMode");
             if("FIXTURE".equals(mode)&&agent.getToolkit()!=null)FixtureTools.install(agent.getToolkit());
-            if(!store.enabled())return next.apply(input);
+            if(!store.enabled())return cancellation==null?next.apply(input):cancellation.guard(Flux.defer(()->next.apply(input)));
             ObservationContext association=ctx.get(ObservationContext.KEY);
             boolean own=association==null;
             if(own) association=store.begin(ctx.getSessionId(),null);
+            if(cancellation!=null) association=association.withCancellation(cancellation);
             var root=association;
             var handle=store.span(root,"AGENT",agent.getName(),null,input.msgs());
             // Each agent receives a copied RuntimeContext from the framework. Parent metadata is immutable.
@@ -30,7 +36,7 @@ public class ObservationMiddleware implements MiddlewareBase {
             long started=System.nanoTime();
             return Flux.defer(()->next.apply(input))
                 .doOnComplete(()->handle.end("SUCCEEDED",null,null))
-                .doOnError(e->{error.set(e);handle.end("FAILED",null,e);})
+                .doOnError(e->{error.set(e);handle.end(e instanceof java.util.concurrent.CancellationException?"CANCELLED":"FAILED",null,e);})
                 .doFinally(signal->{String status=signal==reactor.core.publisher.SignalType.CANCEL?"CANCELLED":error.get()!=null?"FAILED":"SUCCEEDED";
                     handle.end(status,null,error.get());
                     if(own)store.finish(root,status,(System.nanoTime()-started)/1e6,false);})
@@ -52,6 +58,8 @@ public class ObservationMiddleware implements MiddlewareBase {
     }
     public Flux<AgentEvent> onActing(Agent agent,RuntimeContext ctx,ActingInput input,Function<ActingInput,Flux<AgentEvent>> next) {
         return Flux.defer(()->{
+            var cancellation=TurnCancellation.runtime(ctx);
+            if(cancellation!=null) cancellation.check();
             ObservationContext association=ctx.get(ObservationContext.KEY);
             if(association==null || !store.enabled())return next.apply(input);
             Map<String,ObservationStore.Handle> active=new ConcurrentHashMap<>();

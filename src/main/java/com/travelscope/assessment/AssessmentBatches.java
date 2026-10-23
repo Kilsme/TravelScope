@@ -18,6 +18,7 @@ import java.util.*;
 import java.util.concurrent.*;
 @Service
 public class AssessmentBatches {
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(AssessmentBatches.class);
     private final JdbcTemplate jdbc; private final ObjectMapper mapper; private final AssessmentProperties properties;
     private final ChatService chat; private final ObservationStore store; private final TaskWorkspace workspace;
     private final PosthocScorer scorer; private final AssessmentQueries queries;
@@ -85,6 +86,7 @@ public class AssessmentBatches {
     public void recover(){
         if(!properties.isEnabled())return;
         try{
+            jdbc.update("UPDATE assessment_runs SET data_complete=false WHERE id IN (SELECT run_id FROM assessment_spans WHERE status='RUNNING')");
             jdbc.update("UPDATE assessment_runs SET status='INTERRUPTED',ended_at=now(),data_complete=false WHERE status='RUNNING'");
             jdbc.update("UPDATE assessment_spans SET status='INTERRUPTED',ended_at=now() WHERE status='RUNNING'");
             jdbc.update("UPDATE assessment_samples SET status='INTERRUPTED',score_status=CASE WHEN score_status='RUNNING' THEN 'ERROR' ELSE score_status END WHERE status='RUNNING'");
@@ -123,7 +125,10 @@ public class AssessmentBatches {
                 runSample(sample,(String)batch.get("tool_mode"));
             }
             jdbc.update("UPDATE assessment_batches SET status='COMPLETED',ended_at=now() WHERE id=? AND status='RUNNING'",batchId);
-        }catch(Exception e){jdbc.update("UPDATE assessment_batches SET status='INTERRUPTED',ended_at=now() WHERE id=? AND status='RUNNING'",batchId);}
+        }catch(Exception e){
+            log.warn("Assessment batch interrupted: batch={}",batchId,e);
+            jdbc.update("UPDATE assessment_batches SET status='INTERRUPTED',ended_at=now() WHERE id=? AND status='RUNNING'",batchId);
+        }
     }
     private void runSample(Map<String,Object> sample,String mode){
         UUID sampleId=(UUID)sample.get("id");
@@ -138,7 +143,7 @@ public class AssessmentBatches {
             int messageIndex=0;
             for(String message:c.userMessages()){
                 if(Thread.currentThread().isInterrupted())throw new InterruptedException();
-                last=store.begin("conv-"+identity,sampleId);long start=System.nanoTime();
+                last=store.beginAssessment("conv-"+identity,sampleId,mode,(UUID)sample.get("batch_id"));long start=System.nanoTime();
                 try{
                     reply=chat.executeAssessment(identity,message,last,mode,"EC-018".equals(c.caseId()),c.caseId(),isolatedAgent).block(Duration.ofMinutes(12));
                     lastArtifacts=store.currentArtifacts(last);
@@ -146,7 +151,7 @@ public class AssessmentBatches {
                     store.finish(last,artifact==null?(chat.assessmentWaiting(identity)?"WAITING_INPUT":"INCOMPLETE"):"PLANNING_COMPLETED",(System.nanoTime()-start)/1e6,artifact!=null);
                 }catch(Exception e){store.finish(last,Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",(System.nanoTime()-start)/1e6,false);throw e;}
                 if(messageIndex++==0&&artifact==null&&c.requirements()!=null&&chat.assessmentWaiting(identity)){
-                    last=store.begin("conv-"+identity,sampleId);start=System.nanoTime();
+                    last=store.beginAssessment("conv-"+identity,sampleId,mode,(UUID)sample.get("batch_id"));start=System.nanoTime();
                     try{
                         reply=chat.executeAssessment(identity,requirementForm(c.requirements()),last,mode,"EC-018".equals(c.caseId()),c.caseId(),isolatedAgent).block(Duration.ofMinutes(12));
                         lastArtifacts=store.currentArtifacts(last);
@@ -159,7 +164,7 @@ public class AssessmentBatches {
             var evidence=new EvalRunArtifact(reply,artifact,
                     lastArtifacts.getOrDefault("poi_shortlist.json",lastArtifacts.get("poi_shortlist.md")),
                     lastArtifacts.getOrDefault("route_plan.json",lastArtifacts.get("route_plan.md")),dir);
-            store.flush();
+            store.flush(last);
             String executionStatus=(String)queries.one("SELECT status FROM assessment_runs WHERE id=?",last.runId()).get("status");
             boolean unexpectedWaiting=isUnexpectedWaiting(c,executionStatus);
             if(Set.of("TIMED_OUT","FAILED","CANCELLED","INCOMPLETE").contains(executionStatus)||unexpectedWaiting) {
@@ -172,13 +177,17 @@ public class AssessmentBatches {
             var rules=AssessmentRules.check(c,evidence,jdbc.queryForList("SELECT s.* FROM assessment_spans s JOIN assessment_runs r ON r.id=s.run_id WHERE r.sample_id=?",sampleId),executionStatus);
             jdbc.update("UPDATE assessment_samples SET rule_json=?,score_status='RUNNING' WHERE id=?",json(rules),sampleId);
             if(artifact!=null){
-                store.flush();
+                store.flush(last);
                 UUID scoreId=scorer.score(last,String.join("\n",c.userMessages()),artifact);
+                store.flush(last);
                 var score=queries.one("SELECT status,result_json FROM assessment_evaluations WHERE id=?",scoreId);
                 jdbc.update("UPDATE assessment_samples SET score_status=?,score_json=? WHERE id=?",score.get("status"),score.get("result_json"),sampleId);
             }else jdbc.update("UPDATE assessment_samples SET score_status='SKIPPED' WHERE id=?",sampleId);
             jdbc.update("UPDATE assessment_samples SET status=? WHERE id=? AND status='RUNNING'",artifact==null&&!chat.assessmentWaiting(identity)?"FAILED":"SUCCEEDED",sampleId);
-        }catch(Exception e){jdbc.update("UPDATE assessment_samples SET status=?,score_status=CASE WHEN score_status='RUNNING' THEN 'ERROR' ELSE score_status END WHERE id=? AND status='RUNNING'",Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",sampleId);}
+        }catch(Exception e){
+            log.warn("Assessment sample failed: sample={}, mode={}",sampleId,mode,e);
+            jdbc.update("UPDATE assessment_samples SET status=?,score_status=CASE WHEN score_status='RUNNING' THEN 'ERROR' ELSE score_status END WHERE id=? AND status='RUNNING'",Thread.currentThread().isInterrupted()?"CANCELLED":"FAILED",sampleId);
+        }
         finally{var agent=activeAgent;activeAgent=null;if(agent!=null)agent.close();}
     }
     static boolean isUnexpectedWaiting(EvalCase evalCase,String executionStatus){

@@ -1,5 +1,7 @@
 package com.travelscope.llm;
 
+import com.travelscope.common.TurnCancellation;
+
 import com.travelscope.common.TracingHelper;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
@@ -77,11 +79,17 @@ public class ModelProviderPool implements Model {
     @Override
     public Flux<ChatResponse> stream(List<Msg> messages, List<ToolSchema> tools,
                                      GenerateOptions options) {
-        return Flux.defer(() -> doStream(messages, tools, options, new LinkedHashSet<>()));
+        return Flux.deferContextual(context -> {
+            com.travelscope.assessment.ObservationContext observation = context.getOrDefault(com.travelscope.assessment.ObservationContext.KEY, null);
+            TurnCancellation token = context.getOrDefault(TurnCancellation.KEY, TurnCancellation.from(observation));
+            Flux<ChatResponse> flow = Flux.defer(() -> doStream(messages, tools, options, new LinkedHashSet<>(), token));
+            return token == null ? flow : token.guard(flow);
+        });
     }
 
     private Flux<ChatResponse> doStream(List<Msg> messages, List<ToolSchema> tools,
-                                        GenerateOptions options, Set<String> tried) {
+                                        GenerateOptions options, Set<String> tried, TurnCancellation cancellation) {
+        if (cancellation != null) cancellation.check();
         Provider p = pick(tried);
         if (p == null) {
             log.error("model_pool {} 全部 provider 熔断（tried={}）", poolName, tried);
@@ -112,8 +120,14 @@ public class ModelProviderPool implements Model {
                         span.error(e);
                         span.end();
                     })
-                    .doOnCancel(span::end)
+                    .doOnCancel(() -> {
+                        span.tag("outcome", "cancelled");
+                        span.end();
+                        log.info("model_stream_cancelled pool={} provider={}", poolName, p.id());
+                    })
                     .onErrorResume(e -> {
+                        if (cancellation != null) cancellation.check();
+                        TurnCancellation.rethrow(e, null);
                         if (committed.get()) {
                             p.breaker().onFailure();
                             log.warn("model_pool {} provider {} 首包后失败不切换（{}: {}）",
@@ -128,7 +142,7 @@ public class ModelProviderPool implements Model {
                         log.warn("model_pool {} provider {} 首包前失败（{}: {}），failover 下一个健康 provider",
                                 poolName, p.id(), e.getClass().getSimpleName(), e.getMessage());
                         tried.add(p.id());
-                        return doStream(messages, tools, options, tried);
+                        return doStream(messages, tools, options, tried, cancellation);
                     });
         });
     }

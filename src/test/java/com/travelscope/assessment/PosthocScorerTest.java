@@ -48,6 +48,8 @@ class PosthocScorerTest {
             try(var out=exchange.getResponseBody()){out.write(body);}
         });server.start();
         var jdbc=mock(JdbcTemplate.class);var config=new AppProperties();var gateway=config.getModelGateway();
+        when(jdbc.queryForList(contains("SELECT r.data_complete"),any(Object[].class)))
+            .thenReturn(List.of(Map.of("data_complete",true)));
         gateway.setBaseUrl("http://127.0.0.1:"+server.getAddress().getPort()+"/v1");gateway.setApiKey("synthetic-key");gateway.setReviewerModel("synthetic-judge");gateway.setThinkingEnabled(thinking);
         var properties=new AssessmentProperties();properties.setEnabled(true);
         var store=new ObservationStore(jdbc,properties,new PayloadRedactor(mapper));

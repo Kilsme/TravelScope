@@ -34,7 +34,7 @@ class AssessmentUnitTest {
             var calls=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getMethod().getName().equals("update")&&i.getArgument(0).toString().contains("SET model=")).toList();
             assertFalse(calls.isEmpty());
             Object[] args=java.util.Arrays.copyOfRange(calls.getFirst().getArguments(),1,calls.getFirst().getArguments().length);
-            assertEquals(10,args[1]);assertEquals(3,args[2]);assertEquals("ACTUAL",args[4]);assertEquals(new BigDecimal("0.000032"),((BigDecimal)args[6]).stripTrailingZeros());
+            assertEquals(10L,args[1]);assertEquals(3L,args[2]);assertEquals("ACTUAL",args[4]);assertEquals(new BigDecimal("0.000032"),((BigDecimal)args[6]).stripTrailingZeros());
             store.close();
         }
     }
@@ -93,9 +93,10 @@ class AssessmentUnitTest {
         var store=new ObservationStore(jdbc,properties,new PayloadRedactor(new ObjectMapper()));
         var first=store.begin("same-session",null);var second=store.begin("same-session",null);
         assertNotEquals(first.runId(),second.runId());
-        store.finish(first,"PLANNING_COMPLETED",10,true);store.finish(second,"PLANNING_COMPLETED",12,true);store.flush();
+        store.finish(first,"PLANNING_COMPLETED",10,true);store.finish(second,"PLANNING_COMPLETED",12,true);
+        assertThrows(IllegalStateException.class,store::flush);
         var terminal=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().startsWith("UPDATE assessment_runs SET status=CASE")).toList();
-        assertEquals(2,terminal.size());for(var call:terminal){assertEquals("INCOMPLETE",call.getArgument(1));assertEquals(false,call.getArgument(7));assertEquals(false,call.getArgument(8));}
+        assertEquals(2,terminal.size());for(var call:terminal){assertEquals("INCOMPLETE",call.getArgument(1));assertEquals(false,call.getArgument(8));assertEquals(false,call.getArgument(9));}
         store.close();
     }
 
@@ -116,7 +117,7 @@ class AssessmentUnitTest {
                 .filter(i->i.getArgument(0).toString().startsWith("UPDATE assessment_runs SET status=CASE")).findFirst().orElseThrow();
             assertEquals(3,artifacts.size());
             assertNotEquals((UUID)artifacts.get(1).getArgument(1),(UUID)artifacts.getLast().getArgument(1));
-            assertEquals((UUID)artifacts.getLast().getArgument(1),(UUID)terminal.getArgument(9));
+            assertEquals((UUID)artifacts.getLast().getArgument(1),(UUID)terminal.getArgument(11));
         }finally{store.close();}
     }
 

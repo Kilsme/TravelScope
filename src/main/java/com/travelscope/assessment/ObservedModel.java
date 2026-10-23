@@ -15,7 +15,7 @@ public final class ObservedModel implements Model {
             String actualModel=options!=null&&options.getModelName()!=null?options.getModelName():delegate.getModelName();
             var span=store.span(ctx,"MODEL",actualModel,null,messages);
             AttemptContext attempt=reactorContext.getOrDefault(AttemptContext.KEY,null);
-            if(attempt!=null){int index=attempt.next().incrementAndGet();store.write(ctx.runId(),()->store.attempt(span.id,attempt.group(),index));}
+            if(attempt!=null){int index=attempt.next().incrementAndGet();span.attempt(attempt.group(),index);}
             UsageSnapshot usage=new UsageSnapshot();
             AtomicReference<String> request=new AtomicReference<>();
             java.util.List<ChatResponse> output=new java.util.ArrayList<>();

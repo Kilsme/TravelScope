@@ -83,7 +83,7 @@ class AssessmentArtifactOwnershipTest {
             run(agent,observation);assertNull(store.planningArtifact(observation));
             store.finish(observation,"PLANNING_COMPLETED",10,true);store.flush();
             var terminal=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().startsWith("UPDATE assessment_runs SET status=CASE")).findFirst().orElseThrow();
-            assertEquals("INCOMPLETE",terminal.getArgument(1));assertEquals(false,terminal.getArgument(7));
+            assertEquals("INCOMPLETE",terminal.getArgument(1));assertEquals(false,terminal.getArgument(8));
         }finally{store.close();}
     }
 
@@ -167,7 +167,7 @@ class AssessmentArtifactOwnershipTest {
                     .filter(i -> i.getArgument(0).toString().startsWith("UPDATE assessment_runs SET status=CASE"))
                     .findFirst().orElseThrow();
             assertEquals("PLANNING_COMPLETED", terminal.getArgument(1));
-            assertEquals(true, terminal.getArgument(7));
+            assertEquals(true, terminal.getArgument(8));
         } finally { store.close(); }
     }
 

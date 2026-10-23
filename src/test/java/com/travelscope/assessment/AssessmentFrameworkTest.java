@@ -33,8 +33,8 @@ class AssessmentFrameworkTest {
                 new com.travelscope.llm.ProviderCircuitBreaker("assessment-test/fallback",60,0.95,30000),Duration.ofSeconds(2),Duration.ofSeconds(2))));
         var root=store.begin("fallback",null);var runtime=RuntimeContext.builder().userId("test").sessionId("fallback").put(ObservationContext.KEY,root).build();
         ReActAgent.builder().name("test-agent").model(pool).middlewares(List.of(new ObservationMiddleware(store))).maxIters(1).build().call("input",runtime).block(Duration.ofSeconds(5));store.flush();
-        var updates=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().contains("SET attempt_group=")).toList();
-        assertEquals(2,updates.size());assertEquals((UUID)updates.get(0).getArgument(1),(UUID)updates.get(1).getArgument(1));assertEquals(1,(Integer)updates.get(0).getArgument(2));assertEquals(2,(Integer)updates.get(1).getArgument(2));
+        var updates=mockingDetails(jdbc).getInvocations().stream().filter(i->i.getArgument(0).toString().contains("SET model=") && i.getArgument(15)!=null).toList();
+        assertEquals(2,updates.size());assertEquals((UUID)updates.get(0).getArgument(15),(UUID)updates.get(1).getArgument(15));assertEquals(1L,(Long)updates.get(0).getArgument(16));assertEquals(2L,(Long)updates.get(1).getArgument(16));
         store.close();
     }
     @Test void declaredChildActuallyInheritsMiddleware(@TempDir Path workspace) throws Exception {
