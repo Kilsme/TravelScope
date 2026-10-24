@@ -1,4 +1,9 @@
 export const messages = {
+  "浅色": "Light",
+  "深色": "Dark",
+  "水蜜桃": "Peach",
+  "蓝白碗": "Blue & White Bowl",
+
   "用量与成本": "Usage & cost",
   "按用户、日期与模型查看 Token 消耗。": "View token usage by user, date and model.",
   "用量明细": "Usage details",

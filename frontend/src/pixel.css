@@ -3,7 +3,7 @@
   src:url('/fonts/fusion-pixel-12px-proportional-zh-hans.woff2') format('woff2');
   font-style:normal; font-weight:400 900; font-display:swap;
 }
-:root { --pixel-shadow:var(--accent-border); --pixel-edge:var(--border); --overlay:#10162b99; --pixel-cut:4px; }
+:root { --pixel-edge:var(--border); --overlay:#10162b99; --pixel-cut:4px; }
 :root body { font-family:'Fusion Pixel','Microsoft YaHei',sans-serif; font-size:16px; line-height:1.65; }
 :root #root { font-family:inherit; }
 :root :is(input,textarea,select,button) { font-family:inherit; }

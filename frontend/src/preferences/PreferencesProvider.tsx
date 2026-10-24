@@ -1,9 +1,25 @@
-import { createContext, useContext, useSyncExternalStore } from 'react'
+import { apiFetch, getToken } from '../api/auth'
+import { createContext, useContext, useSyncExternalStore, useEffect } from 'react'
 import type { ReactNode } from 'react'
-import { getPreferences, subscribePreferences } from './store'
+import { bindPreferenceOwner, getPreferences, subscribePreferences } from './store'
 import type { Preferences } from './store'
 const Context = createContext<Preferences>(getPreferences())
 export function PreferencesProvider({ children }: { children: ReactNode }) {
+  useEffect(() => {
+    const token = getToken()
+    if (!token) { bindPreferenceOwner(null); return }
+    const abort = new AbortController()
+    void apiFetch('/api/auth/me', { signal:abort.signal }).then(async response => {
+      if (response.ok) {
+        const identity = await response.json() as { userId:number }
+        if (!abort.signal.aborted && getToken() === token) {
+          try { localStorage.setItem('travelscope_user_id', String(identity.userId)) } catch { /* preferences also work in memory */ }
+          bindPreferenceOwner(identity.userId)
+        }
+      }
+    }).catch(() => { /* A transient outage must not erase a remembered account preference. */ })
+    return () => abort.abort()
+  }, [])
   const value = useSyncExternalStore(subscribePreferences, getPreferences, getPreferences)
   return <Context.Provider value={value}>{children}</Context.Provider>
 }

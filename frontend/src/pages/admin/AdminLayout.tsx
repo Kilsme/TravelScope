@@ -1,3 +1,4 @@
+import SidebarTools from '../../components/SidebarTools'
 import PixelLabel from '../../components/PixelLabel'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t } from '../../preferences/i18n'
@@ -24,6 +25,7 @@ export default function AdminLayout() {
           <NavLink to="/admin/documents" className={({ isActive }) => isActive ? 'active' : ''}>{<PixelLabel text={t("\uD83D\uDCC4 文档上传")} />}</NavLink>
           <NavLink to="/admin/invitation-codes" className={({ isActive }) => isActive ? 'active' : ''}>{<PixelLabel text={t("\uD83C\uDFAB 邀请码")} />}</NavLink>
         </nav>
+        <SidebarTools admin />
         <div className="admin-user">
           <span className="admin-nickname">{nickname || 'admin'}</span>
           <button className="admin-logout" onClick={handleLogout}>{t("退出登录")}</button>

@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
-    <script>try{var p=JSON.parse(localStorage.getItem('travelscope:appearance:v1')||'{}');document.documentElement.dataset.theme=p&&p.theme==='dark'?'dark':'light';document.documentElement.lang=p&&p.locale==='en'?'en':'zh-CN';if(p&&p.locale==='en')document.title='TravelScope Travel Assistant'}catch(e){}</script>
+    <script>try{var id=Number(localStorage.getItem('travelscope_user_id'));var p=localStorage.getItem('travelscope_token')&&Number.isSafeInteger(id)&&id>0?JSON.parse(localStorage.getItem('travelscope:appearance:v2:user:'+id)||'{}'):{};document.documentElement.dataset.theme=p&&['light','dark','peach','blue-bowl'].includes(p.theme)?p.theme:'light';document.documentElement.lang=p&&p.locale==='en'?'en':'zh-CN'}catch(e){}</script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="referrer" content="no-referrer" />

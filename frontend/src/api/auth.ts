@@ -1,3 +1,4 @@
+import { bindPreferenceOwner } from '../preferences/store'
 import { clearRecovery } from '../chat/storage'
 
 /**
@@ -40,9 +41,12 @@ function saveAuth(result: LoginResult) {
   localStorage.setItem(TOKEN_KEY, result.token)
   localStorage.setItem(ROLE_KEY, result.role)
   localStorage.setItem(NICKNAME_KEY, result.nickname)
+  bindPreferenceOwner(result.userId)
 }
 
 export function clearAuth() {
+  bindPreferenceOwner(null)
+  localStorage.removeItem('travelscope_user_id')
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(ROLE_KEY)
   localStorage.removeItem(NICKNAME_KEY)

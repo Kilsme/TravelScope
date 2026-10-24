@@ -1,26 +1,49 @@
+/* Theme blocks contain colors only; layout and pixel geometry live in pixel.css. */
 :root {
-  color-scheme: light;
-  --page-bg:#f5f6fa; --surface:#fff; --surface-alt:#f0f3f8;
-  --text:#26364b; --muted:#65758b; --border:#dce3ed;
-  --sidebar-bg:#1e2a3a; --sidebar-text:#e3e9f2; --sidebar-hover:#2a3a50;
-  --sidebar-active:#34495e; --sidebar-muted:#a0afc3;
-  --accent:#3b82f6; --accent-hover:#2563eb; --accent-text:#345bb3; --accent-solid:#3b82f6; --accent-bg:#eaf1ff; --accent-border:#bdd0f6;
-  --success-text:#187544; --success-solid:#218b51; --success-bg:#eaf8ef; --success-border:#acd7ba;
-  --warning-text:#8a590c; --warning-solid:#b27612; --warning-bg:#fff5da; --warning-border:#e4c888;
-  --danger-text:#b5323e; --danger-solid:#d3424f; --danger-bg:#fff0f1; --danger-border:#e6b4bb;
-  --on-accent:#fff; --shadow-color:#182b4924; --focus:#5e95ff;
+  color-scheme:light;
+  --page-bg:#f2f7fc; --surface:#ffffff; --surface-alt:#e3edf8;
+  --text:#172944; --muted:#506784; --border:#789ac8;
+  --sidebar-bg:#e3edf8; --sidebar-text:#172944; --sidebar-hover:#d6e5f8;
+  --sidebar-active:#cbdeff; --sidebar-muted:#506784;
+  --accent:#346bff; --accent-hover:#2455cf; --accent-text:#234db8; --accent-solid:#346bff; --accent-bg:#e3edff; --accent-border:#527bc1;
+  --on-accent:#fff; --shadow-color:#aac4eb; --focus:#234db8;
+  --success-text:#19603d; --success-solid:#218b51; --success-bg:#eaf8ef; --success-border:#72a88c;
+  --warning-text:#77500c; --warning-solid:#92610b; --warning-bg:#fff5da; --warning-border:#b49a59;
+  --danger-text:#a82e3b; --danger-solid:#b83242; --danger-bg:#fff0f1; --danger-border:#c97c88;
+  --pixel-shadow:#aac4eb; --overlay:#10162b99;
 }
 :root[data-theme='dark'] {
-  color-scheme: dark;
-  --page-bg:#111923; --surface:#1b2634; --surface-alt:#243244;
-  --text:#e4eaf3; --muted:#aab7c9; --border:#3b4b61;
-  --sidebar-bg:#0c1420; --sidebar-text:#e3e9f2; --sidebar-hover:#1b2a3f;
-  --sidebar-active:#263b56; --sidebar-muted:#9cacc3;
-  --accent:#568ff0; --accent-hover:#3979df; --accent-text:#a9c6ff; --accent-solid:#3e75cd; --accent-bg:#243957; --accent-border:#466b9d;
+  color-scheme:dark;
+  --page-bg:#0c1024; --surface:#11162c; --surface-alt:#1c2343;
+  --text:#e9edff; --muted:#a7b1d1; --border:#626d9b;
+  --sidebar-bg:#161a36; --sidebar-text:#e9edff; --sidebar-hover:#222649;
+  --sidebar-active:#292653; --sidebar-muted:#a7b1d1;
+  --accent:#a49bff; --accent-hover:#beb7ff; --accent-text:#c5bfff; --accent-solid:#7970ff; --accent-bg:#292653; --accent-border:#8982d6;
+  --on-accent:#090d20; --shadow-color:#242d61; --focus:#61ddf5;
   --success-text:#9adcb4; --success-solid:#277849; --success-bg:#1c3d31; --success-border:#3e7657;
   --warning-text:#edce87; --warning-solid:#966911; --warning-bg:#40351e; --warning-border:#7e6936;
   --danger-text:#f4a8ae; --danger-solid:#b5404c; --danger-bg:#422931; --danger-border:#83505b;
-  --shadow-color:#0008; --focus:#a6c4ff;
+  --pixel-shadow:#303466; --overlay:#000a;
+}
+:root[data-theme='peach'] {
+  color-scheme:light;
+  --page-bg:#ffe5d9; --surface:#fff6f0; --surface-alt:#ffcad4;
+  --text:#51424a; --muted:#71565f; --border:#9d8189;
+  --sidebar-bg:#d8e2dc; --sidebar-text:#51424a; --sidebar-hover:#e6d9d9;
+  --sidebar-active:#ffcad4; --sidebar-muted:#65535c;
+  --accent:#975063; --accent-hover:#ed96a5; --accent-text:#823c50; --accent-solid:#f4acb7; --accent-bg:#ffcad4; --accent-border:#9d8189;
+  --on-accent:#51424a; --shadow-color:#c99ca5; --focus:#823c50;
+  --pixel-shadow:#c99ca5;
+}
+:root[data-theme='blue-bowl'] {
+  color-scheme:light;
+  --page-bg:#e4f3ff; --surface:#f8fbff; --surface-alt:#ffc8dd;
+  --text:#493953; --muted:#66516e; --border:#7b78a9;
+  --sidebar-bg:#cdb4db; --sidebar-text:#493953; --sidebar-hover:#e2c5e4;
+  --sidebar-active:#ffc8dd; --sidebar-muted:#604b69;
+  --accent:#735391; --accent-hover:#f39abb; --accent-text:#694481; --accent-solid:#ffafcc; --accent-bg:#bde0fe; --accent-border:#7b78a9;
+  --on-accent:#493953; --shadow-color:#a2d2ff; --focus:#61417a;
+  --pixel-shadow:#a2d2ff;
 }
 body { color:var(--text); background:var(--page-bg) }
 input, textarea, select { color:var(--text); background:var(--surface); accent-color:var(--accent) }
@@ -47,3 +70,25 @@ a { color:var(--accent-text) }
 @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto!important; transition:none!important } }
 
 @media(max-width:700px) { .sidebar { width:200px } .sidebar-tools button { font-size:11px } .input-area { padding:12px } .message-list { padding:16px } .bubble { max-width:96% } }
+
+.sidebar-tools-admin { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.theme-picker { position:relative; min-width:0; }
+:root .sidebar-tools button { box-shadow:none; border:2px solid transparent; border-radius:0; }
+:root .sidebar-tools { border-top:2px solid var(--border); }
+:root .sidebar-tools button:focus-visible { outline-offset:-3px; }
+:root .theme-menu { position:absolute; bottom:calc(100% + 12px); left:0; width:220px; padding:8px; z-index:40;
+  background:var(--surface); border:2px solid var(--border); box-shadow:4px 4px 0 var(--pixel-shadow); }
+:root .theme-menu button { display:flex; flex-direction:row; justify-content:flex-start; align-items:center; gap:10px;
+  color:var(--text); font-size:14px; min-height:46px; padding:8px; border:2px solid transparent; }
+:root .theme-menu button:hover,:root .theme-menu button[aria-checked=true] { background:var(--surface-alt); border-color:var(--border); }
+:root .theme-menu button .pixel-icon { width:16px; height:16px; margin-left:auto; }
+.theme-swatch { display:inline-flex; flex-shrink:0; border:1px solid var(--border); height:20px; }
+.theme-swatch i { display:block; width:12px; }
+.theme-swatch-light { --swatch-1:#f2f7fc; --swatch-2:#cbdeff; --swatch-3:#346bff; }
+.theme-swatch-dark { --swatch-1:#0c1024; --swatch-2:#7970ff; --swatch-3:#61ddf5; }
+.theme-swatch-peach { --swatch-1:#d8e2dc; --swatch-2:#ffe5d9; --swatch-3:#f4acb7; }
+.theme-swatch-blue-bowl { --swatch-1:#cdb4db; --swatch-2:#bde0fe; --swatch-3:#ffafcc; }
+.theme-swatch i:nth-child(1) { background:var(--swatch-1); }
+.theme-swatch i:nth-child(2) { background:var(--swatch-2); }
+.theme-swatch i:nth-child(3) { background:var(--swatch-3); }
+@media(max-width:600px) { :root .theme-menu { left:50%; transform:translateX(-50%); width:192px; } }
