@@ -121,6 +121,10 @@
 :root details:not(.as-hint)>summary::before { content:'+'; display:inline-block; width:16px; margin-right:6px; font-family:'Fusion Pixel',sans-serif; }
 :root details[open]:not(.as-hint)>summary::before { content:'−'; }
 @keyframes pixel-pulse { 50% { opacity:.35 } }
+.message-list { overflow-anchor:none; }
+.message-content { display:flow-root; min-width:0; }
+.typewriter-message { min-width:0; }
+.typewriter-cursor { color:var(--accent-text); }
 @media(max-width:900px) { :root .admin-main { padding:20px } }
 @media(max-width:600px) {
   :root .sidebar { width:160px; }

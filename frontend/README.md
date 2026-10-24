@@ -30,3 +30,24 @@ If you are developing a production application, we recommend enabling type-aware
 ```
 
 See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+
+## Chat typewriter output
+
+The user chat page uses `TypewriterMessage` / `useTypewriter` to buffer **display only**. Durable snapshots, IndexedDB content, SSE sequencing, cancellation and server task status remain authoritative and independent from animation.
+
+- Prose normally reveals about 52 grapheme clusters per second, with render updates at most every 32 ms. Larger bursts accelerate to drain in about 0.9 seconds; a successful terminal suffix drains in about 0.6 seconds.
+- GFM tables, code and images are revealed atomically. Potential unfinished table headers and image URLs wait for closing source or completion. The final Markdown still goes through the shared `MarkdownView`.
+- Existing history / restored snapshots render immediately. Non-prefix final rewrites, failure, cancellation, explicit Stop, reduced-motion preferences and hidden tabs flush to received source immediately. Existing per-day itinerary previews are not replayed as a final animation.
+- A successful server completion can enable the next input while the previous display finishes. The pixel cursor follows display/server activity, independently of persisted task status.
+- `useChatScroll` follows content/image growth only while within 72 px of the bottom. Scrolling up pauses following; scrolling back down, sending, or selecting a conversation resumes it.
+
+Run `npm test`, `npm run build`, and `npm run lint` in `frontend`. The dedicated browser acceptance script intercepts APIs and uses an isolated fictitious account. With Vite running on `127.0.0.1:5173`, run from the repository root:
+
+```powershell
+New-Item -ItemType Directory -Force output/typewriter
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=typewriter open http://127.0.0.1:5173/
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=typewriter --raw run-code --filename=frontend/tests/typewriter.browser.js
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=typewriter close
+```
+
+The fixture covers gradual output, atomic Markdown, recovery, final replacement, cache integrity, explicit stop before acknowledgment, failures, reduced motion, themes and scroll position. Screenshots are saved under `output/typewriter/` (ignored by Git).

@@ -1,9 +1,11 @@
+import TypewriterMessage from '../components/TypewriterMessage'
+import { useChatScroll } from '../chat/useChatScroll'
 import PixelIcon from '../components/PixelIcon'
 import PixelLabel from '../components/PixelLabel'
 import { usePreferences } from '../preferences/PreferencesProvider'
 import { t, ui } from '../preferences/i18n'
 import SidebarTools from '../components/SidebarTools';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import '../App.css';
 import { useDurableChat } from '../chat/useDurableChat';
 import MarkdownView from '../components/MarkdownView';
@@ -113,7 +115,7 @@ function ChatPage() {
         raw: string;
         preview: string;
     } | null>(null);
-    const bottomRef = useRef<HTMLDivElement>(null);
+    const [stoppedTurn, setStoppedTurn] = useState<string | undefined>();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const restoreDraft = useCallback((request: TurnRequest) => {
         setInput((value) => value || request.message);
@@ -124,9 +126,7 @@ function ChatPage() {
             });
     }, []);
     const { conversations, activeId, messages, streaming, notice, send, stop, selectConversation, } = useDurableChat(restoreDraft);
-    useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages, pendingImage]);
+    const { containerRef, contentRef, onScroll, follow } = useChatScroll(activeId);
     const handleImageFile = useCallback(async (file: File | null | undefined) => {
         if (!file || !file.type.startsWith('image/'))
             return;
@@ -142,14 +142,16 @@ function ChatPage() {
         const text = input.trim(), image = pendingImage;
         if ((!text && !image) || streaming)
             return;
+        follow();
         if (await send(text, image?.raw ?? null)) {
             setInput((value) => (value.trim() === text ? '' : value));
             setPendingImage((value) => (value === image ? null : value));
         }
-    }, [input, pendingImage, streaming, send]);
+    }, [input, pendingImage, streaming, send, follow]);
     const submitForm = useCallback(async (source: string, action: string, values: Record<string, string>) => {
+        follow();
         await send(JSON.stringify({ __form__: { __action__: action, ...values } }), null, source);
-    }, [send]);
+    }, [send, follow]);
     const handleNewConversation = () => {
         void selectConversation(null);
     };
@@ -157,6 +159,7 @@ function ChatPage() {
         void selectConversation(id);
     };
     const handleStop = () => {
+        setStoppedTurn(messages.find(message => message.role === 'assistant' && message.streaming)?.turnId);
         void stop();
     };
     return (<div className="app">
@@ -174,21 +177,21 @@ function ChatPage() {
       <main className="chat-area">
         <header className="chat-header">{t("TravelScope 智能旅游助手")}</header>
 
-        <div className="message-list">
+        <div className="message-list" ref={containerRef} onScroll={onScroll}><div className="message-content" ref={contentRef}>
           {ui(messages.length === 0 && (<div className="empty-hint">
               <h2>{<PixelLabel text={t("\uD83C\uDF0D 欢迎使用 TravelScope")} />}</h2>
               <p>{t("问我旅游规划\u3001天气\u3001酒店\u3001景点\u3001火车票\u3001机票\uFF0C什么都可以\uFF5E")}</p>
             </div>))}
-          {messages.map((msg, idx) => (<div key={`${msg.turnId ?? msg.id ?? idx}:${msg.role}`} className={`message-row ${msg.role}`}>
+          {messages.map((msg, idx) => (<div key={`${msg.turnId ?? msg.id ?? idx}:${msg.role}`} data-turn-id={msg.turnId} className={`message-row ${msg.role}`}>
               <div className={`bubble ${msg.role}`}>
                 {ui(msg.intent && (<span className="intent-badge">
                     <PixelLabel text={ui(INTENT_LABELS[msg.intent] ?? msg.intent)} />
                   </span>))}
                 {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 →
                 R3② 实时预览（骨架先行/逐天填充）优先于阶段占位；done 全文到达后切换为终稿 */}
-                {msg.role === 'assistant' ? (msg.content ? (<div className="bubble-content markdown-body">
-                      <Md text={msg.content}/>
-                    </div>) : msg.streaming ? (msg.intent === 'PLANNING' &&
+                {msg.role === 'assistant' ? (<TypewriterMessage text={msg.content} streaming={msg.streaming}
+                  flush={Boolean((msg.turnId && msg.turnId === stoppedTurn) || ['CANCELLING','CANCELLED','FAILED','INTERRUPTED'].includes(msg.turnStatus ?? '') || msg.itineraryDays?.length)}>
+                  {!msg.content && msg.streaming ? (msg.intent === 'PLANNING' &&
                 (msg.itinerarySkeleton ||
                     (msg.itineraryDays && msg.itineraryDays.length > 0)) ? (<div className="bubble-content itinerary-preview">
                         {ui(msg.itinerarySkeleton && (<div className="itinerary-preview-head">{<PixelLabel text={t("\uD83D\uDDFA 行程骨架已就绪\uFF08")} />}{ui(msg.itinerarySkeleton.dayCount)}{ui(' ')}{t("天\uFF09")}{ui(msg.itinerarySkeleton.days.map((d) => (<span key={d.day} className="itinerary-preview-day-names">
@@ -203,11 +206,11 @@ function ChatPage() {
                       </div>) : (<div className="bubble-content phase-hint">
                         {<PixelLabel text={ui(msg.intent === 'PLANNING'
                     ? t("\uD83D\uDDFA 正在为您规划行程\uFF0C过程见下方活动流\u2026") : t("思考中\u2026"))} />}
-                      </div>)) : null) : (<div className="bubble-content">
+                      </div>)) : null}
+                </TypewriterMessage>) : (<div className="bubble-content">
                     {ui(msg.image && (<img className="user-image" src={msg.image} alt={t("用户图片")}/>))}
                     {msg.content}
                   </div>)}
-                {ui(msg.streaming && <span className="cursor">▌</span>)}
                 {ui(msg.requirementForm && (<RequirementFormCard payload={msg.requirementForm} submitted={!!msg.formSubmitted} disabled={streaming || !msg.turnId} onAction={(action, values) => submitForm(msg.turnId!, action, values)}/>))}
                 {msg.reviewReport && (<ReviewReportCard raw={msg.reviewReport}/>)}
                 {ui(msg.notice && (<div role="status" className="phase-hint">
@@ -220,7 +223,7 @@ function ChatPage() {
                     <ActivityStream activities={msg.activities}/>
                   </div>))}
             </div>))}
-          <div ref={bottomRef}/>
+          </div>
         </div>
 
         <div className="input-area">
