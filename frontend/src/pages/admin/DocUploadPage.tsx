@@ -1,3 +1,4 @@
+import { AdminPageHeader, AdminPanel, AdminTable } from '../../components/AdminPrimitives'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t, ui } from '../../preferences/i18n'
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -47,15 +48,18 @@ export default function DocUploadPage() {
         }
     }
     return (<div className="admin-page">
-      <h2>{t("文档上传\uFF08知识库\uFF09")}</h2>
+      <AdminPageHeader title="文档上传（知识库）" section="知识库" description="上传知识文档并查看处理状态。" />
+      <AdminPanel title="上传文档">
       <div className="admin-upload">
         <input ref={fileRef} type="file" accept=".pdf,.txt,.md,.docx,.html"/>
         <button onClick={handleUpload} disabled={uploading}>
           {ui(uploading ? t("上传中\u2026") : t("上传到 MinIO"))}
         </button>
       </div>
+      </AdminPanel>
       {ui(message && <div className="admin-message">{ui(message)}</div>)}
       {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      <AdminPanel title="文档列表"><AdminTable>
       <table className="admin-table">
         <thead>
           <tr>
@@ -80,5 +84,6 @@ export default function DocUploadPage() {
               </tr>))))}
         </tbody>
       </table>
+      </AdminTable></AdminPanel>
     </div>);
 }

@@ -1,3 +1,4 @@
+import { AdminPageHeader, AdminPanel, AdminTable } from '../../components/AdminPrimitives'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t, ui } from '../../preferences/i18n'
 import { useCallback, useEffect, useState } from 'react';
@@ -65,8 +66,9 @@ export default function UsersPage() {
         }
     }
     return (<div className="admin-page">
-      <h2>{t("用户管理")}</h2>
+      <AdminPageHeader title="用户管理" section="账户与权限" description="管理用户状态、角色与积分余额。" />
       {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      <AdminPanel title="用户列表"><AdminTable>
       <table className="admin-table">
         <thead>
           <tr>
@@ -109,5 +111,6 @@ export default function UsersPage() {
               </tr>))))}
         </tbody>
       </table>
+      </AdminTable></AdminPanel>
     </div>);
 }

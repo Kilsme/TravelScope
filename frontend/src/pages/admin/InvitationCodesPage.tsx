@@ -1,3 +1,4 @@
+import { AdminPageHeader, AdminPanel, AdminTable } from '../../components/AdminPrimitives'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t, ui } from '../../preferences/i18n'
 import { useCallback, useEffect, useState } from 'react';
@@ -36,13 +37,16 @@ export default function InvitationCodesPage() {
         }
     }
     return (<div className="admin-page">
-      <h2>{t("邀请码管理")}</h2>
+      <AdminPageHeader title="邀请码管理" section="注册准入" description="发放邀请码并查看使用情况。" />
+      <AdminPanel title="发放邀请码">
       <div className="admin-filters">
         <button onClick={handleGenerate} disabled={generating}>
           {ui(generating ? t("发放中\u2026") : t("发放新邀请码"))}
         </button>
       </div>
+      </AdminPanel>
       {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      <AdminPanel title="邀请码列表"><AdminTable>
       <table className="admin-table">
         <thead>
           <tr>
@@ -67,5 +71,6 @@ export default function InvitationCodesPage() {
               </tr>))))}
         </tbody>
       </table>
+      </AdminTable></AdminPanel>
     </div>);
 }

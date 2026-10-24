@@ -1,3 +1,4 @@
+import { AdminPanel } from '../../../components/AdminPrimitives'
 import { usePreferences } from '../../../preferences/PreferencesProvider'
 import { t, ui } from '../../../preferences/i18n'
 import { useEffect, useRef, useState } from 'react';
@@ -44,7 +45,7 @@ export function Panel({ title, subtitle, children, action }: {
     action?: ReactNode;
 }) {
     usePreferences();
-    return <section className="as-panel"><header className="as-section-head"><div><h2>{ui(title)}</h2>{ui(subtitle && <p>{ui(subtitle)}</p>)}</div>{ui(action)}</header>{children}</section>;
+    return <AdminPanel className="as-panel" title={title} subtitle={subtitle} action={action}>{children}</AdminPanel>;
 }
 export function MetricRows({ items }: {
     items: {

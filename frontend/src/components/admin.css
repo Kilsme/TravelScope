@@ -1,0 +1,24 @@
+.admin-page { max-width:1600px; margin:0 auto; min-width:0; padding:4px 4px 20px }
+.admin-page-head { display:flex; align-items:center; justify-content:space-between; gap:24px; margin-bottom:30px }
+.admin-eyebrow { font-size:12px; letter-spacing:1px; color:var(--muted); margin-bottom:8px }
+.admin-page-head h1 { font-size:28px; line-height:1.4; color:var(--text) }
+.admin-page-head p { margin-top:8px; font-size:14px; color:var(--muted) }
+.admin-head-actions { display:flex; flex-wrap:wrap; align-items:center; gap:12px }
+.admin-panel { padding:22px 24px; border:1px solid var(--border); background:var(--surface); margin-bottom:24px; min-width:0 }
+.admin-section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:18px }
+.admin-section-head h2,.admin-page .admin-section-head h2 { margin:0; font-size:18px; color:var(--text) }
+.admin-section-head p { font-size:13px; color:var(--muted); margin-top:6px }
+.admin-table-wrap { width:100%; overflow:auto; min-width:0 }
+.admin-table { white-space:nowrap; border-radius:0 }
+.admin-table th,.admin-table td { border:0; border-bottom:1px solid var(--border); padding:14px 16px; font-size:14px }
+.admin-table tr:last-child td { border-bottom:0 }
+.admin-table tbody tr:hover { background:var(--surface-alt) }
+.admin-panel .admin-filters,.admin-panel .admin-upload { margin-bottom:0 }
+.admin-actions { display:table-cell }
+.admin-actions button + button { margin-left:8px }
+.admin-main button { min-height:36px }
+.admin-main input,.admin-main select { min-height:36px }
+.admin-upload { flex-wrap:wrap }
+.admin-upload input { min-width:0; max-width:100% }
+@media(max-width:900px) { .admin-page-head { align-items:flex-start; flex-direction:column; gap:16px } .admin-main { padding:20px } }
+@media(max-width:600px) { .admin-panel { padding:16px } .admin-page-head h1 { font-size:24px } .admin-main { padding:16px 12px } }

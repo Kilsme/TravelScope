@@ -1,3 +1,4 @@
+import { AdminPageHeader } from '../../components/AdminPrimitives'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t, ui } from '../../preferences/i18n'
 import { useState } from 'react';
@@ -25,8 +26,8 @@ export default function AssessmentPage() {
         else
             next.set(key, value); }); return next; });
     }
-    return <section className="assessment as-workspace">
-    <header className="as-page-head"><div><div className="as-eyebrow">{t("TRAVELSCOPE / 运行与质量")}</div><h1>{t("评估中心")}</h1><p>{t("了解运行表现\uFF0C验证行程质量\uFF0C追溯每一次执行\u3002")}</p></div><div className="as-head-actions"><button onClick={() => setRevision(value => value + 1)}><span aria-hidden="true">↻</span>{t("刷新")}</button><button className="as-primary" onClick={() => setCreating(true)}><span aria-hidden="true">＋</span>{t("新建测试")}</button></div></header>
+    return <section className="assessment admin-page">
+    <AdminPageHeader title="评估中心" section="运行与质量" description="了解运行表现，验证行程质量，追溯每一次执行。" actions={<><button onClick={() => setRevision(value => value + 1)}><span aria-hidden="true">↻</span>{t("刷新")}</button><button className="as-primary" onClick={() => setCreating(true)}><span aria-hidden="true">＋</span>{t("新建测试")}</button></>} />
     <nav className="as-tabs" aria-label={t("评估中心导航")}>{ui(tabs.map(item => <button key={item.id} aria-current={tab === item.id ? 'page' : undefined} onClick={() => update({ tab: item.id, runId: null, sampleId: null })}>{ui(item.label)}</button>))}</nav>
     <div className="as-content">
       {ui(tab === 'overview' && <Overview source={source} mode={mode} revision={revision} onScope={(nextSource, nextMode) => update({ source: nextSource, mode: nextMode, page: null })} onInspect={component => update({ tab: "runs", source, mode, componentKind: component.kind, componentName: component.component_name, phase: component.phase, page: null, batchId: null, session: null, task: null, status: null, runId: null, sampleId: null })}/>)}

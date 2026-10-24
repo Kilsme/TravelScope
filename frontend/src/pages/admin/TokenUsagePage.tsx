@@ -1,3 +1,4 @@
+import { AdminPageHeader, AdminPanel, AdminTable } from '../../components/AdminPrimitives'
 import { usePreferences } from '../../preferences/PreferencesProvider'
 import { t, ui } from '../../preferences/i18n'
 import { useCallback, useEffect, useState } from 'react';
@@ -45,7 +46,8 @@ export default function TokenUsagePage() {
         load();
     }, [load]);
     return (<div className="admin-page">
-      <h2>{t("Token 用量报表")}</h2>
+      <AdminPageHeader title="Token 用量报表" section="用量与成本" description="按用户、日期与模型查看 Token 消耗。" />
+      <AdminPanel title="筛选条件">
       <div className="admin-filters">
         <label>{t("用户")}<select value={userId} onChange={(e) => setUserId(e.target.value)}>
             <option value="">{t("全部")}</option>
@@ -58,7 +60,9 @@ export default function TokenUsagePage() {
         </label>
         <button onClick={load} disabled={loading}>{ui(loading ? t("查询中\u2026") : t("查询"))}</button>
       </div>
+      </AdminPanel>
       {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      <AdminPanel title="用量明细"><AdminTable>
       <table className="admin-table">
         <thead>
           <tr>
@@ -79,5 +83,6 @@ export default function TokenUsagePage() {
               </tr>))))}
         </tbody>
       </table>
+      </AdminTable></AdminPanel>
     </div>);
 }
