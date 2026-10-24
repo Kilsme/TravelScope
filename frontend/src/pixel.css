@@ -125,6 +125,23 @@
 .message-content { display:flow-root; min-width:0; }
 .typewriter-message { min-width:0; }
 .typewriter-cursor { display:inline-block; width:.45em; height:1em; margin-inline-start:2px; vertical-align:-.12em; color:var(--accent-text); background:currentColor; }
+:root .message-row { flex-direction:column; flex-wrap:nowrap; align-items:flex-start; gap:8px; }
+:root .message-row.user { align-items:flex-end; }
+.message-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; max-width:76%; min-width:0; }
+:root .message-actions button { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:32px; padding:3px 8px; font:inherit; font-size:12px; color:var(--text); background:var(--surface); box-shadow:2px 2px 0 var(--pixel-shadow); }
+.message-action-status { font-size:12px; color:var(--danger-text); overflow-wrap:anywhere; }
+.message-action-status[data-status=copied] { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+.message-action-status:empty { display:none; }
+.message-action-status { flex-basis:100%; }
+.reply-quote { margin-bottom:12px; padding:10px 12px; border:2px solid var(--border); border-left:4px solid var(--accent); background:var(--surface-alt); color:var(--text); min-width:0; }
+.reply-quote-header { display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:14px; }
+.reply-quote-header>span { display:inline-flex; gap:6px; align-items:center; }
+:root .reply-quote button { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-height:30px; padding:3px 6px; color:var(--text); background:var(--surface); font:inherit; font-size:12px; box-shadow:none; }
+.reply-quote-text { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; overflow:hidden; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; line-height:1.6; margin:6px 0; }
+.reply-quote-text.expanded { display:block; max-height:180px; overflow:auto; }
+.reply-quote-hint { margin:6px 0; color:var(--muted); font-size:12px; }
+.composer-error { color:var(--danger-text); margin:0 0 10px; font-size:14px; overflow-wrap:anywhere; }
+:root .bubble-content .user-image { max-width:min(240px,100%); }
 @media(max-width:900px) { :root .admin-main { padding:20px } }
 @media(max-width:600px) {
   :root .sidebar { width:160px; }
@@ -133,6 +150,7 @@
   :root .chat-header { padding:12px; font-size:16px; }
   :root .message-list { padding:16px 12px; }
   :root .bubble { max-width:100%; padding:10px; font-size:14px; }
+  .message-actions { max-width:100%; }
   :root .input-area { padding:12px; grid-template-columns:minmax(0,1fr); }
   :root .input-main { min-width:0; grid-column:1 / -1; }
   :root .input-actions { justify-self:end; height:44px; }

@@ -1,4 +1,8 @@
 import TypewriterMessage from '../components/TypewriterMessage'
+import ChatMessageItem from '../components/ChatMessageItem'
+import ReplyQuote from '../components/ReplyQuote'
+import { composeReply, createReplyDraft, MAX_MESSAGE_LENGTH, messageText } from '../chat/messageActions'
+import { useChatDraft } from '../chat/useChatDraft'
 import { useChatScroll } from '../chat/useChatScroll'
 import PixelIcon from '../components/PixelIcon'
 import PixelLabel from '../components/PixelLabel'
@@ -11,8 +15,7 @@ import { useDurableChat } from '../chat/useDurableChat';
 import MarkdownView from '../components/MarkdownView';
 import RequirementFormCard from '../components/RequirementFormCard';
 import ReviewReportCard from '../components/ReviewReportCard';
-import type { AgentActivity } from '../types';
-import type { TurnRequest } from '../chat/turnTypes';
+import type { AgentActivity, ChatMessage } from '../types';
 /** Markdown 渲染（全站共享出口 MarkdownView：GFM+流式清理+波浪号免疫+图片直连定制，见 components/MarkdownView.tsx） */
 function Md({ text }: {
     text: string;
@@ -110,21 +113,11 @@ async function compressImage(file: File): Promise<string> {
 }
 function ChatPage() {
     usePreferences();
-    const [input, setInput] = useState('');
-    const [pendingImage, setPendingImage] = useState<{
-        raw: string;
-        preview: string;
-    } | null>(null);
+    const { draft, update: updateDraft, restoreDraft, beginSubmission, acceptSubmission, leaveConversation } = useChatDraft();
+    const { input, pendingImage, quote } = draft;
     const [stoppedTurn, setStoppedTurn] = useState<string | undefined>();
     const fileInputRef = useRef<HTMLInputElement>(null);
-    const restoreDraft = useCallback((request: TurnRequest) => {
-        setInput((value) => value || request.message);
-        if (request.imageBase64)
-            setPendingImage((value) => value ?? {
-                raw: request.imageBase64!,
-                preview: `data:image/jpeg;base64,${request.imageBase64}`,
-            });
-    }, []);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
     const { conversations, activeId, messages, streaming, notice, send, stop, selectConversation, } = useDurableChat(restoreDraft);
     const { containerRef, contentRef, onScroll, follow } = useChatScroll(activeId);
     const handleImageFile = useCallback(async (file: File | null | undefined) => {
@@ -132,30 +125,39 @@ function ChatPage() {
             return;
         try {
             const raw = await compressImage(file);
-            setPendingImage({ raw, preview: `data:image/jpeg;base64,${raw}` });
+            updateDraft({ pendingImage: { raw, preview: `data:image/jpeg;base64,${raw}` } });
         }
         catch (e) {
             console.error('图片处理失败', e);
         }
-    }, []);
-    const handleSend = useCallback(async () => {
+    }, [updateDraft]);
+    const handleReply = (message: ChatMessage) => {
+        updateDraft({ quote:createReplyDraft(message.role,messageText(message)), error:false });
+        inputRef.current?.focus({preventScroll:true});
+    };
+    const handleSend = async () => {
         const text = input.trim(), image = pendingImage;
         if ((!text && !image) || streaming)
             return;
+        const message = composeReply(text,quote,{
+            assistant:t('引用 AI 的消息：'), user:t('引用我的消息：'),
+            question:t('本次问题：'), truncated:t('已截取，发送时仅包含前 2000 字符'),
+        });
+        if (message.length > MAX_MESSAGE_LENGTH) { updateDraft({error:true},false); return; }
+        const submission = beginSubmission(activeId,message);
         follow();
-        if (await send(text, image?.raw ?? null)) {
-            setInput((value) => (value.trim() === text ? '' : value));
-            setPendingImage((value) => (value === image ? null : value));
-        }
-    }, [input, pendingImage, streaming, send, follow]);
+        if (await send(message, image?.raw ?? null)) acceptSubmission(submission);
+    };
     const submitForm = useCallback(async (source: string, action: string, values: Record<string, string>) => {
         follow();
         await send(JSON.stringify({ __form__: { __action__: action, ...values } }), null, source);
     }, [send, follow]);
     const handleNewConversation = () => {
+        leaveConversation();
         void selectConversation(null);
     };
     const loadHistory = (id: number) => {
+        if (id !== activeId) leaveConversation();
         void selectConversation(id);
     };
     const handleStop = () => {
@@ -182,14 +184,16 @@ function ChatPage() {
               <h2>{<PixelLabel text={t("\uD83C\uDF0D 欢迎使用 TravelScope")} />}</h2>
               <p>{t("问我旅游规划\u3001天气\u3001酒店\u3001景点\u3001火车票\u3001机票\uFF0C什么都可以\uFF5E")}</p>
             </div>))}
-          {messages.map((msg, idx) => (<div key={`${msg.turnId ?? msg.id ?? idx}:${msg.role}`} data-turn-id={msg.turnId} className={`message-row ${msg.role}`}>
+          {messages.map((msg, idx) => (<ChatMessageItem key={`${msg.turnId ?? msg.id ?? idx}:${msg.role}`} message={msg} streaming={streaming} onReply={() => handleReply(msg)}
+            activity={msg.role === 'assistant' && msg.activities && msg.activities.length > 0 ? <div className="activity-wrap"><ActivityStream activities={msg.activities}/></div> : null}>
+            {(onBusyChange) => (
               <div className={`bubble ${msg.role}`}>
                 {ui(msg.intent && (<span className="intent-badge">
                     <PixelLabel text={ui(INTENT_LABELS[msg.intent] ?? msg.intent)} />
                   </span>))}
                 {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 →
                 R3② 实时预览（骨架先行/逐天填充）优先于阶段占位；done 全文到达后切换为终稿 */}
-                {msg.role === 'assistant' ? (<TypewriterMessage text={msg.content} streaming={msg.streaming}
+                {msg.role === 'assistant' ? (<TypewriterMessage text={msg.content} streaming={msg.streaming} onBusyChange={onBusyChange}
                   flush={Boolean((msg.turnId && msg.turnId === stoppedTurn) || ['CANCELLING','CANCELLED','FAILED','INTERRUPTED'].includes(msg.turnStatus ?? '') || msg.itineraryDays?.length)}>
                   {!msg.content && msg.streaming ? (msg.intent === 'PLANNING' &&
                 (msg.itinerarySkeleton ||
@@ -216,13 +220,8 @@ function ChatPage() {
                 {ui(msg.notice && (<div role="status" className="phase-hint">
                     {ui(msg.notice)}
                   </div>))}
-              </div>
-              {ui(msg.role === 'assistant' &&
-                msg.activities &&
-                msg.activities.length > 0 && (<div className="activity-wrap">
-                    <ActivityStream activities={msg.activities}/>
-                  </div>))}
-            </div>))}
+              </div>)}
+            </ChatMessageItem>))}
           </div>
         </div>
 
@@ -231,16 +230,18 @@ function ChatPage() {
               {ui(notice)}
             </div>))}
           <div className="input-main">
+            {quote && <ReplyQuote key={quote.role + ':' + quote.original} quote={quote} onCancel={() => { updateDraft({quote:null,error:false}); inputRef.current?.focus({preventScroll:true}); }} />}
+            {draft.error && <p className="composer-error" role="alert">{t('发送文本过长，引用与问题合计不能超过 8000 字符，请删减问题或取消引用。')}</p>}
             {/* 待发送图片预览（私人讲解员）：一次一张，可移除 */}
             {ui(pendingImage && (<div className="image-preview">
                 <img src={pendingImage.preview} alt={t("待发送图片")}/>
-                <button className="image-remove" onClick={() => setPendingImage(null)} aria-label={t("移除图片")} title={t("移除图片")}>
+                <button className="image-remove" onClick={() => updateDraft({pendingImage:null,error:false})} aria-label={t("移除图片")} title={t("移除图片")}>
                   <PixelIcon name="close" />
                 </button>
                 <span className="image-hint">{t("发送后将由 AI 讲解这张图片\uFF08可附文字提问\uFF09")}</span>
               </div>))}
-            <textarea value={input} placeholder={ui(pendingImage
-            ? t("可附提问\uFF08如\uFF1A这是哪里\uFF1F帮我规划去这里的行程\uFF09\uFF0C留空则直接讲解\u2026") : t("输入你的问题\uFF0C例如\uFF1A帮我规划杭州三日游\u2026"))} rows={2} onChange={(e) => setInput(e.target.value)} onPaste={(e) => {
+            <textarea ref={inputRef} value={input} placeholder={ui(pendingImage
+            ? t("可附提问\uFF08如\uFF1A这是哪里\uFF1F帮我规划去这里的行程\uFF09\uFF0C留空则直接讲解\u2026") : t("输入你的问题\uFF0C例如\uFF1A帮我规划杭州三日游\u2026"))} rows={2} onChange={(e) => updateDraft({input:e.target.value,error:false})} onPaste={(e) => {
             const file = Array.from(e.clipboardData.files).find((f) => f.type.startsWith('image/'));
             if (file) {
                 e.preventDefault();
