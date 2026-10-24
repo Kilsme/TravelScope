@@ -70,3 +70,20 @@ npm exec --yes --package=@playwright/cli -- playwright-cli -s=message-actions op
 npm exec --yes --package=@playwright/cli -- playwright-cli -s=message-actions --raw run-code --filename=frontend/tests/message-actions.browser.js
 npm exec --yes --package=@playwright/cli -- playwright-cli -s=message-actions close
 ```
+
+## Image previews and circular gallery
+
+Each chat message shows at most two lazy image thumbnails. If there are more, the second thumbnail has a `+N` badge; hidden previews remain in the full gallery. Clicking a thumbnail opens a single large image in a native modal dialog, with Previous/Next buttons, left/right arrow keys and a position counter. Navigation wraps in both directions; single-image controls are disabled. Escape, the close button and a backdrop click dismiss the viewer, restore thumbnail focus and release the viewer's scroll lock. Focus stays inside the dialog. No timed slideshow is enabled.
+
+A chat message shares one gallery across its rendered Markdown fragments, including per-day previews. Images are ordered as rendered (duplicate URLs keep separate positions). New images arriving through the existing typewriter join an open gallery; navigating away closes it. Shared Markdown in the assessment center also supports the viewer, with keyboard and scroll-lock isolation from the underlying drawer. Copy/Reply still read the unchanged original Markdown, not captions or controls.
+
+Both previews and the large view use the original sanitized CDN URL and `referrerPolicy="no-referrer"`. Preview cropping is CSS only; the large image uses `object-fit:contain` and fits the viewport. No CDN-specific resize parameters, proxy endpoint, extra image dependency or backend changes are introduced. Failed previews remain clickable, and failed large images offer Retry while allowing navigation to other images.
+
+The browser fixture intercepts the example CDN URLs with deterministic test images. It covers group order, clicked index, wrapping, duplicate/single images, keyboard/focus, failures, unchanged URLs/referrer policy, four themes, English, narrow screens, streamed additions, nested Markdown/drawers and conversation cleanup. Run from the repository root with Vite on `127.0.0.1:5173`:
+
+```powershell
+New-Item -ItemType Directory -Force output/image-gallery
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=image-gallery open http://127.0.0.1:5173/
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=image-gallery --raw run-code --filename=frontend/tests/image-gallery.browser.js
+npm exec --yes --package=@playwright/cli -- playwright-cli -s=image-gallery close
+```

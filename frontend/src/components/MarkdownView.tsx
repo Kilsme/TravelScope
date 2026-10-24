@@ -5,14 +5,14 @@ import type { Components } from 'react-markdown';
 import type { Element, Root, RootContent } from 'hast';
 import remarkGfm from 'remark-gfm';
 import { defuseGfmTildes, sanitizeMarkdown } from '../markdown';
-/**
- * 图片直连 CDN 定制（v5-F2）：referrerPolicy 防盗链保险（实测飞猪/高德两 CDN 无
- * Referer 校验，此为兜底）、懒加载（高德原图 100KB~1MB）、加载失败隐藏不留占位框。
- */
+import { GalleryThumbnail, ImageGalleryProvider } from './ImageGallery';
+function containsImage(node: Element): boolean {
+    return node.children.some(child => child.type === 'element' && (child.tagName === 'img' || containsImage(child)));
+}
 const components: Components = {
-    img: ({ src, alt }) => (<img src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} loading="lazy" referrerPolicy="no-referrer" onError={(e) => {
-            e.currentTarget.style.display = 'none';
-        }}/>),
+    img: ({ src, alt }) => <GalleryThumbnail src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} />,
+    // Linked pictures open the same viewer, without nesting a button inside an anchor.
+    a: ({ node, children, ...props }) => node && containsImage(node) ? <span>{children}</span> : <a {...props}>{children}</a>,
 };
 
 /** Insert into the last rendered text container, rather than after its block-level wrapper. */
@@ -40,7 +40,7 @@ export default function MarkdownView({ text, plain = false, cursor = false }: {
 }) {
     usePreferences();
     const prepared = plain ? defuseGfmTildes(text) : defuseGfmTildes(sanitizeMarkdown(text));
-    return (<Markdown remarkPlugins={[remarkGfm]} rehypePlugins={cursor ? [rehypeTypewriterCursor] : []} components={components}>
+    return (<ImageGalleryProvider><Markdown remarkPlugins={[remarkGfm]} rehypePlugins={cursor ? [rehypeTypewriterCursor] : []} components={components}>
       {prepared}
-    </Markdown>);
+    </Markdown></ImageGalleryProvider>);
 }

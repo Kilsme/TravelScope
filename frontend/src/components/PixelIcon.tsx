@@ -28,6 +28,7 @@ const glyphs = {
   reply: 'M6 1h2v3H6v2h8v2h2v6h-2v-4h-2V8H6v2h2v3H6v-2H4V9H2V7H0V5h2V3h2V1Z',
   refresh: 'M4 1h8v2h2V1h2v6h-6V5h2V3H4v2H2v6h2v2h8v-2h2v2h-2v2H4v-2H2v-2H0V5h2V3h2Z',
   chevronRight: 'M5 2h2v2h2v2h2v4H9v2H7v2H5v-2h2v-2h2V6H7V4H5Z',
+  chevronLeft: 'M9 2h2v2H9v2H7v4h2v2h2v2H9v-2H7v-2H5V6h2V4h2Z',
   chevronDown: 'M2 5h2v2h2v2h4V7h2V5h2v2h-2v2h-2v2H6V9H4V7H2Z',
   clock: 'M4 0h8v2h2v2h2v8h-2v2h-2v2H4v-2H2v-2H0V4h2V2h2Zm0 2v2H2v8h2v2h8v-2h2V4h-2V2Zm3 2h2v4h3v2H7Z',
 } as const
