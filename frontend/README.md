@@ -35,10 +35,10 @@ See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rule
 
 The user chat page uses `TypewriterMessage` / `useTypewriter` to buffer **display only**. Durable snapshots, IndexedDB content, SSE sequencing, cancellation and server task status remain authoritative and independent from animation.
 
-- Prose normally reveals about 52 grapheme clusters per second, with render updates at most every 32 ms. Larger bursts accelerate to drain in about 0.9 seconds; a successful terminal suffix drains in about 0.6 seconds.
+- Prose reveals one grapheme cluster per animation step, with a minimum 60 ms between characters. Commas pause for 120 ms and sentence endings for 220 ms. Neither large bursts, slow frames nor successful completion accelerate or release multiple prose characters together.
 - GFM tables, code and images are revealed atomically. Potential unfinished table headers and image URLs wait for closing source or completion. The final Markdown still goes through the shared `MarkdownView`.
 - Existing history / restored snapshots render immediately. Non-prefix final rewrites, failure, cancellation, explicit Stop, reduced-motion preferences and hidden tabs flush to received source immediately. Existing per-day itinerary previews are not replayed as a final animation.
-- A successful server completion can enable the next input while the previous display finishes. The pixel cursor follows display/server activity, independently of persisted task status.
+- A successful server completion can enable the next input while the previous display finishes. The pixel cursor is inserted inside the final Markdown text container so it follows the last character, including headings, lists and inline formatting, independently of persisted task status.
 - `useChatScroll` follows content/image growth only while within 72 px of the bottom. Scrolling up pauses following; scrolling back down, sending, or selecting a conversation resumes it.
 
 Run `npm test`, `npm run build`, and `npm run lint` in `frontend`. The dedicated browser acceptance script intercepts APIs and uses an isolated fictitious account. With Vite running on `127.0.0.1:5173`, run from the repository root:

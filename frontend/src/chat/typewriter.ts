@@ -82,8 +82,7 @@ export class TypewriterBuffer {
   private plan:RevealPlan = {ends:[],ranges:[],length:0}
   private frame:number | null = null
   private time = 0
-  private credit = 0
-  private rate = 52
+  private delay = 60
   private value:TypewriterSnapshot
   private listeners = new Set<() => void>()
   constructor(text:string, streaming:boolean) {
@@ -97,8 +96,8 @@ export class TypewriterBuffer {
     if (next.text === this.value.text && next.typing === this.value.typing) return
     this.value = next; this.listeners.forEach(listener => listener())
   }
-  dispose = () => { if (this.frame !== null) cancelAnimationFrame(this.frame); this.frame = null; this.credit = 0 }
-  private flush() { this.dispose(); this.offset = this.source.length; this.rate = 52; this.publish() }
+  dispose = () => { if (this.frame !== null) cancelAnimationFrame(this.frame); this.frame = null; this.delay = 60 }
+  private flush() { this.dispose(); this.offset = this.source.length; this.publish() }
   setReducedMotion(value:boolean) { this.reduced = value; if (value) this.flush() }
   setHidden(value:boolean) { this.hidden = value; if (value) this.flush() }
   update(text:string, streaming:boolean, flush = false) {
@@ -108,25 +107,22 @@ export class TypewriterBuffer {
     this.wasLive ||= streaming; this.streaming = streaming; this.source = text
     if (historical || !append || flush || this.reduced || this.hidden) { this.flush(); return }
     if (changed) this.plan = createRevealPlan(text,!streaming)
-    if (this.offset >= text.length) { this.rate = 52; this.publish(); return }
-    const pending = text.length - this.offset
-    this.rate = Math.max(this.rate,pending / (streaming ? .9 : .6))
+    if (this.offset >= text.length) { this.publish(); return }
     this.publish()
     if (this.frame === null) { this.time = performance.now(); this.frame = requestAnimationFrame(this.tick) }
   }
   private tick = (now:number) => {
     this.frame = null
     const elapsed = now - this.time
-    if (elapsed < 32) { this.frame = requestAnimationFrame(this.tick); return }
+    if (elapsed < this.delay) { this.frame = requestAnimationFrame(this.tick); return }
+    // Never catch up by releasing several prose characters in one frame, even after a stall
+    // or server completion. A burst changes the queue length, not the typing speed.
     this.time = now
-    this.credit += this.rate * Math.min(elapsed,100) / 1000
-    const budget = Math.floor(this.credit)
-    if (budget < 1) { this.frame = requestAnimationFrame(this.tick); return }
-    this.credit -= budget
-    const next = advanceReveal(this.plan,this.offset,budget)
-    if (next === this.offset) { this.credit = 0; return } // Incomplete structure: wait for more source.
+    const next = advanceReveal(this.plan,this.offset,1)
+    if (next === this.offset) return // Incomplete structure: wait for more source.
+    const revealed = this.source.slice(this.offset,next)
+    this.delay = /[。！？.!?…]$/.test(revealed) ? 220 : /[，、；：,;:]$/.test(revealed) ? 120 : 60
     this.offset = next; this.publish()
     if (next < this.source.length) this.frame = requestAnimationFrame(this.tick)
-    else { this.rate = 52; this.credit = 0 }
   }
 }

@@ -124,7 +124,7 @@
 .message-list { overflow-anchor:none; }
 .message-content { display:flow-root; min-width:0; }
 .typewriter-message { min-width:0; }
-.typewriter-cursor { color:var(--accent-text); }
+.typewriter-cursor { display:inline-block; width:.45em; height:1em; margin-inline-start:2px; vertical-align:-.12em; color:var(--accent-text); background:currentColor; }
 @media(max-width:900px) { :root .admin-main { padding:20px } }
 @media(max-width:600px) {
   :root .sidebar { width:160px; }

@@ -10,7 +10,7 @@ async page => {
   const make=(id,content,status='SUCCEEDED')=>({turnId:id,conversationId:1,status,inputText:'演示提问',snapshot:{content},snapshotSeq:0,lastSeq:0,userMessageId:3,assistantMessageId:null,createdAt:new Date().toISOString(),outcome:null})
   function delta(text){const next={turnId:active.turnId,seq:++active.lastSeq,type:'delta',payload:text.slice(active.snapshot.content.length)};active.snapshot={content:text};active.snapshotSeq=active.lastSeq;logs.get(active.turnId).push(next)}
   function finish(status,content){const terminal={status,outcome:'REPLIED',content,assistantMessageId:4,error:null};active.status=status;active.snapshot={content,terminal};active.snapshotSeq=++active.lastSeq;logs.get(active.turnId).push({turnId:active.turnId,seq:active.lastSeq,type:'terminal',payload:terminal})}
-  const initial='逐字输出示例：你好 👨‍👩‍👧‍👦 🇨🇳 e\u0301。'+('沿西湖步行，途中适当休息。'.repeat(75))
+  const initial='逐字输出示例：你好 👨‍👩‍👧‍👦 🇨🇳 e\u0301。'+('沿西湖步行，途中适当休息。'.repeat(3))
   await page.context().unroute('**/api/**')
   await page.context().route('https://fixture.invalid/**',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><path fill="#d8e2dc" d="M0 0h240v80H0z"/><path fill="#9d8189" d="M20 20h200v40H20z"/></svg>'}))
   await page.context().route('**/api/**',async route=>{
@@ -59,13 +59,29 @@ async page => {
   await node.locator('.markdown-body').waitFor()
   const first=await node.innerText()
   check(first.length>0&&first.length<initial.length,'Live source did not reveal progressively')
+  async function checkCursor(node){
+    const position=await node.locator('.typewriter-cursor').evaluate(cursor=>{
+      const text=cursor.previousSibling
+      if(text?.nodeType!==Node.TEXT_NODE||!text.textContent.length)return null
+      const range=document.createRange();range.setStart(text,text.textContent.length-1);range.setEnd(text,text.textContent.length)
+      const end=range.getBoundingClientRect(),caret=cursor.getBoundingClientRect()
+      return {gap:caret.left-end.right,overlap:Math.min(caret.bottom,end.bottom)-Math.max(caret.top,end.top)}
+    })
+    check(position&&position.gap>=-1&&position.gap<=4&&position.overlap>0,'Cursor detached from the final character: '+JSON.stringify(position))
+  }
+  await checkCursor(node)
+  const before=await node.locator('.markdown-body').textContent()
+  await page.waitForTimeout(240)
+  const after=await node.locator('.markdown-body').textContent()
+  check(after.length-before.length<=4,'Prose accelerated instead of revealing individual characters')
   await image('during-output')
   // Preferences must not restart the component-local animation.
   await page.getByRole('button',{name:/^主题：/}).click();await page.getByRole('menuitemradio',{name:'水蜜桃',exact:true}).click()
   await settle(node)
+  await checkCursor(node)
   // Scroll up, then append new source through reconnect/replay.
   await page.locator('.message-list').evaluate(el=>{el.scrollTop=0;el.dispatchEvent(new Event('scroll'))})
-  const extended=initial+'\n\n'+('滚动追加：用户正在阅读上文时，不抢走滚动位置。'.repeat(100))
+  const extended=initial+'\n\n滚动追加：用户正在阅读上文时，不抢走滚动位置。'
   delta(extended)
   await page.waitForFunction(()=>[...document.querySelectorAll('.message-row.assistant[data-turn-id]')].at(-1).innerText.includes('滚动追加'))
   check(await page.locator('.message-list').evaluate(el=>el.scrollTop)<2,'Incoming text forced the reader to the bottom')
@@ -113,5 +129,5 @@ async page => {
   check((await node.innerText()).trim()===initial+'最终结论。','Reduced motion did not show complete source')
   await page.emulateMedia({reducedMotion:'no-preference'})
   check(errors.length===0,'Page errors: '+errors.join('; '))
-  return {passed:true,checks:['gradual live output','atomic GFM table/code/image','replay without restarting','authoritative durable cache','independent terminal/display completion','final rewrite','failure and explicit stop','reduced motion','theme switch','scroll following and reader position'],screenshots:'output/typewriter'}
+  return {passed:true,checks:['single-character pacing without acceleration','cursor follows final character','atomic GFM table/code/image','replay without restarting','authoritative durable cache','independent terminal/display completion','final rewrite','failure and explicit stop','reduced motion','theme switch','scroll following and reader position'],screenshots:'output/typewriter'}
 }
