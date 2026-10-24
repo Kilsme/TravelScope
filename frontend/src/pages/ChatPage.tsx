@@ -1,3 +1,5 @@
+import PixelIcon from '../components/PixelIcon'
+import PixelLabel from '../components/PixelLabel'
 import { usePreferences } from '../preferences/PreferencesProvider'
 import { t, ui } from '../preferences/i18n'
 import SidebarTools from '../components/SidebarTools';
@@ -57,7 +59,7 @@ function ActivityStream({ activities }: {
         .map((a) => a.action));
     const visible = activities.filter((a) => !(a.state === 'RUNNING' && resolved.has(a.action)));
     return (<div className={`activity-stream ${collapsed ? 'collapsed' : ''}`}>
-      <button className="activity-toggle" onClick={() => setCollapsed((c) => !c)}>{t("\u2699\uFE0F Agent 活动\uFF08")}{ui(visible.length)}）{ui(collapsed ? ' ▸' : ' ▾')}
+      <button className="activity-toggle" onClick={() => setCollapsed((c) => !c)}>{<PixelLabel text={t("\u2699\uFE0F Agent 活动\uFF08")} />}{ui(visible.length)}）<PixelIcon name={collapsed ? "chevronRight" : "chevronDown"} />
       </button>
       {ui(!collapsed && (<div className="activity-items">
           {ui(visible.slice(-4).map((a, i, arr) => (<div key={i} className={`activity-item ${i < arr.length - 1 ? 'faded' : ''}`}>
@@ -159,7 +161,7 @@ function ChatPage() {
     };
     return (<div className="app">
       <aside className="sidebar">
-        <button className="new-chat-btn" onClick={handleNewConversation}>{t("\uFF0B 新建会话")}</button>
+        <button className="new-chat-btn" onClick={handleNewConversation}>{<PixelLabel text={t("\uFF0B 新建会话")} />}</button>
         <div className="conversation-list">
           {conversations.map((conv) => (<div key={conv.id} className={`conversation-item ${conv.id === activeId ? 'active' : ''}`} onClick={() => loadHistory(conv.id)}>
               <div className="conversation-title">{conv.title}</div>
@@ -174,13 +176,13 @@ function ChatPage() {
 
         <div className="message-list">
           {ui(messages.length === 0 && (<div className="empty-hint">
-              <h2>{t("\uD83C\uDF0D 欢迎使用 TravelScope")}</h2>
+              <h2>{<PixelLabel text={t("\uD83C\uDF0D 欢迎使用 TravelScope")} />}</h2>
               <p>{t("问我旅游规划\u3001天气\u3001酒店\u3001景点\u3001火车票\u3001机票\uFF0C什么都可以\uFF5E")}</p>
             </div>))}
           {messages.map((msg, idx) => (<div key={`${msg.turnId ?? msg.id ?? idx}:${msg.role}`} className={`message-row ${msg.role}`}>
               <div className={`bubble ${msg.role}`}>
                 {ui(msg.intent && (<span className="intent-badge">
-                    {ui(INTENT_LABELS[msg.intent] ?? msg.intent)}
+                    <PixelLabel text={ui(INTENT_LABELS[msg.intent] ?? msg.intent)} />
                   </span>))}
                 {/* 正文：assistant 用 Markdown 渲染（最终方案含表格/标题）；PLANNING 流期间正文为空 →
                 R3② 实时预览（骨架先行/逐天填充）优先于阶段占位；done 全文到达后切换为终稿 */}
@@ -189,7 +191,7 @@ function ChatPage() {
                     </div>) : msg.streaming ? (msg.intent === 'PLANNING' &&
                 (msg.itinerarySkeleton ||
                     (msg.itineraryDays && msg.itineraryDays.length > 0)) ? (<div className="bubble-content itinerary-preview">
-                        {ui(msg.itinerarySkeleton && (<div className="itinerary-preview-head">{t("\uD83D\uDDFA 行程骨架已就绪\uFF08")}{ui(msg.itinerarySkeleton.dayCount)}{ui(' ')}{t("天\uFF09")}{ui(msg.itinerarySkeleton.days.map((d) => (<span key={d.day} className="itinerary-preview-day-names">
+                        {ui(msg.itinerarySkeleton && (<div className="itinerary-preview-head">{<PixelLabel text={t("\uD83D\uDDFA 行程骨架已就绪\uFF08")} />}{ui(msg.itinerarySkeleton.dayCount)}{ui(' ')}{t("天\uFF09")}{ui(msg.itinerarySkeleton.days.map((d) => (<span key={d.day} className="itinerary-preview-day-names">
                                 Day{ui(d.day)}：
                                 {ui(d.poiNames.join('、') || t("\uFF08待填充\uFF09"))}
                               </span>)))}
@@ -197,10 +199,10 @@ function ChatPage() {
                         {msg.itineraryDays?.map((d) => (<div key={d.day} className="markdown-body itinerary-preview-day">
                             <Md text={d.markdown}/>
                           </div>))}
-                        <div className="itinerary-preview-hint">{t("\u23F3 内容量产中\uFF08预览\uFF09\uFF0C最终方案以完成为准并附质检标注")}</div>
+                        <div className="itinerary-preview-hint">{<PixelLabel text={t("\u23F3 内容量产中\uFF08预览\uFF09\uFF0C最终方案以完成为准并附质检标注")} />}</div>
                       </div>) : (<div className="bubble-content phase-hint">
-                        {ui(msg.intent === 'PLANNING'
-                    ? t("\uD83D\uDDFA 正在为您规划行程\uFF0C过程见下方活动流\u2026") : t("思考中\u2026"))}
+                        {<PixelLabel text={ui(msg.intent === 'PLANNING'
+                    ? t("\uD83D\uDDFA 正在为您规划行程\uFF0C过程见下方活动流\u2026") : t("思考中\u2026"))} />}
                       </div>)) : null) : (<div className="bubble-content">
                     {ui(msg.image && (<img className="user-image" src={msg.image} alt={t("用户图片")}/>))}
                     {msg.content}
@@ -229,8 +231,8 @@ function ChatPage() {
             {/* 待发送图片预览（私人讲解员）：一次一张，可移除 */}
             {ui(pendingImage && (<div className="image-preview">
                 <img src={pendingImage.preview} alt={t("待发送图片")}/>
-                <button className="image-remove" onClick={() => setPendingImage(null)} title={t("移除图片")}>
-                  ✕
+                <button className="image-remove" onClick={() => setPendingImage(null)} aria-label={t("移除图片")} title={t("移除图片")}>
+                  <PixelIcon name="close" />
                 </button>
                 <span className="image-hint">{t("发送后将由 AI 讲解这张图片\uFF08可附文字提问\uFF09")}</span>
               </div>))}
@@ -249,10 +251,10 @@ function ChatPage() {
         }} disabled={streaming}/>
           </div>
           <div className="input-actions">
-            <button className="photo-btn" onClick={() => fileInputRef.current?.click()} disabled={streaming} title={t("添加照片提问")}>
-              📷
+            <button className="photo-btn" onClick={() => fileInputRef.current?.click()} disabled={streaming} aria-label={t("添加照片提问")} title={t("添加照片提问")}>
+              <PixelIcon name="image" />
             </button>
-            {ui(streaming ? (<button className="stop-btn" onClick={handleStop}>{t("停止")}</button>) : (<button className="send-btn" onClick={handleSend} disabled={!input.trim() && !pendingImage}>{t("发送")}</button>))}
+            {ui(streaming ? (<button className="stop-btn" onClick={handleStop}><PixelIcon name="stop" />{t("停止")}</button>) : (<button className="send-btn" onClick={handleSend} disabled={!input.trim() && !pendingImage}><PixelIcon name="send" />{t("发送")}</button>))}
           </div>
           {/* 隐藏文件选择（照片提问入口；粘贴截图走 textarea onPaste 同一压缩管线） */}
           <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={(e) => {

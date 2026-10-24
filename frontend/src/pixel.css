@@ -1,0 +1,132 @@
+@font-face {
+  font-family:'Fusion Pixel';
+  src:url('/fonts/fusion-pixel-12px-proportional-zh-hans.woff2') format('woff2');
+  font-style:normal; font-weight:400 900; font-display:swap;
+}
+:root { --pixel-shadow:var(--accent-border); --pixel-edge:var(--border); --overlay:#10162b99; --pixel-cut:4px; }
+:root body { font-family:'Fusion Pixel','Microsoft YaHei',sans-serif; font-size:16px; line-height:1.65; }
+:root #root { font-family:inherit; }
+:root :is(input,textarea,select,button) { font-family:inherit; }
+:root :is(h1,h2,h3,h4) { font-weight:400; letter-spacing:0; }
+:root :is(code,pre,.as-copy code) { font-family:Consolas,'SFMono-Regular',monospace; }
+.pixel-icon { display:inline-block; width:16px; height:16px; min-width:16px; vertical-align:-2px; flex-shrink:0; fill:currentColor; stroke:none; }
+:root .sidebar-tools svg.pixel-icon { fill:currentColor; stroke:none; width:20px; height:20px; }
+:root :is(button,input,textarea,select,.bubble,.conversation-item,.badge,.intent-badge,.req-form,.req-form-row,.req-chip,.activity-stream,.review-report-body,.login-card,.admin-panel,.admin-table,.as-panel,.as-kpis,.as-filters,.as-table-wrap,.as-empty,.as-badge,.as-notice,.as-hint summary,.as-hint>div,.as-segment,.as-segment button,.as-case,.as-steps li>span,.as-progress,.as-progress>span,.as-detail-tabs button,.as-run-metrics,.as-node-details,.as-node-error,.as-raw,.as-step-kind,.as-trace-axis,.as-trace-axis>span,.as-rule,.as-diff-labels span) { border-radius:0; }
+:root :is(button,input:not([type=checkbox]):not([type=radio]),textarea,select) { border:2px solid var(--border); }
+:root :is(button,.bubble,.req-form,.login-card,.admin-panel,.as-panel,.as-filters,.as-table-wrap,.as-empty,.as-kpis,.as-notice) { position:relative; }
+/* Cut only the decoration. Content, menus and focus outlines remain unclipped. */
+:root :is(.new-chat-btn,.send-btn,.stop-btn,.photo-btn,.bubble,.req-form,.login-card,.admin-panel,.as-panel,.as-filters,.as-table-wrap,.as-kpis,.theme-menu)::before {
+  content:''; position:absolute; inset:-2px; pointer-events:none; z-index:1;
+  background:linear-gradient(var(--pixel-edge),var(--pixel-edge)) left 2px top/2px 4px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) left top 2px/4px 2px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) right 2px top/2px 4px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) right top 2px/4px 2px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) left 2px bottom/2px 4px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) left bottom 2px/4px 2px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) right 2px bottom/2px 4px no-repeat,
+    linear-gradient(var(--pixel-edge),var(--pixel-edge)) right bottom 2px/4px 2px no-repeat;
+}
+:root :is(button,.bubble,.req-form,.login-card,.admin-panel,.as-panel,.as-filters,.as-table-wrap,.as-kpis) { box-shadow:3px 3px 0 var(--pixel-shadow); }
+:root button { transition:background-color 100ms,color 100ms,transform 80ms,box-shadow 80ms; cursor:pointer; }
+:root button:hover:not(:disabled) { border-color:var(--accent); }
+:root button:active:not(:disabled) { transform:translate(2px,2px); box-shadow:1px 1px 0 var(--pixel-shadow); }
+:root button:disabled { cursor:not-allowed; opacity:.55; }
+:root :is(button,a,input,textarea,select,summary,[tabindex]):focus-visible { outline:2px solid var(--focus); outline-offset:4px; }
+:root .sidebar { border-right:2px solid var(--border); }
+:root .new-chat-btn { border:2px solid var(--accent); color:var(--sidebar-text); background:var(--sidebar-bg); font-size:16px; min-height:44px; }
+:root .conversation-item { border:2px solid transparent; font-size:14px; margin-bottom:8px; }
+:root .conversation-item.active { border-color:var(--accent); color:var(--sidebar-text); box-shadow:2px 2px 0 var(--pixel-shadow); }
+:root .conversation-title { font-size:14px; }
+:root .conversation-time { font-size:12px; }
+:root .chat-header { border-bottom:2px solid var(--border); font-size:20px; line-height:1.5; font-weight:400; }
+:root .message-list { padding:28px; }
+:root .bubble { border:2px solid var(--border); font-size:16px; line-height:1.8; }
+:root .bubble.user { border-color:var(--accent-border); background:var(--accent-solid); }
+:root .bubble.assistant { border-color:var(--border); }
+:root .message-row { flex-wrap:wrap; gap:12px; margin-bottom:24px; }
+:root .activity-wrap { margin-top:0; }
+:root .activity-stream { border:2px solid var(--border); margin-top:0; }
+:root .activity-toggle { display:inline-flex; gap:6px; align-items:center; box-shadow:none; border:0; font:inherit; font-size:12px; }
+:root .activity-dot { border-radius:0; }
+:root .input-area { border-top:2px solid var(--border); padding:18px 24px 22px; gap:14px; }
+:root .input-area textarea { box-shadow:3px 3px 0 var(--pixel-shadow); font-size:16px; line-height:1.6; }
+:root .input-actions { align-items:stretch; gap:12px; }
+:root :is(.send-btn,.stop-btn,.photo-btn) { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-width:64px; border:2px solid var(--border); font-size:16px; }
+:root .send-btn { background:var(--accent-solid); color:var(--on-accent); }
+:root .photo-btn { background:var(--surface); color:var(--text); }
+:root .req-form { padding:18px; border:2px solid var(--border); }
+:root .req-form-title { font-size:16px; }
+:root .req-form-control :is(input,select) { font-size:14px; min-height:38px; }
+:root .req-form-actions button { min-height:38px; }
+:root .req-chip { padding:5px 10px; }
+:root .review-report-body { background:var(--surface-alt); }
+:root :is(.review-report summary,.req-form-title,.empty-hint h2) .pixel-icon { margin-right:6px; }
+:root .markdown-body :is(pre,code),:root .as-markdown :is(pre,code) { border-radius:0; }
+:root .image-preview,:root .image-preview img,:root .user-image { border-radius:0; }
+:root .image-remove { display:grid; place-items:center; }
+:root .login-card { border:2px solid var(--border); padding:32px; gap:20px; }
+:root .login-card :is(input,button) { font-size:16px; min-height:44px; }
+:root .login-card h2 { font-size:24px; }
+:root .login-page { min-height:100svh; height:auto; padding:32px 0; }
+:root .admin-layout { height:100svh; }
+:root .admin-sidebar { border-right:2px solid var(--border); flex-shrink:0; min-height:0; }
+:root .admin-brand { font-size:18px; font-weight:400; border-bottom:2px solid var(--border); }
+:root .admin-nav { overflow-y:auto; }
+:root .admin-nav a { display:flex; align-items:center; gap:10px; font-size:16px; margin:4px 10px; padding:12px; border:2px solid transparent; }
+:root .admin-nav a.active { border:2px solid var(--accent); color:var(--sidebar-text); box-shadow:2px 2px 0 var(--pixel-shadow); }
+:root .admin-user { padding:16px; border-top:2px solid var(--border); }
+:root .admin-nickname { color:var(--sidebar-text); }
+:root .admin-main { padding:30px; }
+:root :is(.admin-panel,.as-panel,.as-filters,.as-table-wrap,.as-empty,.as-kpis,.as-notice) { border:2px solid var(--border); }
+:root .admin-page-head { padding-bottom:24px; border-bottom:2px solid var(--border); }
+:root .admin-page-head h1 { font-size:28px; color:var(--text); }
+:root .admin-eyebrow { font-size:12px; }
+:root .admin-page-head p { font-size:14px; line-height:1.7; }
+:root .admin-main :is(button,input,select) { font-size:14px; }
+:root .admin-main button { padding:6px 12px; }
+:root :is(.admin-table,.as-table) { white-space:nowrap; border-collapse:collapse; }
+:root :is(.admin-table,.as-table) :is(th,td) { padding:14px 16px; border:0; border-bottom:1px solid var(--border); font-size:14px; }
+:root :is(.admin-table,.as-table) th { background:var(--surface-alt); color:var(--text); }
+:root .admin-table-wrap { padding:0 3px 3px 0; }
+:root .badge { display:inline-flex; padding:2px 8px; border:1px solid currentColor; }
+:root :is(.assessment,.assessment .as-markdown) { font-size:14px; color:var(--text); }
+:root .assessment :is(h1,h2,h3,h4) { color:var(--text); }
+:root .assessment :is(button,input,select) { border-radius:0; }
+:root .assessment button { box-shadow:2px 2px 0 var(--pixel-shadow); }
+:root .assessment :is(.as-link,.as-tree-toggle,.as-node-link) { box-shadow:none; }
+:root .assessment .as-overlay,:root .as-overlay { background:var(--overlay); }
+:root .assessment .as-drawer { border-left:2px solid var(--border); box-shadow:-4px 0 0 var(--pixel-shadow); border-radius:0; }
+:root .assessment .as-drawer-head { border-bottom:2px solid var(--border); }
+:root .assessment .as-badge::before { border-radius:0; }
+:root .assessment .as-badge { border:1px solid currentColor; }
+:root .assessment .as-segment { border:2px solid var(--border); padding:4px; gap:6px; }
+:root .assessment .as-segment button { box-shadow:none; }
+:root .assessment .as-segment button[aria-pressed=true] { box-shadow:2px 2px 0 var(--pixel-shadow); }
+:root .assessment .as-loading>span { border-radius:0; animation:pixel-pulse .8s steps(2,end) infinite; }
+:root .assessment .as-tabs button[aria-current=page]::after { border-radius:0; }
+:root .assessment .as-hint summary { border-radius:0; }
+:root .assessment .as-hint>div { box-shadow:3px 3px 0 var(--pixel-shadow); border:2px solid var(--border); border-radius:0; }
+:root .assessment .as-table-wrap { padding-bottom:3px; }
+:root .assessment .as-trace-axis>span { border-radius:0; }
+:root .assessment .as-drawer-head .pixel-icon { margin-left:6px; }
+@keyframes pixel-pulse { 50% { opacity:.35 } }
+@media(max-width:900px) { :root .admin-main { padding:20px } }
+@media(max-width:600px) {
+  :root .sidebar { width:160px; }
+  :root .new-chat-btn { margin:12px 8px; font-size:14px; }
+  :root .conversation-item { padding:8px 6px; }
+  :root .chat-header { padding:12px; font-size:16px; }
+  :root .message-list { padding:16px 12px; }
+  :root .bubble { max-width:100%; padding:10px; font-size:14px; }
+  :root .input-area { padding:12px; flex-wrap:wrap; }
+  :root .input-main { min-width:0; flex-basis:100%; }
+  :root .input-actions { margin-left:auto; }
+  :root .admin-sidebar { width:170px; }
+  :root .admin-nav a { font-size:14px; padding:10px 6px; margin:4px 6px; }
+  :root .admin-brand { font-size:16px; padding:16px 12px; }
+  :root .admin-main { padding:16px 12px; }
+  :root .req-form-row { flex-wrap:wrap; }
+  :root .req-form-control { flex-basis:100%; }
+  :root .admin-page-head h1 { font-size:24px; }
+}
+@media(prefers-reduced-motion:reduce) { :root * { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }

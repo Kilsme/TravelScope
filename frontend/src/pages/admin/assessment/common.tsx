@@ -1,3 +1,4 @@
+import PixelIcon from '../../../components/PixelIcon'
 import { AdminPanel } from '../../../components/AdminPrimitives'
 import { usePreferences } from '../../../preferences/PreferencesProvider'
 import { t, ui } from '../../../preferences/i18n'
@@ -121,5 +122,5 @@ export function Overlay({ title, children, onClose, wide = false, modal = false,
             previous.focus(); };
     }, []);
     return createPortal(<div className={`assessment as-overlay ${modal ? 'as-overlay-modal' : ''}`} onMouseDown={e => { if (e.target === e.currentTarget)
-        onClose(); }}><div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={ui(title)} className={`as-drawer ${wide ? 'as-drawer-wide' : ''} ${fullscreen ? 'as-drawer-fullscreen' : ''}`}><header className="as-drawer-head"><h2>{ui(title)}</h2><div className="as-button-row">{ui(expandable && <button aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}>{ui(fullscreen ? t("退出全屏") : t("展开为全屏"))}</button>)}<button aria-label={ui(t("关闭{0}", { "0": title }))} onClick={onClose}>{t("关闭")}<span aria-hidden="true">×</span></button></div></header><div className="as-drawer-body">{children}</div></div></div>, document.body);
+        onClose(); }}><div ref={ref} tabIndex={-1} role="dialog" aria-modal="true" aria-label={ui(title)} className={`as-drawer ${wide ? 'as-drawer-wide' : ''} ${fullscreen ? 'as-drawer-fullscreen' : ''}`}><header className="as-drawer-head"><h2>{ui(title)}</h2><div className="as-button-row">{ui(expandable && <button aria-pressed={fullscreen} onClick={() => setFullscreen(value => !value)}>{ui(fullscreen ? t("退出全屏") : t("展开为全屏"))}</button>)}<button aria-label={ui(t("关闭{0}", { "0": title }))} onClick={onClose}>{t("关闭")}<PixelIcon name="close" /></button></div></header><div className="as-drawer-body">{children}</div></div></div>, document.body);
 }

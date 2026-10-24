@@ -1,3 +1,5 @@
+import PixelIcon from '../components/PixelIcon'
+import PixelLabel from '../components/PixelLabel'
 import { fieldLabel, fieldPlaceholder, optionLabel } from '../preferences/formText'
 import { usePreferences } from '../preferences/PreferencesProvider'
 import { t, ui } from '../preferences/i18n'
@@ -44,7 +46,7 @@ function RequirementFormCard({ payload, submitted, disabled, onAction }: Props) 
     const setValue = (name: string, value: string) => setEdited((prev) => ({ ...prev, [name]: value }));
     if (submitted) {
         return (<div className="req-form submitted">
-        <div className="req-form-title">{t("\u2705 需求已确认")}</div>
+        <div className="req-form-title">{<PixelLabel text={t("\u2705 需求已确认")} />}</div>
         <div className="req-form-summary">
           {payload.fields
                 .filter((f) => (f.value ?? '').trim())
@@ -54,8 +56,8 @@ function RequirementFormCard({ payload, submitted, disabled, onAction }: Props) 
       </div>);
     }
     return (<div className="req-form">
-      <div className="req-form-title">{t("\uD83D\uDCCB 确认行程需求")}</div>
-      {ui(payload.hint && <div className="req-form-hint">💡 {ui(payload.hint)}</div>)}
+      <div className="req-form-title">{<PixelLabel text={t("\uD83D\uDCCB 确认行程需求")} />}</div>
+      {ui(payload.hint && <div className="req-form-hint"><PixelIcon name="help" /> {ui(payload.hint)}</div>)}
       <div className="req-form-rows">
         {payload.fields.map((f) => {
             const value = edited[f.name] ?? f.value ?? '';
@@ -68,7 +70,7 @@ function RequirementFormCard({ payload, submitted, disabled, onAction }: Props) 
               </label>
               <div className="req-form-control">
                 {ui(renderControl(f, value, disabled, setValue))}
-                {ui(error ? (<div className="req-form-error">⚠️ {ui(error)}</div>) : (<div className="req-form-placeholder">{fieldPlaceholder(f)}</div>))}
+                {ui(error ? (<div className="req-form-error"><PixelIcon name="warning" /> {ui(error)}</div>) : (<div className="req-form-placeholder">{fieldPlaceholder(f)}</div>))}
               </div>
             </div>);
         })}

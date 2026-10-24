@@ -4,6 +4,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import './App.css';
 import './preferences/styles.css';
+import './pixel.css';
 import { getRole, isLoggedIn } from './api/auth';
 import ChatPage from './pages/ChatPage';
 import LoginPage from './pages/LoginPage';

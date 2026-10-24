@@ -1,3 +1,5 @@
+import PixelIcon from '../components/PixelIcon'
+import PixelLabel from '../components/PixelLabel'
 import { usePreferences } from '../preferences/PreferencesProvider'
 import { t, ui } from '../preferences/i18n'
 /**
@@ -40,7 +42,7 @@ export default function ReviewReportCard({ raw }: {
     }
     if (!payload) {
         return (<details className="review-report">
-        <summary>{t("\uD83D\uDCCB 质检评分明细")}</summary>
+        <summary>{<PixelLabel text={t("\uD83D\uDCCB 质检评分明细")} />}</summary>
         <div className="review-report-body">{raw}</div>
       </details>);
     }
@@ -48,26 +50,26 @@ export default function ReviewReportCard({ raw }: {
     const issues = payload.issues ?? [];
     const degraded = payload.deliveryMode === 'DEGRADED';
     return (<details className="review-report">
-      <summary>{t("\uD83D\uDCCB 质检评分明细")}{ui(degraded && issues.length > 0
+      <summary>{<PixelLabel text={t("\uD83D\uDCCB 质检评分明细")} />}{ui(degraded && issues.length > 0
             ? t("\uFF08{0} 项未解决\uFF09", { "0": issues.length }) : warnings.length > 0
             ? t("\uFF08{0} 项提示\uFF09", { "0": warnings.length }) : '')}
       </summary>
       <div className="review-report-body">
         <div className={payload.passed ? 'review-verdict pass' : 'review-verdict fail'}>
-          {ui(payload.passed
+          {<PixelLabel text={ui(payload.passed
             ? t("\u2705 质检通过") : degraded
-            ? t("\u26A0\uFE0F 当前最佳版本\uFF08已尽力\uFF09") : t("\u26A0\uFE0F 质检未通过"))}{t("\uFF08评分")}{ui(payload.total)}/100）
+            ? t("\u26A0\uFE0F 当前最佳版本\uFF08已尽力\uFF09") : t("\u26A0\uFE0F 质检未通过"))} />}{t("\uFF08评分")}{ui(payload.total)}/100）
         </div>
         {ui((payload.segments?.length ?? 0) > 0 && (<ul className="review-segments">
-            {ui(payload.segments!.map((s) => (<li key={s.segment}>{t("段")}{ui(s.segment)}（{ui([t("基本要素"), t("时间线"), t("预算偏好")][s.segment - 1] ?? t("检查"))}）{ui(s.pass ? '✅' : '❌')}
+            {ui(payload.segments!.map((s) => (<li key={s.segment}>{t("段")}{ui(s.segment)}（{ui([t("基本要素"), t("时间线"), t("预算偏好")][s.segment - 1] ?? t("检查"))}）<PixelIcon name={s.pass ? "check" : "close"} />
               </li>)))}
           </ul>))}
         {ui(issues.length > 0 && (<ul className="review-issues">
-            {ui(issues.map((issue, i) => (<li key={`issue-${i}`}>❌ {ui(issue)}</li>)))}
+            {ui(issues.map((issue, i) => (<li key={`issue-${i}`}><PixelIcon name="close" /> {ui(issue)}</li>)))}
           </ul>))}
         {ui(warnings.length > 0 && (<ul className="review-warnings">
             {ui(warnings.map((w, i) => (<li key={`${w.rule}-${i}`}>
-                ⚠️ {ui(w.detail)}
+                <PixelIcon name="warning" /> {ui(w.detail)}
                 {ui(w.suggestion ? (<span className="review-warning-suggestion">{t("\uFF08建议\uFF1A")}{ui(w.suggestion)}）</span>) : null)}
               </li>)))}
           </ul>))}
