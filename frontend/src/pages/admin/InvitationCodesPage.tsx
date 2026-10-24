@@ -45,7 +45,7 @@ export default function InvitationCodesPage() {
         </button>
       </div>
       </AdminPanel>
-      {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      {ui(error && <div role="alert" className="admin-error">{ui(error)}</div>)}
       <AdminPanel title="邀请码列表"><AdminTable>
       <table className="admin-table">
         <thead>

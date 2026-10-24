@@ -67,7 +67,7 @@ export default function UsersPage() {
     }
     return (<div className="admin-page">
       <AdminPageHeader title="用户管理" section="账户与权限" description="管理用户状态、角色与积分余额。" />
-      {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      {ui(error && <div role="alert" className="admin-error">{ui(error)}</div>)}
       <AdminPanel title="用户列表"><AdminTable>
       <table className="admin-table">
         <thead>

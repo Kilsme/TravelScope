@@ -15,13 +15,15 @@ describe('appearance and UI language', () => {
       expect(parsePreferences(raw)).toEqual({ theme:'light', locale:'zh-CN' })
     expect(parsePreferences('{"theme":"dark","locale":"en"}')).toEqual({theme:'dark',locale:'en'})
   })
-  it('renders four combinations without enabling settings', () => {
-    for (const theme of ['light','dark'] as const) for (const locale of ['zh-CN','en'] as const) {
+  it('renders all theme/language combinations without enabling settings', () => {
+    for (const theme of ['light','dark','peach','blue-bowl'] as const) for (const locale of ['zh-CN','en'] as const) {
       updatePreferences({theme,locale},false)
       const html=renderToStaticMarkup(<PreferencesProvider><SidebarTools /></PreferencesProvider>)
       expect(html).toContain('disabled=""')
       expect(html).toContain(locale==='en'?'Settings':'设置')
-      expect(html).toContain(theme==='dark'?'aria-pressed="true"':'aria-pressed="false"')
+      expect(html).toContain('aria-haspopup="menu"')
+      expect(html).toContain('aria-expanded="false"')
+      expect(html).not.toMatch(/<[^>]*>[^<]*[🌍📷⚙]/u)
     }
   })
   it('retranslates stored notices and formats arguments without modifying unknown prose', () => {

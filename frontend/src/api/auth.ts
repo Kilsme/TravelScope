@@ -62,7 +62,7 @@ export async function apiFetch(url: string, init: RequestInit = {}): Promise<Res
     headers.set('Authorization', `Bearer ${token}`)
   }
   const resp = await fetch(url, { ...init, headers })
-  if (resp.status === 401) {
+  if (resp.status === 401 && getToken() === token) {
     clearAuth()
     if (!location.pathname.startsWith('/login')) {
       location.href = '/login'

@@ -6,6 +6,7 @@
 :root { --pixel-edge:var(--border); --overlay:#10162b99; --pixel-cut:4px; }
 :root body { font-family:'Fusion Pixel','Microsoft YaHei',sans-serif; font-size:16px; line-height:1.65; }
 :root #root { font-family:inherit; }
+:root body :is(.app,.admin-layout,.assessment,.login-page) :where(*) { border-radius:0; }
 :root :is(input,textarea,select,button) { font-family:inherit; }
 :root :is(h1,h2,h3,h4) { font-weight:400; letter-spacing:0; }
 :root :is(code,pre,.as-copy code) { font-family:Consolas,'SFMono-Regular',monospace; }
@@ -53,6 +54,10 @@
 :root .input-actions { align-items:stretch; gap:12px; }
 :root :is(.send-btn,.stop-btn,.photo-btn) { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-width:64px; border:2px solid var(--border); font-size:16px; }
 :root .send-btn { background:var(--accent-solid); color:var(--on-accent); }
+:root :is(.req-btn.primary,.btn-primary,.admin-filters button,.admin-upload button,.login-card button,.assessment .as-primary) { background:var(--accent-solid); color:var(--on-accent); }
+:root .btn-danger { color:var(--on-danger); }
+:root .login-link a { color:var(--accent-text); }
+:root .assessment :is(.as-link,.as-tabs button[aria-current=page]) { color:var(--accent-text); }
 :root .photo-btn { background:var(--surface); color:var(--text); }
 :root .req-form { padding:18px; border:2px solid var(--border); }
 :root .req-form-title { font-size:16px; }
@@ -88,13 +93,15 @@
 :root :is(.admin-table,.as-table) :is(th,td) { padding:14px 16px; border:0; border-bottom:1px solid var(--border); font-size:14px; }
 :root :is(.admin-table,.as-table) th { background:var(--surface-alt); color:var(--text); }
 :root .admin-table-wrap { padding:0 3px 3px 0; }
+:root .admin-table .admin-empty { text-align:center; padding:40px 20px; color:var(--muted); }
+:root :is(.admin-error,.admin-message) { padding:12px 16px; border:2px solid currentColor; background:var(--surface); }
 :root .badge { display:inline-flex; padding:2px 8px; border:1px solid currentColor; }
 :root :is(.assessment,.assessment .as-markdown) { font-size:14px; color:var(--text); }
 :root .assessment :is(h1,h2,h3,h4) { color:var(--text); }
 :root .assessment :is(button,input,select) { border-radius:0; }
 :root .assessment button { box-shadow:2px 2px 0 var(--pixel-shadow); }
 :root .assessment :is(.as-link,.as-tree-toggle,.as-node-link) { box-shadow:none; }
-:root .assessment .as-overlay,:root .as-overlay { background:var(--overlay); }
+:root .assessment.as-overlay { background:var(--overlay); backdrop-filter:none; }
 :root .assessment .as-drawer { border-left:2px solid var(--border); box-shadow:-4px 0 0 var(--pixel-shadow); border-radius:0; }
 :root .assessment .as-drawer-head { border-bottom:2px solid var(--border); }
 :root .assessment .as-badge::before { border-radius:0; }
@@ -109,6 +116,10 @@
 :root .assessment .as-table-wrap { padding-bottom:3px; }
 :root .assessment .as-trace-axis>span { border-radius:0; }
 :root .assessment .as-drawer-head .pixel-icon { margin-left:6px; }
+:root details:not(.as-hint)>summary { list-style:none; cursor:pointer; }
+:root details:not(.as-hint)>summary::-webkit-details-marker { display:none; }
+:root details:not(.as-hint)>summary::before { content:'+'; display:inline-block; width:16px; margin-right:6px; font-family:'Fusion Pixel',sans-serif; }
+:root details[open]:not(.as-hint)>summary::before { content:'−'; }
 @keyframes pixel-pulse { 50% { opacity:.35 } }
 @media(max-width:900px) { :root .admin-main { padding:20px } }
 @media(max-width:600px) {
@@ -118,9 +129,10 @@
   :root .chat-header { padding:12px; font-size:16px; }
   :root .message-list { padding:16px 12px; }
   :root .bubble { max-width:100%; padding:10px; font-size:14px; }
-  :root .input-area { padding:12px; flex-wrap:wrap; }
-  :root .input-main { min-width:0; flex-basis:100%; }
-  :root .input-actions { margin-left:auto; }
+  :root .input-area { padding:12px; grid-template-columns:minmax(0,1fr); }
+  :root .input-main { min-width:0; grid-column:1 / -1; }
+  :root .input-actions { justify-self:end; height:44px; }
+  :root .input-actions > button { height:44px; }
   :root .admin-sidebar { width:170px; }
   :root .admin-nav a { font-size:14px; padding:10px 6px; margin:4px 6px; }
   :root .admin-brand { font-size:16px; padding:16px 12px; }

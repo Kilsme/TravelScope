@@ -4,8 +4,9 @@ import type { ReactNode } from 'react'
 import { bindPreferenceOwner, getPreferences, subscribePreferences } from './store'
 import type { Preferences } from './store'
 const Context = createContext<Preferences>(getPreferences())
-export function PreferencesProvider({ children }: { children: ReactNode }) {
+export function PreferencesProvider({ children, verifyIdentity = true }: { children: ReactNode; verifyIdentity?: boolean }) {
   useEffect(() => {
+    if (!verifyIdentity) return
     const token = getToken()
     if (!token) { bindPreferenceOwner(null); return }
     const abort = new AbortController()
@@ -19,7 +20,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
       }
     }).catch(() => { /* A transient outage must not erase a remembered account preference. */ })
     return () => abort.abort()
-  }, [])
+  }, [verifyIdentity])
   const value = useSyncExternalStore(subscribePreferences, getPreferences, getPreferences)
   return <Context.Provider value={value}>{children}</Context.Provider>
 }

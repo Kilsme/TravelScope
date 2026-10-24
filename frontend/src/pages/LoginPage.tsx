@@ -31,7 +31,7 @@ export default function LoginPage() {
     return (<div className="login-page">
       <form className="login-card" onSubmit={handleSubmit}>
         <h2>{t("TravelScope 登录")}</h2>
-        {ui(error && <div className="login-error">{ui(error)}</div>)}
+        {ui(error && <div role="alert" className="login-error">{ui(error)}</div>)}
         <label>{t("用户名")}<input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" autoComplete="username" required/>
         </label>
         <label>{t("密码")}<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t("请输入密码")} autoComplete="current-password" required/>

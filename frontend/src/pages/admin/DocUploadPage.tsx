@@ -58,7 +58,7 @@ export default function DocUploadPage() {
       </div>
       </AdminPanel>
       {ui(message && <div className="admin-message">{ui(message)}</div>)}
-      {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      {ui(error && <div role="alert" className="admin-error">{ui(error)}</div>)}
       <AdminPanel title="文档列表"><AdminTable>
       <table className="admin-table">
         <thead>

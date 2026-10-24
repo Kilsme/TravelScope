@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client'
 import '../src/index.css'
 import '../src/App.css'
 import '../src/preferences/styles.css'
+import '../src/pixel.css'
 import { PreferencesProvider, usePreferences } from '../src/preferences/PreferencesProvider'
 import SidebarTools from '../src/components/SidebarTools'
 import RequirementFormCard from '../src/components/RequirementFormCard'
@@ -15,4 +16,4 @@ function Fixture() {
   const [submitted,setSubmitted]=useState('')
   return <div className="app"><aside className="sidebar"><div className="conversation-list">{Array.from({length:35},(_,i)=><div className="conversation-item" key={i}>Conversation {i+1}</div>)}</div><SidebarTools /></aside><main className="chat-area"><header className="chat-header">Appearance regression fixture</header><div className="message-list"><RequirementFormCard payload={payload} submitted={false} disabled={false} onAction={(_,values)=>setSubmitted(JSON.stringify(values))}/><output aria-label="Submitted original values">{submitted}</output></div></main></div>
 }
-createRoot(document.getElementById('root')!).render(<PreferencesProvider><Fixture /></PreferencesProvider>)
+createRoot(document.getElementById('root')!).render(<PreferencesProvider verifyIdentity={false}><Fixture /></PreferencesProvider>)

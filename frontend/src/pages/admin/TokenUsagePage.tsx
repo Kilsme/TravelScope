@@ -61,7 +61,7 @@ export default function TokenUsagePage() {
         <button onClick={load} disabled={loading}>{ui(loading ? t("查询中\u2026") : t("查询"))}</button>
       </div>
       </AdminPanel>
-      {ui(error && <div className="admin-error">{ui(error)}</div>)}
+      {ui(error && <div role="alert" className="admin-error">{ui(error)}</div>)}
       <AdminPanel title="用量明细"><AdminTable>
       <table className="admin-table">
         <thead>
