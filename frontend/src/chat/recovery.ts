@@ -29,7 +29,11 @@ async function reconnectWait(
     Math.min(15_000, 1000 * 2 ** Math.min(attempt, 4)) *
       (0.8 + Math.random() * 0.4),
   )
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (
+    typeof window !== 'undefined' &&
+    typeof navigator !== 'undefined' &&
+    navigator.onLine === false
+  ) {
     while (!navigator.onLine) {
       signal.throwIfAborted()
       await new Promise<void>((resolve, reject) => {
