@@ -172,7 +172,7 @@ class CollabDtoRoundTripTest {
 
     private static SessionMeta sessionMeta() {
         return new SessionMeta("1", "conv-97", "2026-10-15 21:00:00", "已完成",
-                List.of("travel-master", "itinerary-agent", "reviewer-agent"),
+                List.of("travel-master", "planning-agent", "reviewer-agent"),
                 "2026-10-15 21:42:30");
     }
 }

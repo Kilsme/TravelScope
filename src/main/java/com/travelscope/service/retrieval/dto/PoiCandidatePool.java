@@ -7,10 +7,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * POI 候选池（S1.8，PoiRetrievalService 的产出；itinerary-agent 的筛选输入）。
+ * POI 候选池（S1.8，PoiRetrievalService 的产出；planning-agent 的筛选输入）。
  * <p>
  * 候选是<b>知识库片段级</b>的（非解析后的 POI）——每条带来源与证据标注；
- * 筛选排序（偏好/开放时间/评分门槛）不在本契约内，那是 itinerary-agent 的
+ * 筛选排序（偏好/开放时间/评分门槛）不在本契约内，那是 planning-agent 的
  * LLM 职责（v4 重构计划 §5.4 职责边界）。
  * </p>
  */

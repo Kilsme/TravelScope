@@ -5,7 +5,7 @@ import java.util.Objects;
 /**
  * 工作区契约：intake_result.json（schemaVersion=4）
  * <p>
- * 生产者：RequirementWorkflowService（需求采集 workflow）；消费者：itinerary-agent / travel-master。
+ * 生产者：RequirementWorkflowService（需求采集 workflow）；消费者：planning-agent / travel-master。
  * 对应 v3 的 intake_done.md，字段语义对齐 {@code TripRequirementState}。
  * </p>
  * <p>

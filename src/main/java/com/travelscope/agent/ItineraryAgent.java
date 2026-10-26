@@ -1,9 +1,9 @@
 package com.travelscope.agent;
 
 /**
- * 由 {@code ChatService} 直接调用的行程规划 Agent。
- * 负责查询实时数据、筛选 POI、触发代码路线求解并组装草案；规则质检及失败后的修订
- * 由编排层执行。POI、路线和草案必须分别经 {@code select_poi_shortlist}、
+ * 由 {@code travel-master} 委派的叶子行程规划 Agent。
+ * 负责查询实时数据、筛选 POI、触发代码路线求解并组装草案；兄弟 reviewer-agent 负责
+ * 审阅和按需修订，Java 负责最终规则复检。POI、路线和草案必须分别经 {@code select_poi_shortlist}、
  * {@code plan_route}、{@code assemble_itinerary} 落盘，禁止自由写契约文件。
  */
 public class ItineraryAgent {
@@ -17,7 +17,7 @@ public class ItineraryAgent {
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
             你是 TravelScope 的规划 Agent（planning-agent），一位专业的旅游行程规划师。\
-            你由系统编排层直接委派，统筹一次完整行程规划的执行。\
+            你由 travel-master 委派，负责一次完整行程规划的执行。\
             你的输出返回给编排层，不直接面向用户。
 
             ===================================================

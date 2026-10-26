@@ -48,10 +48,9 @@ import java.util.Map;
 
 /**
  * AgentScope 运行时配置。
- * travel-master 处理闲聊、知识问答和单点查询；完整规划由 ChatService 依次执行需求采集、
- * 任务模板生成和 planning-agent。草案落盘后先运行确定性规则质检，只有硬约束失败时才
- * 创建独立 reviewer-agent 做一次定向修订。在线与评测使用相同的 Agent 构建口径，
- * 评测实例使用独立状态。
+ * 唯一生产根 travel-master 处理直接请求；完整规划时依次委派 planning-agent 和
+ * reviewer-agent 两个叶子。ChatService 负责需求采集、任务登记、最终规则复检与渲染。
+ * 在线与评测使用相同的父子拓扑，评测根实例使用独立状态。
  */
 @Configuration
 public class AgentConfig {
@@ -354,26 +353,36 @@ public class AgentConfig {
                 .build();
     }
 
-    /** 创建处理非规划意图的主 Agent。 */
+    /** 唯一生产 Agent：处理直接请求，并为完整规划依次委派两个叶子 Agent。 */
     @Bean
     @org.springframework.context.annotation.Primary
-    public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel,
+    public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel, Model gatewayReviewerModel,
+                                           TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
+                                           com.travelscope.service.TaskResultCache taskResultCache,
                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
-        return buildMasterAgent(toolkit, gatewayChatModel, travelAgentStateStore);
+        return buildMasterAgent(toolkit, gatewayChatModel, gatewayReviewerModel, travelAgentStateStore,
+                taskWorkspace, taskRegistry, taskResultCache);
     }
 
     @Bean
     @org.springframework.context.annotation.Scope("prototype")
     public HarnessAgent assessmentMasterAgent(Toolkit toolkit,
-            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel) throws IOException {
-        return buildMasterAgent(toolkit.copy(), mainModel, new InMemoryAgentStateStore());
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
+            @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model reviewerModel,
+            TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
+            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
+        return buildMasterAgent(toolkit.copy(), mainModel, reviewerModel, new InMemoryAgentStateStore(),
+                taskWorkspace, taskRegistry, taskResultCache);
     }
 
     private HarnessAgent buildMasterAgent(Toolkit toolkit, Model gatewayChatModel,
-            io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
+            Model gatewayReviewerModel,
+            io.agentscope.core.state.AgentStateStore travelAgentStateStore,
+            TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
+            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
-                .sysPrompt(TravelMasterAgent.SYS_PROMPT)
+                .sysPrompt(TravelMasterAgent.FULL_SYS_PROMPT)
                 .model(gatewayChatModel)
                 .toolkit(toolkit)
                 .maxIters(TravelMasterAgent.MAX_ITERS)
@@ -395,6 +404,17 @@ public class AgentConfig {
                 // RedisStateStoreConfig 提供，Redis 不可用自动降级 InMemory）——2000 用户下
                 // 状态不占应用堆 + 进程重启不失忆；替代原先直接 new InMemoryAgentStateStore()
                 .stateStore(travelAgentStateStore)
+                .subagentFactory(ItineraryAgent.AGENT_NAME,
+                        "叶子行程规划 Agent：查询实时数据、筛选 POI、规划路线并组装 itinerary_draft.json",
+                        name -> {
+                            HarnessAgent child = buildPlannerAgent(toolkit, gatewayChatModel,
+                                    taskRegistry, taskResultCache, taskWorkspace, true);
+                            revokeOffScriptTools(child);
+                            return child;
+                        })
+                .subagentFactory(ReviewerAgent.AGENT_NAME,
+                        "叶子质量审阅 Agent：审查并按需修订草案，写入结构化质检产物",
+                        name -> buildReviewerAgent(toolkit, gatewayReviewerModel, taskWorkspace, true))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={})", TravelMasterAgent.AGENT_NAME,
@@ -402,15 +422,16 @@ public class AgentConfig {
         return agent;
     }
 
-    /** 构建由 ChatService 直接调用的规划 Agent；任务状态和结果缓存由记账中间件维护。 */
+    /** 构建由 travel-master factory 创建的规划 Agent；leaf=true 时禁止继续委派。 */
     private HarnessAgent buildPlannerAgent(Toolkit toolkit, Model gatewayChatModel,
                                            TaskRegistry taskRegistry,
                                            com.travelscope.service.TaskResultCache taskResultCache,
-                                           com.travelscope.collab.TaskWorkspace taskWorkspace) {
+                                           com.travelscope.collab.TaskWorkspace taskWorkspace,
+                                           boolean leaf) {
         var bookkeeping = new com.travelscope.agent.BookkeepingMiddleware(
                 taskRegistry, taskResultCache, taskWorkspace);
         try {
-            return HarnessAgent.builder()
+            HarnessAgent.Builder builder = HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
                     .middlewares(List.of(observationMiddleware, bookkeeping))
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
@@ -423,25 +444,14 @@ public class AgentConfig {
                             .build())
                     .workspace(appProperties.getAgentscope().getWorkspacePath())
                     .skillRepository(new ClasspathSkillRepository("skills"))
-                    .stateStore(new InMemoryAgentStateStore())
-                    .build();
+                    .stateStore(new InMemoryAgentStateStore());
+            if (leaf) {
+                builder.disableSubagents();
+            }
+            return builder.build();
         } catch (IOException e) {
             throw new IllegalStateException("构建 planning-agent 失败: " + e.getMessage(), e);
         }
-    }
-
-    /** 在线规划 Agent，由 ChatService 直接调用。 */
-    @Bean
-    public HarnessAgent itineraryPlanningAgent(Toolkit toolkit, Model gatewayChatModel,
-                                               TaskWorkspace taskWorkspaceService,
-                                               TaskRegistry taskRegistry,
-                                               com.travelscope.service.TaskResultCache taskResultCache) {
-        HarnessAgent agent = buildPlannerAgent(toolkit, gatewayChatModel,
-                taskRegistry, taskResultCache, taskWorkspaceService);
-        revokeOffScriptTools(agent);
-        log.info("规划 Agent 构建完成: {}，工具白名单 {} 项 + MCP(mcp__*)",
-                ItineraryAgent.AGENT_NAME, PLANNER_TOOL_WHITELIST.size());
-        return agent;
     }
 
     /**
@@ -456,33 +466,15 @@ public class AgentConfig {
         }
     }
 
-    /** 每次评测执行使用独立规划实例，不与在线规划共享 Agent 状态。 */
-    @Bean
-    @org.springframework.context.annotation.Scope("prototype")
-    public HarnessAgent assessmentPlanningAgent(Toolkit toolkit,
-            @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
-            TaskWorkspace workspace,
-            TaskRegistry taskRegistry,
-            com.travelscope.service.TaskResultCache taskResultCache) {
-        HarnessAgent agent = buildPlannerAgent(toolkit.copy(), mainModel,
-                taskRegistry, taskResultCache, workspace);
-        revokeOffScriptTools(agent);
-        return agent;
-    }
-
-    /** 规则质检失败时由编排层创建的独立修订 Agent；每次调用使用新实例和独立状态。 */
-    @Bean
-    @org.springframework.context.annotation.Scope("prototype")
-    public HarnessAgent standaloneReviewerAgent(Toolkit toolkit,
-            @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model gatewayReviewerModel,
-            TaskWorkspace taskWorkspace) {
+    private HarnessAgent buildReviewerAgent(Toolkit toolkit, Model gatewayReviewerModel,
+            TaskWorkspace taskWorkspace, boolean leaf) {
         Toolkit view = toolkit.copy();
         for (String name : new java.util.ArrayList<>(view.getToolNames())) {
             if (!REVIEWER_TOOL_WHITELIST.contains(name) && !name.startsWith("mcp__")) {
                 view.removeTool(name);
             }
         }
-        HarnessAgent agent = HarnessAgent.builder()
+        HarnessAgent.Builder builder = HarnessAgent.builder()
                 .name(ReviewerAgent.AGENT_NAME)
                 .sysPrompt(ReviewerAgent.SYS_PROMPT)
                 .model(gatewayReviewerModel)
@@ -494,8 +486,11 @@ public class AgentConfig {
                 .permissionContext(PermissionContextState.builder()
                         .mode(PermissionMode.BYPASS).build())
                 .workspace(appProperties.getAgentscope().getWorkspacePath())
-                .stateStore(new InMemoryAgentStateStore())
-                .build();
+                .stateStore(new InMemoryAgentStateStore());
+        if (leaf) {
+            builder.disableSubagents();
+        }
+        HarnessAgent agent = builder.build();
         revokeOffScriptTools(agent);
         return agent;
     }

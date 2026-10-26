@@ -26,7 +26,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.InOrder;
 import org.mockito.ArgumentCaptor;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -72,7 +71,6 @@ class ChatServicePlanningOrchestrationTest {
     private LlmGateway llmGateway;
     private RequirementWorkflowService requirementWorkflowService;
     private TaskBacklogPlanner taskBacklogPlanner;
-    private HarnessAgent itineraryPlanningAgent;
     private ConversationSummaryService conversationSummaryService;
     private PointsService pointsService;
     private ObservationStore observationStore;
@@ -80,7 +78,7 @@ class ChatServicePlanningOrchestrationTest {
 
     @BeforeEach
     void setUp() {
-        travelMasterAgent = mock(HarnessAgent.class);
+        travelMasterAgent = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         intentCascadeRouter = mock(IntentCascadeRouter.class);
         conversationService = mock(ConversationService.class);
         workspace = new TaskWorkspace(new CollabFileWriter(tempDir.toString()), new CollabFileReader());
@@ -92,7 +90,6 @@ class ChatServicePlanningOrchestrationTest {
         pointsService = mock(PointsService.class);
         requirementWorkflowService = mock(RequirementWorkflowService.class);
         taskBacklogPlanner = mock(TaskBacklogPlanner.class);
-        itineraryPlanningAgent = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         RagService ragService = mock(RagService.class);
 
         // 准入/积分/减负全放行；泳道超时 600s（与 application.yml 一致）
@@ -107,7 +104,7 @@ class ChatServicePlanningOrchestrationTest {
                 conversationService, workspace, tripRequirementStore, llmGateway, loadShedService,
                 conversationSummaryService, TracingHelper.NOOP, new AppProperties(),
                 gatewayChatModel, pointsService, requirementWorkflowService, taskBacklogPlanner,
-                itineraryPlanningAgent, mock(io.agentscope.core.model.Model.class));
+                mock(io.agentscope.core.model.Model.class));
     }
 
     // ---------- 用例 1：缺项轮 → 只发 requirement_form（不进 step2，Agent 零交互） ----------
@@ -126,7 +123,7 @@ class ChatServicePlanningOrchestrationTest {
         assertThat(eventNames(items)).containsExactly("intent", "requirement_form", "done");
         assertThat(payloadOf(items, "requirement_form")).contains("fromCity");
         assertThat(payloadOf(items, "done")).isEqualTo("请确认以下行程需求，可直接修改后开始规划。");
-        verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+        verifyNoInteractions(taskBacklogPlanner, travelMasterAgent);
     }
 
     // ---------- 用例 2：收齐轮 → 按序 step2→step5，方案带「✅ 已通过质量审阅」标注 ----------
@@ -138,18 +135,17 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
 
         // 编排顺序：step1 workflow.handle → step2 planner.plan → step3 itinerary.streamEvents
-        InOrder order = inOrder(requirementWorkflowService, taskBacklogPlanner, itineraryPlanningAgent);
+        InOrder order = inOrder(requirementWorkflowService, taskBacklogPlanner, travelMasterAgent);
         order.verify(requirementWorkflowService).handle("帮我规划杭州两日游", "1", "conv-13");
         order.verify(taskBacklogPlanner).plan(eq("1"), any(IntakeResult.class));
-        order.verify(itineraryPlanningAgent).streamEvents(any(UserMessage.class), any(RuntimeContext.class));
-        verifyNoInteractions(travelMasterAgent);
+        order.verify(travelMasterAgent).streamEvents(any(UserMessage.class), any(RuntimeContext.class));
 
         // 渲染分段化（v6 阶段五）：种子草案有 days 结构 → step5 补推两条逐天事件
         // （旧正则路径在该无「## Day」标题的正文上切不出节，零事件）
@@ -176,7 +172,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
@@ -198,7 +194,7 @@ class ChatServicePlanningOrchestrationTest {
                     assertThat(seg.getIntValue("segment")).isEqualTo(2);
                     assertThat(seg.getBooleanValue("pass")).isFalse();
                 });
-        verifyNoInteractions(travelMasterAgent);
+        verify(travelMasterAgent).streamEvents(any(UserMessage.class), any(RuntimeContext.class));
     }
 
     // ---------- 用例 4：取消轮 → 本轮结束，不进 step2 ----------
@@ -214,7 +210,7 @@ class ChatServicePlanningOrchestrationTest {
 
         assertThat(eventNames(items)).containsExactly("intent", "done");
         assertThat(payloadOf(items, "done")).isEqualTo("已取消规划。");
-        verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+        verifyNoInteractions(taskBacklogPlanner, travelMasterAgent);
     }
 
     // ---------- 用例 5：收集期意图保护——CHAT 分类 + COLLECTING 状态 → 强制 PLANNING 编排 ----------
@@ -236,7 +232,7 @@ class ChatServicePlanningOrchestrationTest {
         assertThat(eventNames(items)).contains("requirement_form");
         InOrder order = inOrder(requirementWorkflowService);
         order.verify(requirementWorkflowService).handle("杭州", "1", "conv-13");
-        verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+        verifyNoInteractions(taskBacklogPlanner, travelMasterAgent);
     }
 
     // ---------- 用例 6：评审产物 JSON → ✅ 标注照常；S3.1 起 review_report 事件同源于 JSON ----------
@@ -248,7 +244,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
@@ -282,13 +278,13 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
-        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        verify(travelMasterAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
         String text = delegated.getValue().getTextContent();
         // 命中节内联了天气/酒店内容，且声明禁止再调对应工具与预检
         assertThat(text).contains("【缓存命中").contains("杭州 10-24 多云 20℃").contains("西湖边民宿 ¥300")
@@ -314,7 +310,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划西安四日游"), "done");
@@ -335,13 +331,13 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
-        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        verify(travelMasterAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
         String text = delegated.getValue().getTextContent();
         assertThat(text).contains("【task_backlog.json】").contains("【intake_result.json】")
                 .contains("杭州").contains("T1");
@@ -365,7 +361,7 @@ class ChatServicePlanningOrchestrationTest {
             return CollectOutcome.collected();
         });
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
         workspace.writeItineraryDraft("1", "conv-13", draftForTest());
 
@@ -377,7 +373,7 @@ class ChatServicePlanningOrchestrationTest {
         assertThat(workspace.readReviewPassed("1", "conv-13")).isEmpty();
         // 委派文本内联的是新 intake（含杭州、不含苏州）
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
-        verify(itineraryPlanningAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
+        verify(travelMasterAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
         assertThat(delegated.getValue().getTextContent()).contains("杭州").doesNotContain("苏州");
     }
 
@@ -392,18 +388,17 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
         assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案");
         ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
-        verify(itineraryPlanningAgent).streamEvents(any(UserMessage.class), runtime.capture());
+        verify(travelMasterAgent).streamEvents(any(UserMessage.class), runtime.capture());
         assertThat(((ObservationContext) runtime.getValue().get(ObservationContext.KEY)).withCancellation(null)).isEqualTo(observation);
         assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("LIVE");
         verify(requirementWorkflowService).handle(eq("帮我规划杭州两日游"), eq("1"), eq("conv-13"), sameObservation(observation));
-        verifyNoInteractions(travelMasterAgent);
     }
 
     @Test
@@ -416,7 +411,7 @@ class ChatServicePlanningOrchestrationTest {
         List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, message), "done");
 
         assertThat(payloadOf(items, "done")).isEqualTo("已取消规划。");
-        verifyNoInteractions(intentCascadeRouter, taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+        verifyNoInteractions(intentCascadeRouter, taskBacklogPlanner, travelMasterAgent);
     }
 
     @Test
@@ -428,7 +423,7 @@ class ChatServicePlanningOrchestrationTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString(), sameObservation(observation)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.error(new java.util.concurrent.TimeoutException("synthetic timeout")));
 
         List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "规划杭州两日游"), "done");
@@ -442,11 +437,7 @@ class ChatServicePlanningOrchestrationTest {
     @SuppressWarnings("unchecked")
     void assessmentUsesNewWorkflowAndIsolatedPlannerWithoutPersonalSideEffects() throws Exception {
         ObservationContext observation = observeTurns();
-        HarnessAgent isolatedMaster = mock(HarnessAgent.class);
-        HarnessAgent isolatedPlanner = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
-        ObjectProvider<HarnessAgent> provider = mock(ObjectProvider.class);
-        when(provider.getObject()).thenReturn(isolatedPlanner);
-        ReflectionTestUtils.setField(chatService, "assessmentPlanners", provider);
+        HarnessAgent isolatedMaster = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         workspace.writeIntakeResult("13", "conv-13", intakeResult());
         Files.writeString(workspace.getTaskDir("13", "conv-13").resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
                 "# 隔离评测的行程方案");
@@ -456,7 +447,7 @@ class ChatServicePlanningOrchestrationTest {
                 any(com.travelscope.agent.tools.TransportTool.class)))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("13"), any(IntakeResult.class))).thenReturn(backlog());
-        when(isolatedPlanner.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(isolatedMaster.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
 
         String result = chatService.executeAssessment(13L, "规划杭州两日游", observation,
@@ -464,13 +455,13 @@ class ChatServicePlanningOrchestrationTest {
 
         assertThat(result).contains("隔离评测的行程方案");
         ArgumentCaptor<RuntimeContext> runtime = ArgumentCaptor.forClass(RuntimeContext.class);
-        verify(isolatedPlanner).streamEvents(any(UserMessage.class), runtime.capture());
+        verify(isolatedMaster).streamEvents(any(UserMessage.class), runtime.capture());
         assertThat(((ObservationContext) runtime.getValue().get(ObservationContext.KEY)).withCancellation(null)).isEqualTo(observation);
         assertThat((Object) runtime.getValue().get("assessment.toolMode")).isEqualTo("FIXTURE");
         assertThat((Object) runtime.getValue().get("assessment.toolFailure")).isEqualTo(true);
         assertThat((Object) runtime.getValue().get("assessment.fixtureCase")).isEqualTo("EC-018");
         verifyNoInteractions(conversationService, conversationSummaryService, pointsService,
-                travelMasterAgent, itineraryPlanningAgent, isolatedMaster);
+                travelMasterAgent);
     }
 
     @Test
@@ -492,7 +483,7 @@ class ChatServicePlanningOrchestrationTest {
             execution.cancel();
             assertThat(disconnected.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             assertThat(ended.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
-            verifyNoInteractions(taskBacklogPlanner, itineraryPlanningAgent, travelMasterAgent);
+            verifyNoInteractions(taskBacklogPlanner, travelMasterAgent);
         } finally { subscription.dispose(); }
     }
 
@@ -645,12 +636,12 @@ class ChatServicePlanningOrchestrationTest {
         when(intentCascadeRouter.classify(anyString(),anyString(),anyString(),anyString())).thenReturn(new IntentResult("PLANNING","plan"));
         when(requirementWorkflowService.handle(anyString(),anyString(),anyString())).thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"),any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class),any(RuntimeContext.class))).thenReturn(Flux.empty());
+        when(travelMasterAgent.streamEvents(any(UserMessage.class),any(RuntimeContext.class))).thenReturn(Flux.empty());
         var execution=chatService.execution(conversation(),1L,"Plan a trip",null,UUID.randomUUID(),"en",cost->true);
         var events=execution.events.collectList().block(Duration.ofSeconds(5));
         ArgumentCaptor<RuntimeContext> context=ArgumentCaptor.forClass(RuntimeContext.class);
         ArgumentCaptor<UserMessage> input=ArgumentCaptor.forClass(UserMessage.class);
-        verify(itineraryPlanningAgent).streamEvents(input.capture(),context.capture());
+        verify(travelMasterAgent).streamEvents(input.capture(),context.capture());
         assertThat((Object)context.getValue().get(com.travelscope.common.ReplyLanguage.KEY)).isEqualTo("en");
         assertThat(input.getValue().getTextContent()).contains("Use English");
         assertThat(events.stream().filter(e->"itinerary_day".equals(e.getType())).map(e->e.getPayload()).toList()).allMatch(body->body.contains("Time | Activity"));

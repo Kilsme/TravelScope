@@ -38,7 +38,7 @@ import java.util.Set;
  * <p>
  * 收齐（必填四项无缺失）→ status=DONE、落盘 intake_result.json（degraded=false）、
  * 返回 COLLECTED；留空提交/「按推荐安排」→ 缺失必填填确定性默认值、status=DEGRADED、
- * degraded=true 落盘、返回 COLLECTED（「已尽力」语义由下游 itinerary-agent 标注）。
+ * degraded=true 落盘、返回 COLLECTED（「已尽力」语义由下游 planning-agent 标注）。
  * </p>
  * <p>
  * 与 RequirementTools（v3 工具面，S2.9 前仍在线）的写回语义对齐：8 键白名单、

@@ -67,12 +67,11 @@ class ChatServiceReviewEventTest {
     private LlmGateway llmGateway;
     private RequirementWorkflowService requirementWorkflowService;
     private TaskBacklogPlanner taskBacklogPlanner;
-    private HarnessAgent itineraryPlanningAgent;
     private ChatService chatService;
 
     @BeforeEach
     void setUp() {
-        travelMasterAgent = mock(HarnessAgent.class);
+        travelMasterAgent = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         intentCascadeRouter = mock(IntentCascadeRouter.class);
         conversationService = mock(ConversationService.class);
         workspace = new TaskWorkspace(new CollabFileWriter(tempDir.toString()), new CollabFileReader());
@@ -84,7 +83,6 @@ class ChatServiceReviewEventTest {
         PointsService pointsService = mock(PointsService.class);
         requirementWorkflowService = mock(RequirementWorkflowService.class);
         taskBacklogPlanner = mock(TaskBacklogPlanner.class);
-        itineraryPlanningAgent = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         RagService ragService = mock(RagService.class);
 
         when(llmGateway.tryAcquire(anyString())).thenReturn(LlmGateway.AcquireResult.ok());
@@ -98,7 +96,7 @@ class ChatServiceReviewEventTest {
                 conversationService, workspace, tripRequirementStore, llmGateway, loadShedService,
                 conversationSummaryService, TracingHelper.NOOP, new AppProperties(),
                 gatewayChatModel, pointsService, requirementWorkflowService, taskBacklogPlanner,
-                itineraryPlanningAgent, mock(io.agentscope.core.model.Model.class));
+                mock(io.agentscope.core.model.Model.class));
     }
 
     // ---------- 用例 1：passed 场景 → 事件载荷 {passed:true, total:85, segments:[]} ----------
@@ -281,7 +279,7 @@ class ChatServiceReviewEventTest {
         when(requirementWorkflowService.handle(anyString(), anyString(), anyString()))
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
-        when(itineraryPlanningAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
     }
 

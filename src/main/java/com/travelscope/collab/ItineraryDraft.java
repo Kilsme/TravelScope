@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * 工作区契约：itinerary_draft.json（schemaVersion=4）
  * <p>
- * 生产者：itinerary-agent（组装草案）；消费者：reviewer-agent / travel-master。
+ * 生产者：planning-agent（组装草案）；消费者：reviewer-agent / travel-master。
  * 对应 v3 的 itinerary_draft.md：结构化字段供代码消费，{@link #markdownBody} 承载
  * 给 reviewer 阅读的草案正文长文本。
  * </p>

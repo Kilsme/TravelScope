@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * 工作区契约：execution_result.json（schemaVersion=4）
  * <p>
- * 生产者：itinerary-agent（每完成一项任务追加一条）；消费者：travel-master / 审计排查。
+ * 生产者：planning-agent（每完成一项任务追加一条）；消费者：travel-master / 审计排查。
  * 对应 v3 的 execution_result.md。
  * </p>
  * <p>

@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * 工作区契约：route_plan.json（schemaVersion=4）
  * <p>
- * 生产者：RoutePlannerService（代码求解，零 LLM）；消费者：itinerary-agent / reviewer-agent。
+ * 生产者：RoutePlannerService（代码求解，零 LLM）；消费者：planning-agent / reviewer-agent。
  * 对应 v3 的 route_plan.md。求解语义对齐 VRPTW（时间矩阵 / 开放时间窗 / 车辆=天），
  * 接口演进路径见 docs/TravelScope重构计划-v4.md §5.2。
  * </p>

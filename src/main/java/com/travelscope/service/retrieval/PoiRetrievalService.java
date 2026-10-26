@@ -24,7 +24,7 @@ import java.util.concurrent.Executors;
 /**
  * POI 批量检索编排（S1.8，v4 计划 §5.3 第 2 步）：变体并行双路检索 + 按 chunkId
  * 去重合并，一次成型候选池。零 LLM——偏好筛选/开放时间适配/评分门槛是
- * itinerary-agent 的职责（边界见重构计划 §5.4）。
+ * planning-agent 的职责（边界见重构计划 §5.4）。
  * <p>
  * 流程（retrieve）：
  * <ol>

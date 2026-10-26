@@ -90,7 +90,7 @@ class CollabDtoShapeTest {
                 new ReviewPassed(85, 15, List.of("调 getTransitRoute 重算通勤核验通过"),
                         "2026-10-15T21:40:00"),
                 new SessionMeta("u1", "conv-1", "2026-10-15T21:00:00", "进行中",
-                        List.of("travel-master", "itinerary-agent", "reviewer-agent"), null));
+                        List.of("travel-master", "planning-agent", "reviewer-agent"), null));
 
         for (Object dto : instances) {
             Method accessor = dto.getClass().getMethod("schemaVersion");

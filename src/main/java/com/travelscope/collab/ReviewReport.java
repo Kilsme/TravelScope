@@ -10,7 +10,7 @@ import java.util.Objects;
  * 工作区契约：review_report.json（schemaVersion=4）
  * <p>
  * 生产者：reviewer-agent（质检不通过时）与 RuleReviewService（规则质检 FAIL 时）；
- * 消费者：itinerary-agent（按失败段回炉）、ChatService（⚠️ 标注 + review_report 事件载荷）。
+ * 消费者：planning-agent（按失败段回炉）、ChatService（⚠️ 标注 + review_report 事件载荷）。
  * 对应 v3 的 review_report.md；通过标准（总分≥80 + 无单维&lt;12 + 三段全 pass）不变。
  * </p>
  * <p>

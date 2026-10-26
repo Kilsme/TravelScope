@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * 工作区契约：task_backlog.json（schemaVersion=4）
  * <p>
- * 生产者：TaskBacklogPlanner（代码模板拆任务）；消费者：itinerary-agent。
+ * 生产者：TaskBacklogPlanner（代码模板拆任务）；消费者：planning-agent。
  * 对应 v3 的 task_backlog.md，字段对齐 {@code TaskRegistry.PlanningTask} + 运行时状态。
  * </p>
  * <p>

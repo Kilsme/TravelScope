@@ -81,7 +81,7 @@ class ChatServiceImageGuideTest {
                 mock(TripRequirementStore.class), mock(LlmGateway.class), mock(LoadShedService.class),
                 mock(ConversationSummaryService.class), TracingHelper.NOOP, new AppProperties(),
                 gatewayChatModel, mock(PointsService.class), requirementWorkflowService,
-                mock(TaskBacklogPlanner.class), mock(HarnessAgent.class), guideModel);
+                mock(TaskBacklogPlanner.class), guideModel);
         return service;
     }
 

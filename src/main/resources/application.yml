@@ -208,6 +208,7 @@ travelscope:
 
   # ---- AgentScope 配置 ----
   agentscope:
+    # 固定拓扑：travel-master 主 Agent + planning-agent/reviewer-agent 两个叶子子 Agent
     workspace-path: .agentscope/workspace
     vector-store-table: document_chunks
     embedding-dimensions: 1024

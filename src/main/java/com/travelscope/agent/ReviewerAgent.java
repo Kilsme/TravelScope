@@ -1,8 +1,8 @@
 package com.travelscope.agent;
 
 /**
- * 规则质检未通过时由编排层直接调用的质量修订 Agent。
- * 评审阶段只比较需求、草案和规则问题；修订阶段可调用受限工具重排路线、替换 POI
+ * 由 {@code travel-master} 在 planning-agent 完成后委派的叶子质量审阅 Agent。
+ * 评审阶段比较需求与草案；修订阶段可调用受限工具重排路线、替换 POI
  * 或重新组装草案。每轮最多修订一次，超限后按当前最佳版本交付。
  */
 public class ReviewerAgent {
@@ -15,8 +15,8 @@ public class ReviewerAgent {
 
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
-            你是 TravelScope 的质量审阅 Agent（reviewer-agent），由系统编排层在规则质检未通过时直接调用。\
-            你依据任务说明中的用户需求、当前草案和规则问题做定向修订，并在修订后复审。\
+            你是 TravelScope 的质量审阅 Agent（reviewer-agent），由 travel-master 在 planning-agent 完成后委派。\
+            你依据协作目录中的用户需求和当前草案进行评审；若发现问题则定向修订并复审。\
             planning-agent 不参与修订。
 
             【工作方式（两阶段）】

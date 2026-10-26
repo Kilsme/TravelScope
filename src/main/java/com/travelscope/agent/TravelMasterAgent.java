@@ -1,17 +1,16 @@
 package com.travelscope.agent;
 
 /**
- * 旅游助手主 Agent，负责闲聊、知识问答和单点实时查询。
- * 完整行程规划由 {@code ChatService} 直接编排，不经过本 Agent 委派。
- * 工具参数与使用限制以 classpath 下的 skills 文件为准。
+ * 旅游助手主 Agent。闲聊、知识问答和单点查询由自身处理；完整行程规划依次委派
+ * {@code planning-agent} 与 {@code reviewer-agent} 两个叶子子 Agent。
  */
 public class TravelMasterAgent {
 
     /** Agent 名称 */
     public static final String AGENT_NAME = "travel-master";
 
-    /** 单点查询与对话的最大推理迭代次数。 */
-    public static final int MAX_ITERS = 8;
+    /** 覆盖直接回答、两个子 Agent 的串行委派与最终整合。 */
+    public static final int MAX_ITERS = 16;
 
     /** 主 Agent 的常驻系统提示词。 */
     public static final String SYS_PROMPT = """
@@ -31,7 +30,7 @@ public class TravelMasterAgent {
             ===================================================
 
             你只具备直接能力：调用工具回答单点问题（各工具的名称、参数与使用细节见对应技能文件 skills）。
-            完整行程规划由系统编排层直接处理，不经你手——你不得调用 agent_spawn 委派任何子 Agent。
+            完整行程规划由你按下述流程委派两个指定的叶子子 Agent；其他意图禁止委派。
 
             路由规则（For X, use Y）：
             - 天气问题 → 使用天气技能查询后回答
@@ -61,5 +60,24 @@ public class TravelMasterAgent {
               不要堆砌 emoji（仅允许功能性符号 ✅ ⚠️）；不要「首先/其次/总而言之」式的
               机器转场词；句式自然，长短句搭配
             - 闲聊/查询类：直接给答案，先结论后细节，简单问题不超过 10 行
+            """;
+
+    /** 完整规划的固定父子协作指令。 */
+    public static final String FULL_SYS_PROMPT = SYS_PROMPT + """
+
+            ===================================================
+            四、完整行程规划（主从 Agent 模式）
+            ===================================================
+
+            当本轮路由指令标记为 PLANNING 时，需求采集与任务清单已经由系统完成并内联在用户消息中。
+            你是本轮唯一主管，必须遵守以下顺序：
+            1. 调用 agent_spawn 同步委派 planning-agent，要求其严格依据内联的 intake_result.json、
+               task_backlog.json 和协作目录生成 itinerary_draft.json；等待它完成。
+            2. planning-agent 完成后，调用 agent_spawn 同步委派 reviewer-agent，要求其读取同一协作目录，
+               检查并按需修订草案，写入 review_passed.json 或 review_report.json；等待它完成。
+            3. 两个子 Agent 都是叶子，不得要求它们继续委派。每个子 Agent 本轮最多调用一次。
+            4. 子 Agent 的过程文本不作为最终答案。完成后只简短说明规划与质检已完成；最终方案由系统从
+               itinerary_draft.json 统一渲染，禁止复制任务编号、工具名或内部执行过程。
+            5. 若子 Agent 失败，如实说明失败阶段，不得编造缺失的行程数据。
             """;
 }

@@ -4,6 +4,6 @@
   "sessionId": "conv-97",
   "createdAt": "2026-10-15 21:00:00",
   "status": "已完成",
-  "participants": ["travel-master", "itinerary-agent", "reviewer-agent"],
+  "participants": ["travel-master", "planning-agent", "reviewer-agent"],
   "updatedAt": "2026-10-15 21:42:30"
 }

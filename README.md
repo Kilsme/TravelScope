@@ -4,7 +4,7 @@
 
 **从一句话需求到可执行行程单的 AI 多智能体旅行规划系统**
 
-三 Agent + 代码编排 · JSON 契约驱动 · 规则质检零 LLM · 任务结果缓存复用 · 全链路可观测
+一个主 Agent + 两个叶子子 Agent · JSON 契约驱动 · Java 终检 · 任务结果缓存复用 · 全链路可观测
 
 [Java 21](https://img.shields.io/badge/Java-21-orange) · [Spring Boot 3.3](https://img.shields.io/badge/Spring_Boot-3.3.5-brightgreen) · [AgentScope Java 2.0](https://img.shields.io/badge/AgentScope_Java-2.0.3-blue) · [React 19](https://img.shields.io/badge/React-19-61dafb) · [glm-5-3-260814 / deepseek-v4-flash-0731](https://img.shields.io/badge/LLM-glm--5.3%20%2F%20ds--flash-615ced) · [PostgreSQL · Redis · ES](https://img.shields.io/badge/Storage-PG%20%2F%20Redis%20%2F%20ES-336791)
 
@@ -42,10 +42,10 @@
 
 ## ✨ 核心特性
 
-- 🤖 **三 Agent + 代码五步编排** — `travel-master`（单点查询接待员，工具直调零委派）/ `planning-agent`（规划执行）/ `reviewer-agent`（质检兜底）；PLANNING 链路由 `ChatService` 代码编排：需求采集 → 任务登记 + 缓存预检 → 委派规划 → 规则质检 + 渲染，慢泳道 600s
+- 🤖 **一个主 Agent + 两个叶子子 Agent** — `travel-master` 是唯一生产根 Agent；PLANNING 时依次同步委派 `planning-agent` 生成草案、`reviewer-agent` 审阅并按需修订。`ChatService` 只负责需求采集、任务登记、Java 最终规则复检和渲染，慢泳道 600s
 - 🧠 **LLM 只做两件事** — planner 首轮并行抓齐全量数据后，POI 偏好筛选（名单制工具）与草案结构字段产出是仅有的 LLM 决策点；检索、路线求解、组装、质检、记账全部代码化（OpenAI Agents SDK「LLM 产结构化 JSON → 代码执行」模式），happy path 全链仅 5~7 次 LLM 调用
 - 📜 **JSON 契约驱动协作** — 六个契约文件（`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`）+ collab 五件套（9 个 DTO + Schema 校验 + 原子写 + TaskWorkspace + TaskRegistry）；工具面收编：`write_collab_file` 是唯一落盘口，`edit_file` / `write_file` / `web_search` / `web_fetch` 已从 planner 工具面移除
-- ✅ **规则质检 + 定向修订** — `RuleReviewService` 三段规则（基本要素 / 时间线自洽 / 预算偏好 + 防幻觉）零 LLM <1s 出分；全过直接交付，发现硬伤才唤起 reviewer 用 `revise_poi_selection` 名单式修订（代码补硬字段 → 重跑路线 → 重组装），修订上限 1 次由中间件保险丝代码硬拦
+- ✅ **子 Agent 审阅 + Java 终检** — planning 完成后始终由 `reviewer-agent` 审阅并按需用 `revise_poi_selection` 修订，修订上限 1 次由中间件硬拦；随后 `RuleReviewService` 以三段规则在 <1s 内生成最终交付契约
 - 🧭 **意图三层级联路由** — L0 会话延续（Redis 最近意图 + 短追问识别，0 计算）→ L1 规则表（承接约 60% 流量）→ L2 deepseek-v4-flash-0731 轻量语义分类（带结果缓存）→ L3 主链路模型兜底，上层命中即短路
 - 🔍 **RAG 双路检索** — pgvector 语义检索 + Elasticsearch BM25 关键词检索，RRF 融合排序，证据门控 + 变体扩展（3~5 个查询变体并行）；向量路不可用时自动退化为 ES 全文（`mode=fulltext`）
 - ⚡ **任务结果缓存** — Redis `taskresult:{userId}:{sessionId}:{taskType}`，TTL 按数据时效分级（天气 10min、POI/酒店/路线 30min）；**预检上提到编排层**：委派前代码查缓存，命中内容直接内联进委派说明；工具成功由记账中间件零 LLM 自动登记，往返车票 append 防互覆

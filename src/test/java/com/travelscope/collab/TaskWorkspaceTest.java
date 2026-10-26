@@ -39,7 +39,7 @@ class TaskWorkspaceTest {
         assertThat(meta.get().schemaVersion()).isEqualTo(4);
         assertThat(meta.get().status()).isEqualTo("进行中");
         assertThat(meta.get().participants())
-                .containsExactly("travel-master", "itinerary-agent", "reviewer-agent");
+                .containsExactly("travel-master", "planning-agent", "reviewer-agent");
     }
 
     @Test

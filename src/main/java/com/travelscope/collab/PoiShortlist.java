@@ -6,8 +6,8 @@ import java.util.Objects;
 /**
  * 工作区契约：poi_shortlist.json（schemaVersion=4）
  * <p>
- * 生产者：itinerary-agent（对 PoiRetrievalService 候选池做 LLM 筛选排序后落盘）；
- * 消费者：itinerary-agent 自身（组装/回炉复用）。
+ * 生产者：planning-agent（对 PoiRetrievalService 候选池做 LLM 筛选排序后落盘）；
+ * 消费者：planning-agent 自身（组装/回炉复用）。
  * 对应 v3 的 poi_shortlist.md。
  * </p>
  * <p>

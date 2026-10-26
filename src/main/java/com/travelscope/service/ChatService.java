@@ -55,8 +55,8 @@ import java.util.Map;
  * 用户消息 → 意图分类 Agent（结构化输出）
  *   ├─ CHAT / TOOL_CALL / RAG → 主 Agent + 路由指令（IntentRouterMiddleware 禁止委派）
  *   ├─ RAG（知识库可用时）    → 先检索知识片段拼入上下文再回答
- *   └─ PLANNING              → 代码编排：需求采集 → 任务登记 → planning-agent 执行 →
- *                              规则质检与最终渲染（见 planningOrchestration）
+ *   └─ PLANNING              → 需求采集与任务登记 → travel-master 依次委派 planner/reviewer →
+ *                              Java 最终规则复检与渲染（见 planningOrchestration）
  * </pre>
  * 事件流通过 SseEmitter 推送给前端；意图分类（阻塞调用）与 Agent 执行均调度到
  * boundedElastic 线程池，不占用容器线程。
@@ -69,16 +69,9 @@ public class ChatService {
     @org.springframework.beans.factory.annotation.Autowired
     @org.springframework.beans.factory.annotation.Qualifier("assessmentMasterAgent")
     private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentAgents;
-    @org.springframework.beans.factory.annotation.Autowired
-    @org.springframework.beans.factory.annotation.Qualifier("assessmentPlanningAgent")
-    private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentPlanners;
     /** 规则质检（零 LLM）：PLANNING 收尾前执行；字段注入避免撑大构造器（测试走 ReflectionTestUtils） */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private RuleReviewService ruleReviewService;
-    /** 规则质检未通过时的 LLM 定向修订兜底（独立质检 Agent，原型实例） */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    @org.springframework.beans.factory.annotation.Qualifier("standaloneReviewerAgent")
-    private org.springframework.beans.factory.ObjectProvider<HarnessAgent> standaloneReviewers;
     /** 结果缓存（同对话二次规划时按需求关键字段变化失效；字段注入同 ruleReviewService 模式） */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.travelscope.service.TaskResultCache taskResultCache;
@@ -136,9 +129,6 @@ public class ChatService {
     private final com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService;
     /** 任务拆分器（S2.4：代码模板确定性生成 task_backlog.json，零 LLM） */
     private final com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner;
-    /** S2.5 PLANNING 编排直持的行程规划 Agent（方案 B 决策：编排/渲染收归代码、不经 master
-     *  中转——LLM 不确定性收敛到 planner 的执行本职；master 兜底链（v3）原样保留） */
-    private final HarnessAgent itineraryPlanningAgent;
     /** 讲解专用模型池（私人讲解员图片轮）：多模态调用固定 kimi-k3——glm-5-3 无视觉，
      *  独立池与主链路选路互不拖累（kimi 看图慢但不影响分类/规划的 glm 快路径） */
     private final Model guideModel;
@@ -160,8 +150,6 @@ public class ChatService {
             PointsService pointsService,
             com.travelscope.service.workflow.RequirementWorkflowService requirementWorkflowService,
             com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner,
-            @org.springframework.beans.factory.annotation.Qualifier("itineraryPlanningAgent")
-                    HarnessAgent itineraryPlanningAgent,
             @org.springframework.beans.factory.annotation.Qualifier("guideModelPool")
                     Model guideModel) {
         this.travelMasterAgent = travelMasterAgent;
@@ -190,7 +178,6 @@ public class ChatService {
         this.pointsService = pointsService;
         this.requirementWorkflowService = requirementWorkflowService;
         this.taskBacklogPlanner = taskBacklogPlanner;
-        this.itineraryPlanningAgent = itineraryPlanningAgent;
         this.guideModel = guideModel;
     }
 
@@ -213,7 +200,7 @@ public class ChatService {
     }
 
     /**
-     * PLANNING 五步代码编排：
+     * PLANNING 五阶段主从协作：
      * <ol>
      *   <li><b>step1 需求采集</b>：workflow.handle——NEED_USER_INPUT → 推 requirement_form
      *       事件本轮结束；CANCELLED → 复位结束；COLLECTED（含 COLLECTING 期间文本增量后
@@ -221,14 +208,13 @@ public class ChatService {
      *   <li><b>step2 任务登记</b>：读 intake_result.json → taskBacklogPlanner.plan 代码模板
      *       生成并登记 task_backlog.json（S2.4，零 LLM）→ 显式 agent_status 里程碑
      *       （卡片点 4：活动流由编排代码发射，不再依赖主 Agent 文本分流）</li>
-     *   <li><b>step3 委派规划</b>：直持 itineraryPlanningAgent 发起（方案 B 决策，见字段注释）——
-     *       CTX_FORCE_SYNC/600s 平移自原 runAgent；确定性指令消息给出 JSON 契约路径
+     *   <li><b>step3 主从协作</b>：调用 travel-master，由其依次同步委派 planning-agent 与
+     *       reviewer-agent；CTX_FORCE_SYNC/600s 保证两个叶子完成后再收尾，指令消息给出 JSON 契约路径
      *       （planner 提示词中的 .md 路径差异由 S2.6 提示词重写收口）</li>
      *   <li><b>step4 等待完成</b>：共用管线 600s 泳道超时；超时按 wait_async_results 等价
-     *       语义截断（直持模式无异步提升），转 step5 尽力渲染</li>
-     *   <li><b>step5 质检与渲染</b>：读取 itinerary_draft.json，运行规则质检；硬约束失败时
-     *       调用独立 reviewer 做一次定向修订，随后从 JSON 的 markdownBody 渲染最终正文并
-     *       发送结构化 review_report 事件。</li>
+     *       语义截断，转 step5 尽力渲染</li>
+     *   <li><b>step5 终检与渲染</b>：读取两个叶子 Agent 的产物，执行 Java 最终规则复检，
+     *       随后从 JSON 的 markdownBody 渲染最终正文并发送结构化 review_report 事件。</li>
      * </ol>
      */
     private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
@@ -310,7 +296,7 @@ public class ChatService {
         log.info("PLANNING 编排: 会话={}, 任务清单已登记 {} 项，开始委派 planning-agent",
                 sessionId, backlog.tasks().size());
 
-        // ---------- step3：直持 planning-agent 发起委派 ----------
+        // ---------- step3：调用主管 travel-master，串行委派两个叶子 ----------
         // CTX_FORCE_SYNC/600s 平移自原 runAgent（校准史见其注释）——子 Agent spawn 同步等待上限
         RuntimeContext ctx = RuntimeContext.builder()
                 .userId(userIdStr)
@@ -318,6 +304,9 @@ public class ChatService {
                 .build();
         associateExecution(ctx, activePlanner, observation, toolMode, failTools, fixtureCase);
         ctx.put(com.travelscope.common.ReplyLanguage.KEY,locale);
+        ctx.put(com.travelscope.agent.IntentRouterMiddleware.CTX_PLANNING_DELEGATION_KEY, Boolean.TRUE);
+        ctx.put(com.travelscope.agent.IntentRouterMiddleware.CTX_INTENT_KEY,
+                IntentType.PLANNING.name());
         if (observation != null) observationStore.task(observation, IntentType.PLANNING.name());
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC, Boolean.TRUE);
         ctx.put(AgentSpawnTool.CTX_FORCE_SYNC_TIMEOUT_SECONDS, 600);
@@ -326,11 +315,13 @@ public class ChatService {
         ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
         // 清单卡片结构化提交的原文是 JSON 控制报文，不带入任务说明（intake_result.json 已承载事实）
         String userContext = isFormSubmission(userMessage) ? "" : "\n\n【本轮用户消息】" + userMessage;
+        String executionDirective =
+                "你是主管 Agent：必须先同步委派 planning-agent 生成草案，再同步委派 reviewer-agent 审查并按需修订；两个叶子各最多调用一次。";
         String task = "【系统指令】需求与任务清单已就绪（内容见本说明末尾【task_backlog.json】"
                 + "【intake_result.json】内联节，与协作目录文件内容一致；已由系统登记进任务容器，"
                 + "禁止重新拆分或自行创建清单，禁止再 read_file 读这两个文件）。"
-                + "任务按 T1→T5 顺序、P0→P1 优先级执行；"
-                + "产出 " + collabDir + "/itinerary_draft.json 后即完成（质检由系统规则校验执行，无需送审）。"
+                + executionDirective
+                + "产出 " + collabDir + "/itinerary_draft.json 后完成本轮。"
                 + "协作目录: " + collabDir + "；sessionId: " + sessionId + userContext
                 + cacheHitSection(userIdStr, sessionId)
                 + "\n\n【task_backlog.json】\n" + com.alibaba.fastjson2.JSON.toJSONString(backlog)
@@ -342,7 +333,7 @@ public class ChatService {
         // R3② 流式行程进度：planner 工具落盘即推（骨架先行/逐天填充），step5 修订差量复用同一状态
         ItineraryProgress progress = new ItineraryProgress(locale);
         Flux<ChatEvent> plannerFlow = mapAgentEventStream(activePlanner.streamEvents(msg, ctx),
-                        ItineraryAgent.AGENT_NAME, conversation, IntentType.PLANNING, true, laneTimeout,
+                        TravelMasterAgent.AGENT_NAME, conversation, IntentType.PLANNING, true, laneTimeout,
                         replyBuf, thinkingFull, usageTracker, observation, progress)
                 .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
                     log.warn("PLANNING 编排泳道超时（{}s），转 step5 尽力渲染: 会话={}",
@@ -451,28 +442,8 @@ public class ChatService {
             if (outcome.passed()) {
                 return;
             }
-            // 规则不过 → LLM reviewer 定向修订兜底（卡 B 修订闭环保留）
-            if (standaloneReviewers == null) {
-                return;
-            }
-            log.info("规则质检未通过，唤起 reviewer 定向修订: 会话={}, 问题数={}", sessionId,
-                    outcome.issues().size());
-            String collabDir = taskWorkspaceService.collabDirRelativePath(sessionId);
-            HarnessAgent reviewer = standaloneReviewers.getObject();
-            RuntimeContext ctx = RuntimeContext.builder().userId(userId).sessionId(sessionId).build();
-            ctx.put(CTX_COLLAB_DIR_KEY, collabDir);
-            // 观测归属本轮规划 run（否则 ObservationMiddleware 会给 reviewer 另起 run，
-            // 同会话双 run 的产物归属歧义会把本轮顶成 INCOMPLETE——conv-52 实证）
-            if (observation != null) {
-                ctx.put(com.travelscope.assessment.ObservationContext.KEY, observation);
-                ctx.put(com.travelscope.assessment.ArtifactSnapshotReader.FILESYSTEM_KEY,
-                        reviewer.getWorkspaceManager().getFilesystem());
-            }
-            // 修订任务文本已在规则质检失败分支内联生成（含 intake/草案正文）
-            ctx.put(com.travelscope.common.ReplyLanguage.KEY,locale);
-            TurnCancellation.await(reviewer.streamEvents(new UserMessage(outcome.revisionTaskText()+com.travelscope.common.ReplyLanguage.instruction(locale)), ctx).then(), llmGateway.laneTimeout(true), observation);
-            // 修订后重跑规则校验收敛（产物以最后一次规则校验为准）
-            ruleReviewService.check(userId, sessionId);
+            // reviewer-agent 已在根 Agent 的固定拓扑中执行；Java 终检只负责生成最终契约，
+            // 不再创建独立 reviewer 实例。
         } catch (Exception e) {
             TurnCancellation.rethrow(e, observation);
             log.warn("规则质检/修订异常（不影响方案渲染）: 会话={}, 原因={}", sessionId, e.getMessage());
@@ -854,37 +825,19 @@ public class ChatService {
                                         input.question()
                                                 + "\n\n【图片讲解】\n"
                                                 + truncateForExtractor(guideText.toString());
-                                Flux<ChatEvent> planning =
-                                        planningOrchestration(
-                                                input.conversation(),
-                                                input.userId(),
-                                                enriched,
-                                                state.reply,
-                                                state.thinking,
-                                                state.usage,
-                                                state.observation,
-                                                "LIVE",
-                                                false,
-                                                null,
-                                                itineraryPlanningAgent,input.locale());
+                                Flux<ChatEvent> planning = planningOrchestration(
+                                        input.conversation(), input.userId(), enriched, state.reply,
+                                        state.thinking, state.usage, state.observation,
+                                        "LIVE", false, null, travelMasterAgent, input.locale());
                                 return planning != null ? planning : Flux.empty();
                             })));
         }
-        Flux<ChatEvent> planning =
-                state.planning
-                        ? planningOrchestration(
-                                input.conversation(),
-                                input.userId(),
-                                input.text(),
-                                state.reply,
-                                state.thinking,
-                                state.usage,
-                                state.observation,
-                                "LIVE",
-                                false,
-                                null,
-                                itineraryPlanningAgent,input.locale())
-                        : null;
+        Flux<ChatEvent> planning = state.planning
+                ? planningOrchestration(
+                        input.conversation(), input.userId(), input.text(), state.reply,
+                        state.thinking, state.usage, state.observation,
+                        "LIVE", false, null, travelMasterAgent, input.locale())
+                : null;
         return planning != null
                 ? planning
                 : runAgent(
@@ -1415,24 +1368,20 @@ public class ChatService {
             TurnUsageTracker usage = new TurnUsageTracker();
             var intent = resolveIntent(conversation, isolatedId, message, observation, false);
             Flux<ChatEvent> execution = null;
-            HarnessAgent planner = null;
             if (intent != null && intent.toIntentType() == IntentType.PLANNING) {
-                planner = assessmentPlanners.getObject();
                 execution = planningOrchestration(conversation, isolatedId, message, reply, thinking,
-                        usage, observation, mode, failTools, fixtureCase, planner);
+                        usage, observation, mode, failTools, fixtureCase, isolatedAgent);
             }
             if (execution == null) {
                 execution = runAgent(conversation, isolatedId, message, intent, reply, thinking,
                         usage, observation, mode, failTools, fixtureCase, isolatedAgent);
             }
-            HarnessAgent ownedPlanner = planner;
             return execution.doOnNext(event -> {
                         if (ChatEvent.TYPE_ERROR.equals(event.getType())) {
                             throw new IllegalStateException("Assessment execution failed");
                         }
                     })
-                    .then(Mono.fromSupplier(reply::toString))
-                    .doFinally(signal -> { if (ownedPlanner != null) ownedPlanner.close(); });
+                    .then(Mono.fromSupplier(reply::toString));
         });
     }
 

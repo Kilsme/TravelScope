@@ -30,6 +30,9 @@ IntentRouterMiddleware implements MiddlewareBase {
     /** RuntimeContext 中意图类别的属性键（值为 IntentType.name()） */
     public static final String CTX_INTENT_KEY = "travelscope.intent";
 
+    /** 规划委派标记；只有应用层完成需求采集与任务登记后才允许启动两个叶子 Agent。 */
+    public static final String CTX_PLANNING_DELEGATION_KEY = "travelscope.planning-delegation";
+
     @Override
     public Mono<String> onSystemPrompt(Agent agent, RuntimeContext ctx, String sysPrompt) {
         Object intent = ctx.get(CTX_INTENT_KEY);
@@ -49,9 +52,12 @@ IntentRouterMiddleware implements MiddlewareBase {
                     【本轮路由指令】系统已判定本轮为单点查询意图：直接调用对应工具获取实时数据后回答，\
                     禁止委派规划子 Agent，不要扩展为完整行程规划。""";
             case "RAG" -> """
-                    【本轮路由指令】系统已判定本轮为知识型问题：知识库暂未接入，请基于你自己的知识直接回答；\
-                    涉及实时信息（票价/余票/天气等）时说明你无法提供实时数据并建议查询渠道，\
-                    禁止编造数据，禁止委派规划子 Agent。""";
+                    【本轮路由指令】系统已判定本轮为知识型问题：使用消息中提供的知识库上下文回答；\
+                    涉及实时信息时必须调用相应工具，禁止编造数据，禁止委派规划子 Agent。""";
+            case "PLANNING" -> Boolean.TRUE.equals(ctx.get(CTX_PLANNING_DELEGATION_KEY)) ? """
+                    【本轮路由指令】需求采集与任务登记已完成，开始执行完整行程规划。\
+                    严格按照系统提示词的规划流程，依次同步委派 planning-agent 和 reviewer-agent；\
+                    禁止使用 general-purpose 或其他子 Agent，禁止跳过任一已登记阶段。""" : "";
             default -> "";
         };
     }
