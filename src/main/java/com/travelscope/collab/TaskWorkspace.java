@@ -16,20 +16,9 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 会话协作工作区（S0.5：自 {@code AgentConfig} 内嵌类 TaskWorkspaceService 迁出，
- * MD 散文契约改为 JSON 契约）。
- * <p>
- * 路径规则不变：{@code {workspaceRoot}/{userId}/tasks/{sessionId}/}（与 harness 用户目录
- * 约定对齐，Agent 侧相对路径 {@code tasks/{sessionId}/...}）。全部读写委托
- * {@link CollabFileWriter} / {@link CollabFileReader}——写入必经 Schema 校验 + 原子落盘，
- * 读取必经校验（坏文件抛异常不静默降级）。
- * </p>
- * <p>
- * 过渡期设计（S2.7 / S3.1 切干净前）：reviewer 仍产出 review_passed.md / review_report.md，
- * planner 仍产出 itinerary_draft.md / execution_result.md——ReviewerRetryMiddleware 与
- * ChatService 的兜底读取继续用 {@code *_MD} 常量；JSON 类型化方法对旧 MD 残留
- * 「存在即忽略」（log.debug，不做迁移，v3 生产残留无消费价值）。
- * </p>
+ * 会话协作工作区，路径为 {@code {workspaceRoot}/{userId}/tasks/{sessionId}/}；Agent 使用
+ * 相对路径 {@code tasks/{sessionId}/...}。当前协作契约全部为 JSON，写入执行 Schema
+ * 校验和原子替换，读取时同样校验。旧 MD 文件只用于存量会话兼容，不会自动迁移。
  */
 @Service
 public class TaskWorkspace {
@@ -38,7 +27,7 @@ public class TaskWorkspace {
 
     private static final DateTimeFormatter FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    // ==================== v4 JSON 契约文件名（类型化方法使用） ====================
+    // ==================== JSON 契约文件名 ====================
 
     public static final String FILE_INTAKE_RESULT = "intake_result.json";
     public static final String FILE_TASK_BACKLOG = "task_backlog.json";
@@ -50,30 +39,24 @@ public class TaskWorkspace {
     public static final String FILE_REVIEW_PASSED = "review_passed.json";
     public static final String FILE_SESSION_META = "session_meta.json";
 
-    // ==================== v3 MD 过渡常量（S2.7 / S3.1 切 JSON 后删除） ====================
+    // ==================== 旧 MD 会话兼容 ====================
 
-    /** @deprecated 过渡：reviewer 切 JSON 产物（S2.7）后删除 */
+    /** @deprecated 仅用于读取旧会话；新产物必须使用 JSON 契约。 */
     @Deprecated
     public static final String FILE_REVIEW_PASSED_MD = "review_passed.md";
-    /** @deprecated 过渡：reviewer 切 JSON 产物（S2.7）后删除 */
+    /** @deprecated 仅用于读取旧会话；新产物必须使用 JSON 契约。 */
     @Deprecated
     public static final String FILE_REVIEW_REPORT_MD = "review_report.md";
-    /** @deprecated 过渡：ChatService 兜底整合切 JSON（S3.1）后删除 */
+    /** @deprecated 仅用于读取旧会话；新产物必须使用 JSON 契约。 */
     @Deprecated
     public static final String FILE_ITINERARY_DRAFT_MD = "itinerary_draft.md";
-    /** @deprecated 过渡：ChatService 兜底整合切 JSON（S3.1）后删除 */
+    /** @deprecated 仅用于读取旧会话；新产物必须使用 JSON 契约。 */
     @Deprecated
     public static final String FILE_EXECUTION_RESULT_MD = "execution_result.md";
-    /** @deprecated 过渡：EvalCase 产物断言读 v3 MD 产物（P3 切 JSON 后删除） */
-    @Deprecated
-    public static final String FILE_POI_SHORTLIST_MD = "poi_shortlist.md";
-    /** @deprecated 过渡：EvalCase 产物断言读 v3 MD 产物（P3 切 JSON 后删除） */
-    @Deprecated
-    public static final String FILE_ROUTE_PLAN_MD = "route_plan.md";
 
-    /** v4 参与者名单（三 Agent 目标架构；P2 完成前实际仍含 v3 子 Agent，元信息以前瞻为准） */
+    /** 当前会话元信息中的参与者名单。 */
     private static final List<String> PARTICIPANTS =
-            List.of("travel-master", "itinerary-agent", "reviewer-agent");
+            List.of("travel-master", "planning-agent", "reviewer-agent");
 
     private final CollabFileWriter writer;
     private final CollabFileReader reader;
@@ -116,7 +99,7 @@ public class TaskWorkspace {
         return readJson(userId, sessionId, FILE_SESSION_META, "session_meta.md", SessionMeta.class);
     }
 
-    /** 更新会话状态（读改写；meta 不存在时沉默跳过，与 v3 语义一致） */
+    /** 更新会话状态；元信息不存在时不执行写入。 */
     public void updateSessionStatus(String userId, String sessionId, String status) {
         Path dir = getTaskDir(userId, sessionId);
         reader.read(dir, FILE_SESSION_META, SessionMeta.class).ifPresent(meta ->
@@ -162,10 +145,7 @@ public class TaskWorkspace {
         return readJson(userId, sessionId, FILE_EXECUTION_RESULT, "execution_result.md", ExecutionResult.class);
     }
 
-    /**
-     * 追加一条任务执行结果（读-改-写；Agent 执行单线程串行，无并发竞争）。
-     * 替代 v3 的文本追加（appendExecutionResult）。
-     */
+    /** 追加一条任务执行结果（读-改-写；同一 Agent 会话内串行执行）。 */
     public void appendExecutionResult(String userId, String sessionId, ExecutionResult.TaskResultItem item) {
         Path dir = getTaskDir(userId, sessionId);
         ExecutionResult existing = reader.read(dir, FILE_EXECUTION_RESULT, ExecutionResult.class)
@@ -215,16 +195,13 @@ public class TaskWorkspace {
 
     // ==================== 内部 ====================
 
-    /**
-     * JSON 类型化读取 + 旧 MD 兼容：JSON 缺失且同名 .md 存在 → log.debug「旧格式忽略」，
-     * 返回 empty（v3 残留不迁移）。
-     */
+    /** 类型化读取 JSON；仅记录同名旧 MD 的存在，不解析或迁移旧内容。 */
     private <T> Optional<T> readJson(String userId, String sessionId,
                                      String jsonName, String legacyMdName, Class<T> type) {
         Path dir = getTaskDir(userId, sessionId);
         Optional<T> result = reader.read(dir, jsonName, type);
         if (result.isEmpty() && legacyMdName != null && Files.exists(dir.resolve(legacyMdName))) {
-            log.debug("旧格式 MD 忽略（v3 残留，不迁移）: {}", dir.resolve(legacyMdName));
+            log.debug("检测到旧 MD 产物，类型化读取不解析: {}", dir.resolve(legacyMdName));
         }
         return result;
     }

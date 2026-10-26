@@ -1,59 +1,20 @@
 package com.travelscope.agent;
 
 /**
- * 旅游助手主 Agent（单点查询接待员，S2.8 瘦身后）
- * <p>
- * S2.5 起 PLANNING 五步流收归 ChatService 代码编排（采集 workflow → 登记任务 →
- * 直持 planning-agent → 渲染收尾），master 不再承担规划编排：本类只保留单点查询
- * 与对话能力（天气/酒店/景点/车票/机票等工具直调）。
- * </p>
- * <p>
- * v3 的规划按需段（SYS_PROMPT_PLANNING_EXTENSION）与委派约束已随编排代码化删除；
- * 最终方案输出格式抽出为 {@link #ITINERARY_OUTPUT_FORMAT} 常量供编排层引用。
- * 提示词结构：角色锚定 → IMPORTANT 硬约束 → 能力与路由 → 简单请求流程 → 输出风格。
- * 工具细节以 skills 技能文件为唯一事实源。
- * </p>
+ * 旅游助手主 Agent，负责闲聊、知识问答和单点实时查询。
+ * 完整行程规划由 {@code ChatService} 直接编排，不经过本 Agent 委派。
+ * 工具参数与使用限制以 classpath 下的 skills 文件为准。
  */
 public class TravelMasterAgent {
 
     /** Agent 名称 */
     public static final String AGENT_NAME = "travel-master";
 
-    /** 最大推理迭代次数（15→8，S2.8：规划编排已代码化，单点查询/对话不需要多轮委派与汇总预算） */
+    /** 单点查询与对话的最大推理迭代次数。 */
     public static final int MAX_ITERS = 8;
 
-    /**
-     * 最终方案输出格式（🗺 结构模板）——S2.8 从 master 提示词抽出为独立常量：
-     * master 回归单点查询接待员后不再输出行程方案，该模板供编排层渲染引用
-     * （ChatService step5 / ItineraryAgent 草案格式对齐；当前暂无代码消费方）。
-     */
-    public static final String ITINERARY_OUTPUT_FORMAT = """
-            ## 🗺 {目的地}{天数}日行程方案
-            需求摘要：目的地 / 出发城市 / 日期区间 / 人数 / 偏好（一行列出）
-
-            ### 📅 分日行程
-            （每天一个小节；核心内容用 Markdown 表格：时段 | 活动 | 地点 | 交通/耗时）
-
-            ### 🚄 交通与住宿要点
-            （去程/返程车次或航班建议、酒店推荐区域与理由，各 2~3 行）
-
-            ### 💰 预算参考
-            （分项估算 + 总计）
-
-            ### ✅ 数据说明
-            （数据来源与实时性说明；「待确认」项集中列出提醒用户确认；
-            质检标注：通过写「✅ 已通过质量审阅（评分 x/100）」，超限写「⚠️ 当前最佳版本（已尽力，评分 x/100）」）
-
-            纪律：严禁在最终方案里出现任务编号（T1/T2）、工具名、委派说明、重试过程、
-            系统提示引用、中间进度汇报；方案中所有数据必须来自工具/子 Agent 产出的真实结果，
-            未取得的写「待确认」。
-            """;
-
-    /**
-     * 常驻段（全部意图每轮发送）：角色锚定 + IMPORTANT 硬约束 + 能力与路由（工具路由 +
-     * 不得委派约束）+ 简单请求流程 + 输出风格。
-     */
-    public static final String SYS_PROMPT_CORE = """
+    /** 主 Agent 的常驻系统提示词。 */
+    public static final String SYS_PROMPT = """
             你是 TravelScope 智能旅游助手的主 Agent（travel-master），负责理解用户的旅行需求，给出准确、实用的回答。
 
             IMPORTANT —— 硬性约束（任何情况下不可违反）：
@@ -101,7 +62,4 @@ public class TravelMasterAgent {
               机器转场词；句式自然，长短句搭配
             - 闲聊/查询类：直接给答案，先结论后细节，简单问题不超过 10 行
             """;
-
-    /** 系统提示词（S2.8 起 = SYS_PROMPT_CORE；规划按需段已随编排代码化删除） */
-    public static final String SYS_PROMPT = SYS_PROMPT_CORE;
 }

@@ -34,18 +34,10 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * 协作契约工具三件套（S2.6）：planning-agent 触发代码服务与落盘契约文件的唯一入口。
- * <ul>
- *   <li>{@code retrieve_poi_candidates}：POI 候选池检索（PoiRetrievalService 批量编排，零 LLM）</li>
- *   <li>{@code plan_route}：分日路线求解（RoutePlannerService VRPTW 代码求解，零 LLM），
- *       输入读会话目录的 poi_shortlist.json，天数/目的地取 intake_result.json</li>
- *   <li>{@code write_collab_file}：契约文件落盘（CollabFileWriter：Schema 校验 + 原子写，
- *       文件名→DTO 强绑定）。白名单四契约中 poi_shortlist / itinerary_draft 已加手写硬锁
- *       （卡③名单制 / conv-78 草案防绕过，走专属工具），实际可写仅 review_report /
- *       review_passed（S2.7 reviewer 产物）</li>
- * </ul>
- * userId 经 RuntimeContext 注入（不加 @ToolParam）；sessionId 由委派说明显式给出。
- * 全部错误以 ERROR 前缀文本返回（引导 agent 修正调用），不抛异常打断 ReAct 循环。
+ * 规划协作工具集，封装 POI 检索与名单校验、路线求解、草案组装与修订，以及评审产物写入。
+ * 规划产物由各专用工具写入；{@code write_collab_file} 在生产环境只允许写
+ * {@code review_report.json} 和 {@code review_passed.json}。userId 来自运行上下文，sessionId
+ * 由任务说明传入。可恢复的调用错误以 {@code ERROR:} 文本返回，避免中断 Agent 循环。
  */
 @Service
 public class CollabTools {
@@ -127,10 +119,9 @@ public class CollabTools {
     }
 
     /**
-     * POI 筛选名单制（卡③：LLM 只传选中名单，代码校验候选池+补硬字段+落盘，零手写 JSON）。
-     * 候选池来源=首轮 retrieve_poi_candidates 的返回全文（记账中间件登记进 POI 缓存）；
-     * 名单校验=候选 content 文本 contains 命中（池外名直接拒绝，防幻觉加锁）；
-     * lng/lat/rating/openHours 候选池无结构化字段（在 content 文本内）→ 置空（契约允许）。
+     * POI 名单定案。候选池全量由 {@code retrieve_poi_candidates} 写入缓存，模型只接收瘦身视图。
+     * 名单逐项通过实时 POI 数据源验证并补坐标、评分、开放时间等硬字段；无法实证的名称会使
+     * 本次定案失败。候选池命中用于继承来源、摘要和图片。
      */
     @Tool(description = "POI 筛选定案（你只给选中名单，代码校验+补字段+落盘 poi_shortlist.json）。"
             + "names：选中的 POI 名（逗号/顿号分隔；候选池内优先，领域常识名也可——代码会逐一调实时 POI 库校验并补坐标/开放时段，查无此地会被整体拒绝）；"

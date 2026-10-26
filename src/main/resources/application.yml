@@ -302,13 +302,10 @@ travelscope:
       - pattern: "(今天|明天|后天|大后天|周末|下周|这周|本周|未来).{0,8}(天气|气温|温度)"
         intent: TOOL_CALL
 
-  # ---- 需求采集 workflow 配置（S2.1 清单卡片方案）----
-  # RequirementExtractor 抽取置信度门槛：低于此值的字段丢弃，交清单卡片/反问兜底（宁缺毋滥）
+  # ---- 规划需求抽取 ----
+  # 低于门槛的字段不进入需求状态，由前端需求表单补齐。
   requirement:
     extraction-min-confidence: 0.7
-    # 清单卡片开关（S2.3）：PLANNING 轮先过需求采集 workflow 推 requirement_form 卡片；
-    # false = 退回 v3 的 intake-agent 委派链路（S2.5 整体编排替换后本开关保留为降级闸门）
-    form-enabled: true
 
   # ---- LLM Gateway 配置（FR-S09：限流/熔断/快慢泳道/降级）----
   # 对话准入层（ChatService→LlmGateway）：全局并发 + 单用户并发 2 + 全局 QPS

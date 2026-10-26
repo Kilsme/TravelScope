@@ -4,15 +4,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 行程需求状态机（v3 需求文档 3.3 决策三 / FR-S02）
- * <p>
- * 「判断缺什么」是纯确定性逻辑，由代码承载（本类的 {@link #missingFields()}），
- * intake-agent 调用 RequirementTools 查询/写回，判断环节零模型调用。
- * 状态跨 spawn 持久在 TripRequirementStore（userId:sessionId 双键隔离）。
- * </p>
- * <p>
- * TODO: 迁移 Redis hash {@code trip:req:{userId}:{sessionId}}（FR-S02，与 AgentState 同隔离级别）。
- * </p>
+ * 行程需求状态。缺失字段由 {@link #missingFields()} 确定性计算，需求 workflow 负责查询和写回；
+ * 状态通过 TripRequirementStore 按 userId/sessionId 隔离并持久化。
  */
 public class TripRequirementState {
 

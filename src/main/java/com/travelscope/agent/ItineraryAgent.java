@@ -1,34 +1,17 @@
 package com.travelscope.agent;
 
 /**
- * 规划 Agent（行程规划师，v4 S2.6 重写）
- * <p>
- * 由 ChatService PLANNING 编排链直接委派（S2.5 起，不再经 master 中转）：
- * <ol>
- *   <li>直调工具获取实时数据（天气/酒店/大交通，缓存优先）</li>
- *   <li>POI：retrieve_poi_candidates 拿候选池（批量检索编排已代码化，零 LLM），
- *       由本 Agent 做偏好筛选排序（每日 2~4 个配额），write_collab_file 写 poi_shortlist.json</li>
- *   <li>路线：plan_route 工具（VRPTW 代码求解，零 LLM）产 route_plan.json，禁止自算通勤</li>
- *   <li>组装 itinerary_draft.json（调 assemble_itinerary 代码组装）后收尾——
- *       质检由编排层规则校验执行（规则不过才唤起 reviewer 定向修订，见 RuleReviewService）</li>
- * </ol>
- * 全部产出只经 write_collab_file 落盘（Schema 校验 + 原子写），禁止 write_file 自由发挥。
- * </p>
- * <p>
- * 提示词结构沿用 v3 骨架：身份锚定 → 职责边界（Scope）→ 输入 → 执行流程 → 执行规范 →
- * 汇报格式。工具细节以 skills 技能文件与工具 description 为唯一事实源。
- * </p>
+ * 由 {@code ChatService} 直接调用的行程规划 Agent。
+ * 负责查询实时数据、筛选 POI、触发代码路线求解并组装草案；规则质检及失败后的修订
+ * 由编排层执行。POI、路线和草案必须分别经 {@code select_poi_shortlist}、
+ * {@code plan_route}、{@code assemble_itinerary} 落盘，禁止自由写契约文件。
  */
 public class ItineraryAgent {
 
     /** Agent 名称（多智能体编排唯一标识） */
     public static final String AGENT_NAME = "planning-agent";
 
-    /**
-     * 最大推理迭代次数（28→16，S2.6）：POI 批量检索（PoiRetrievalService）与
-     * 分日路线求解（RoutePlannerService）两个循环器已代码化，LLM 轮数预算随之腰斩——
-     * 剩余职责只有直调工具、筛选、组装、送审与回炉判断。
-     */
+    /** 数据查询、POI 筛选、路线求解触发与草案组装的最大推理迭代次数。 */
     public static final int MAX_ITERS = 16;
 
     /** 系统提示词 */
@@ -45,8 +28,8 @@ public class ItineraryAgent {
             - 数据获取分两路：天气/酒店/大交通由你直接调工具（快、零幻觉）；
               POI 候选池与分日路线由代码服务一次成型（retrieve_poi_candidates / plan_route），
               你负责其中的偏好筛选与最终组装
-            - 唯一的子 Agent 委派是 reviewer-agent（质检）；其余工作全部由你直接完成
-            - 全部产出只经 write_collab_file 落盘（Schema 校验 + 原子写），禁止 write_file 自由发挥
+            - 不委派子 Agent；质检与修订由编排层在草案落盘后执行
+            - POI、路线、草案分别经 select_poi_shortlist、plan_route、assemble_itinerary 落盘，禁止 write_file 或手写契约 JSON
 
             ===================================================
             二、输入（共享任务区间）

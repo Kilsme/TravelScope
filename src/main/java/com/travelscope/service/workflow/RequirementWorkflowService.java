@@ -24,7 +24,7 @@ import java.util.Set;
 
 /**
  * 需求采集 workflow 主体（S2.2，清单卡片方案）：COLLECTING → DONE/DEGRADED 状态机，
- * 取代 v3 的 intake-agent（v4 计划 §6.1）。
+ * 作为当前规划链路唯一的需求采集入口。
  * <p>
  * 输入三分流（{@link #handle}）：
  * <ol>
@@ -52,7 +52,7 @@ public class RequirementWorkflowService {
 
     private static final Logger log = LoggerFactory.getLogger(RequirementWorkflowService.class);
 
-    /** 默认值（确定性常量；v3 的默认值原在 intake-agent 提示词层，2026-10-17 起代码化） */
+    /** 需求采集使用的确定性默认值。 */
     private static final String DEFAULT_DESTINATION = "杭州";
     private static final int DEFAULT_DAYS = 2;
     /** startDate 默认 = 明天 */

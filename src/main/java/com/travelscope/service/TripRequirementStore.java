@@ -10,12 +10,9 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 行程需求状态仓库（v3 需求文档 3.3 / FR-S02）
+ * 行程需求状态仓库。TripRequirementState 按 {@code userId:sessionId} 双键隔离，供需求
+ * workflow 跨多轮读写。
  * <p>
- * TripRequirementState 状态机的存储层，注册键 {@code userId:sessionId} 双键隔离
- * （对齐 TaskRegistry 模式），intake-agent 每轮被委派时经 RequirementTools 读写。
- * 状态跨 spawn 持久，多轮反问之间不丢失。
- * </p>
  * <p>
  * <b>Redis hash 存储</b>：{@code trip:req:{userId}:{sessionId}}，hash 字段即状态字段
  * （destination/days/startDate/fromCity/budget/preference/people/special/status/clarifyCycles），
@@ -104,7 +101,7 @@ public class TripRequirementStore {
 
     /**
      * 反问轮次 +1（ask_user 工具调用时触发）：
-     * 达到上限且必填仍缺 → 置 DEGRADED（带默认值放行，intake-agent 收尾时标注「待确认」）
+     * 达到上限且必填仍缺 → 置 DEGRADED（带默认值放行，最终方案标注「待确认」）
      */
     public TripRequirementState incrementClarifyCycles(String userId, String sessionId) {
         TripRequirementState s = get(userId, sessionId);

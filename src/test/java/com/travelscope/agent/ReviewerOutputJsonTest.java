@@ -54,9 +54,9 @@ class ReviewerOutputJsonTest {
                 .doesNotContain("review_passed.md")
                 .doesNotContain("review_report.md")
                 .doesNotContain("itinerary_draft.md")
-                // write_file 只允许以「已从工具面移除」的禁令形式出现一次（工具收编声明）
+                // 自由写文件与联网检索只允许以禁令形式出现一次。
                 .containsOnlyOnce("write_file")
-                .contains("write_file / web_search / web_fetch 已从你的工具面移除");
+                .contains("edit_file / write_file / web_search / web_fetch 不可用");
         // 卡 A/B 后：5 维评分维度（含偏好匹配）、通过标准保留；「POI 合理性」已改为「偏好匹配」
         assertThat(ReviewerAgent.SYS_PROMPT)
                 .contains("完备性").contains("可行性").contains("时间冲突")

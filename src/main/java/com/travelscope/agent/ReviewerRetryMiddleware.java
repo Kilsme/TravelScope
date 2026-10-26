@@ -15,7 +15,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -24,29 +23,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * Reviewer 回炉保险丝（R4：拦 reviewer 的修订轮次，上限 1 次）
- * <p>
- * 卡 B 起回炉闭环移入 reviewer 内部（评审→修订→复审，不再经 planner 重送审）。
- * planner 每轮规划只 spawn reviewer 一次，旧的「拦 planner 第 3+ 次 spawn」保险丝不再触发，
- * 新的保险丝落在 reviewer 自己的工具链上：拦「reviewer 第 2+ 次 revise_poi_selection」。
- * </p>
- * <p>
- * R4（v6）：上限 2→1——R1 质检分级后能走到回炉的都是 HARD 问题，软问题已不占回炉额度，
- * 一次修订不收敛即带问题交付（DEGRADED 三件套：ERROR 锚点 review_retry_exceeded /
- * review_report.json 标记 deliveryMode=DEGRADED+未解决清单 / done 载荷 caveat，
- * 契约标记由编排层 ChatService step5 落，本中间件只负责拦截与锚点日志）。
- * </p>
- * <p>
- * 挂载方式：本中间件加在 buildPlannerAgent 的 plannerMiddlewares（挂在 planner 上）；
- * 框架 buildDeclaredFactory 会把父 agent 的 middlewares 列表 copy 给 spawn 出的子 agent
- * （reviewer），故本中间件自动生效于 reviewer 的 onActing——onActing 里用
- * {@code agent.getName()} 过滤，只拦 reviewer-agent 的 revise_poi_selection。
- * 计次键同旧版 userId:sessionId（reviewer 与 planner 共享 RuntimeContext）。
- * </p>
+ * reviewer-agent 修订次数保险丝。每个用户会话最多允许一次 {@code revise_poi_selection}；
+ * 后续尝试改写为 {@code review_retry_hint}，由编排层按当前最佳版本生成降级交付标记。
  */
 public class ReviewerRetryMiddleware implements MiddlewareBase {
 
@@ -64,9 +44,6 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
 
     /** userId:sessionId → 修订计数（跨轮持久于进程内；会话粒度隔离） */
     private final Map<String, AtomicInteger> spawnCounts = new ConcurrentHashMap<>();
-
-    /** 评审产物中的总分行（旧 .md 兜底用；JSON 产物走 readLatestReviewOutcome typed 读取） */
-    private static final Pattern SCORE_PATTERN = Pattern.compile("总分[:：]\\s*(\\d+)");
 
     public ReviewerRetryMiddleware(TaskWorkspace taskWorkspaceService) {
         this(taskWorkspaceService, TracingHelper.NOOP);
@@ -164,7 +141,7 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
         }
     }
 
-    /** 读取最近一次评审结论写入打点属性：S2.7 起 JSON 契约优先（typed total），旧 .md 正则兜底 */
+    /** 从 JSON 评审契约读取最近一次结论并写入打点属性。 */
     private void readLatestReviewOutcome(String userId, String sessionId, Map<String, String> attrs) {
         try {
             var passedJson = taskWorkspaceService.readReviewPassed(userId, sessionId);
@@ -179,30 +156,16 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
                 attrs.put("score", String.valueOf(reportJson.get().total()));
                 return;
             }
-            // 旧版 .md 兜底（v3 存量会话目录）
-            Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            Path passed = dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD);
-            Path report = dir.resolve(TaskWorkspace.FILE_REVIEW_REPORT_MD);
-            Path file = Files.exists(passed) ? passed : (Files.exists(report) ? report : null);
-            if (file == null) {
-                return;
-            }
-            attrs.put("result", file == passed ? "PASS" : "FAIL");
-            Matcher m = SCORE_PATTERN.matcher(Files.readString(file, StandardCharsets.UTF_8));
-            if (m.find()) {
-                attrs.put("score", m.group(1));
-            }
         } catch (Exception e) {
             log.debug("读取评审产物失败（review-attempt 打点缺 result/score）: {}", e.getMessage());
         }
     }
 
-    /** review_passed 产物是否存在（存在 = 质检已通过；S2.7 起 JSON，旧 .md 双读兜底） */
+    /** review_passed.json 是否存在。 */
     private boolean reviewPassedFileExists(String userId, String sessionId) {
         try {
             Path dir = taskWorkspaceService.getTaskDir(userId, sessionId);
-            return Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED))
-                    || Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED_MD));
+            return Files.exists(dir.resolve(TaskWorkspace.FILE_REVIEW_PASSED));
         } catch (Exception e) {
             log.debug("检查 review_passed 产物失败（按不存在处理）: {}", e.getMessage());
             return false;

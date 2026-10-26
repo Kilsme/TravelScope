@@ -55,9 +55,8 @@ import java.util.Map;
  * 用户消息 → 意图分类 Agent（结构化输出）
  *   ├─ CHAT / TOOL_CALL / RAG → 主 Agent + 路由指令（IntentRouterMiddleware 禁止委派）
  *   ├─ RAG（知识库可用时）    → 先检索知识片段拼入上下文再回答
- *   └─ PLANNING              → 代码五步编排（S2.5）：采集 workflow → 登记任务清单 →
- *                              直持 planning-agent 执行 → 渲染收尾（见 planningOrchestration）;
- *                              form 开关关闭 / workflow 异常时落回 v3 master 规划链兜底
+ *   └─ PLANNING              → 代码编排：需求采集 → 任务登记 → planning-agent 执行 →
+ *                              规则质检与最终渲染（见 planningOrchestration）
  * </pre>
  * 事件流通过 SseEmitter 推送给前端；意图分类（阻塞调用）与 Agent 执行均调度到
  * boundedElastic 线程池，不占用容器线程。
@@ -140,8 +139,6 @@ public class ChatService {
     /** S2.5 PLANNING 编排直持的行程规划 Agent（方案 B 决策：编排/渲染收归代码、不经 master
      *  中转——LLM 不确定性收敛到 planner 的执行本职；master 兜底链（v3）原样保留） */
     private final HarnessAgent itineraryPlanningAgent;
-    /** MinIO 对象存储（私人讲解员图片轮：上传图片本体，content_blocks 只存对象引用） */
-    private final MinioService minioService;
     /** 讲解专用模型池（私人讲解员图片轮）：多模态调用固定 kimi-k3——glm-5-3 无视觉，
      *  独立池与主链路选路互不拖累（kimi 看图慢但不影响分类/规划的 glm 快路径） */
     private final Model guideModel;
@@ -165,7 +162,6 @@ public class ChatService {
             com.travelscope.service.workflow.TaskBacklogPlanner taskBacklogPlanner,
             @org.springframework.beans.factory.annotation.Qualifier("itineraryPlanningAgent")
                     HarnessAgent itineraryPlanningAgent,
-            MinioService minioService,
             @org.springframework.beans.factory.annotation.Qualifier("guideModelPool")
                     Model guideModel) {
         this.travelMasterAgent = travelMasterAgent;
@@ -195,7 +191,6 @@ public class ChatService {
         this.requirementWorkflowService = requirementWorkflowService;
         this.taskBacklogPlanner = taskBacklogPlanner;
         this.itineraryPlanningAgent = itineraryPlanningAgent;
-        this.minioService = minioService;
         this.guideModel = guideModel;
     }
 
@@ -218,7 +213,7 @@ public class ChatService {
     }
 
     /**
-     * PLANNING 五步编排（S2.5：编排收归代码，替代 master 的 LLM 拆任务/委派/整合）：
+     * PLANNING 五步代码编排：
      * <ol>
      *   <li><b>step1 需求采集</b>：workflow.handle——NEED_USER_INPUT → 推 requirement_form
      *       事件本轮结束；CANCELLED → 复位结束；COLLECTED（含 COLLECTING 期间文本增量后
@@ -231,22 +226,11 @@ public class ChatService {
      *       （planner 提示词中的 .md 路径差异由 S2.6 提示词重写收口）</li>
      *   <li><b>step4 等待完成</b>：共用管线 600s 泳道超时；超时按 wait_async_results 等价
      *       语义截断（直持模式无异步提升），转 step5 尽力渲染</li>
-     *   <li><b>step5 渲染收尾</b>：读 itinerary_draft.md（缺则 execution_result.md）+ 代码生成
-     *       质检标注（review_passed.md 存在 → ✅ 已通过质量审阅；否则 → ⚠️ 当前最佳版本
-     *       （已尽力），文案规则同 v3）；review_report 事件由 handleComplete 的标记驱动
-     *       逻辑发出（标注文本自带「已通过质量审阅/已尽力」标记），handleComplete 零改动</li>
+     *   <li><b>step5 质检与渲染</b>：读取 itinerary_draft.json，运行规则质检；硬约束失败时
+     *       调用独立 reviewer 做一次定向修订，随后从 JSON 的 markdownBody 渲染最终正文并
+     *       发送结构化 review_report 事件。</li>
      * </ol>
-     * 返回 {@code null} = form 开关关闭或 workflow 异常 → 落回 runAgent 的 v3 master
-     * 规划链（兜底路径，其硬注入/IntentRouterMiddleware 路由指令原样保留）。
      */
-    private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
-                                                  String userMessage, StringBuilder replyBuf,
-                                                  StringBuilder thinkingFull,
-                                                  TurnUsageTracker usageTracker) {
-        return planningOrchestration(conversation, userId, userMessage, replyBuf,
-                thinkingFull, usageTracker, null, "LIVE", false, null, itineraryPlanningAgent);
-    }
-
     private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
             String userMessage, StringBuilder replyBuf, StringBuilder thinkingFull,
             TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation,
@@ -259,9 +243,6 @@ public class ChatService {
             String toolMode, boolean failTools, String fixtureCase, HarnessAgent activePlanner,String locale) {
         TurnCancellation.check(observation);
         var cancellation = TurnCancellation.from(observation);
-        if (!appProperties.getRequirement().isFormEnabled()) {
-            return null;
-        }
         String userIdStr = String.valueOf(userId);
         String sessionId = SESSION_PREFIX + conversation.getId();
         // 同对话新一轮规划：需求已 DONE/DEGRADED 时重开为 COLLECTING（保留旧字段），
@@ -287,9 +268,8 @@ public class ChatService {
                     : requirementWorkflowService.handle(userMessage, userIdStr, sessionId, observation);
         } catch (Exception e) {
             TurnCancellation.rethrow(e, observation);
-            log.warn("需求采集 workflow 异常（降级走 v3 规划链）: 会话={}, 原因={}",
-                    sessionId, e.getMessage());
-            return null;
+            log.error("需求采集失败，终止本轮规划: 会话={}, 原因={}", sessionId, e.getMessage());
+            return Flux.error(new IllegalStateException("需求采集失败，请稍后重试", e));
         }
         TurnCancellation.check(observation);
         switch (outcome.status()) {
@@ -552,10 +532,8 @@ public class ChatService {
     }
 
     /**
-     * 质检标注（代码版 v3 文案规则）：质检通过 →「✅ 已通过质量审阅（评分 x/100）」；
-     * 未通过 →「⚠️ 当前最佳版本（已尽力，评分 x/100）」，R4 起 DEGRADED 交付追加
-     * 「N 项未解决问题，详见质检明细」（前端折叠区渲染可展开清单）；未走到质检 → 空串。
-     * S2.7 起 JSON 契约优先（typed total）；旧 .md 产物正则兜底（v3 存量会话目录）。
+     * 质检通过显示通过标注；未通过显示当前最佳版本及未解决问题数量。JSON 评审契约是
+     * 当前数据源，旧 MD 评审文件仅用于存量会话兼容；未产生评审结果时返回空串。
      */
     private String reviewAnnotation(String userId, String sessionId) {
         try {
@@ -1094,10 +1072,6 @@ public class ChatService {
      *
      * @return 分类结果；失败返回 null（主 Agent 按自身提示词自主路由，不注入指令）
      */
-    private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage) {
-        return resolveIntent(conversation, userId, userMessage, null);
-    }
-
     private IntentResult resolveIntent(Conversation conversation, Long userId, String userMessage,
             com.travelscope.assessment.ObservationContext observation) {
         return resolveIntent(conversation, userId, userMessage, observation, true);
@@ -1193,26 +1167,6 @@ public class ChatService {
         return null;
     }
 
-    /**
-     * 运行主 Agent 并把事件流映射为 SSE 事件
-     */
-    private Flux<ChatEvent> runAgent(Conversation conversation, Long userId, String userMessage,
-                                     IntentResult intent, StringBuilder replyBuf, StringBuilder thinkingFull,
-                                     TurnUsageTracker usageTracker, com.travelscope.assessment.ObservationContext observation) {
-        return runAgent(
-                conversation,
-                userId,
-                userMessage,
-                intent,
-                replyBuf,
-                thinkingFull,
-                usageTracker,
-                observation,
-                "LIVE",
-                false,
-                null,
-                travelMasterAgent);
-    }
     private Flux<ChatEvent> runAgent(Conversation conversation,Long userId,String userMessage,IntentResult intent,
             StringBuilder replyBuf,StringBuilder thinkingFull,TurnUsageTracker usageTracker,
             com.travelscope.assessment.ObservationContext observation,String toolMode,boolean failTools,String fixtureCase,HarnessAgent activeAgent) {
@@ -1267,25 +1221,6 @@ public class ChatService {
             // topK 走 RagConfig 配置（原硬编码 5）
             outgoing = augmentWithRag(userMessage,
                     ragService.retrieve(userMessage, ragTopK));
-        }
-        // v3 FR-S02 代码层兜底：PLANNING 且需求未收齐时，向本轮用户消息前置 intake 委派指令。
-        // 模型对提示词的委派遵循性有波动（实测约 50% 轮次 master 只回文本不委派），
-        // 应用层注入是硬保证——intake 收齐（DONE/DEGRADED）后不再注入。
-        if (type == IntentType.PLANNING) {
-            String agentSessionIdForReq = SESSION_PREFIX + conversation.getId();
-            if (!tripRequirementStore.isCollected(String.valueOf(userId), agentSessionIdForReq)) {
-                outgoing =
-                        "【系统指令】需求收集尚未完成，请立即调用 agent_spawn 委派 intake-agent"
-                                + "（同步等待，不要传 timeout_seconds=0），任务说明中带上：本轮用户消息："
-                                + userMessage
-                                + "；协作目录: "
-                                + taskWorkspaceService.collabDirRelativePath(agentSessionIdForReq)
-                                + "；sessionId: "
-                                + agentSessionIdForReq
-                                + "。禁止自己反问用户。\n\n【用户消息】"
-                                + userMessage;
-                log.info("注入 intake 委派指令（需求未收齐）: 会话={}", agentSessionIdForReq);
-            }
         }
         // 对话历史注入（失忆修复 Fix 2，全部意图生效）：记忆摘要 + 近 N 轮 messages 表历史前置——
         // 用户短回答（如「长春」）时 master 仍能看到之前聊过什么；同时兜底框架
@@ -1346,15 +1281,6 @@ public class ChatService {
      *
      * @param rootAgent 根 Agent 名（事件归属标签：runAgent=travel-master；编排=planning-agent）
      */
-    private Flux<ChatEvent> mapAgentEventStream(Flux<AgentEvent> events, String rootAgent,
-                                                Conversation conversation, IntentType type,
-                                                boolean planning, Duration laneTimeout,
-                                                StringBuilder replyBuf, StringBuilder thinkingFull,
-                                                TurnUsageTracker usageTracker) {
-        return mapAgentEventStream(events, rootAgent, conversation, type, planning, laneTimeout,
-                replyBuf, thinkingFull, usageTracker, null);
-    }
-
     private Flux<ChatEvent> mapAgentEventStream(Flux<AgentEvent> events, String rootAgent,
             Conversation conversation, IntentType type, boolean planning, Duration laneTimeout,
             StringBuilder replyBuf, StringBuilder thinkingFull, TurnUsageTracker usageTracker,
@@ -1490,8 +1416,7 @@ public class ChatService {
             var intent = resolveIntent(conversation, isolatedId, message, observation, false);
             Flux<ChatEvent> execution = null;
             HarnessAgent planner = null;
-            if (intent != null && intent.toIntentType() == IntentType.PLANNING
-                    && appProperties.getRequirement().isFormEnabled()) {
+            if (intent != null && intent.toIntentType() == IntentType.PLANNING) {
                 planner = assessmentPlanners.getObject();
                 execution = planningOrchestration(conversation, isolatedId, message, reply, thinking,
                         usage, observation, mode, failTools, fixtureCase, planner);
@@ -1749,14 +1674,12 @@ public class ChatService {
     }
 
     /**
-     * PLANNING 轮最终方案整合（过程/结果分离改造的数据源）：
-     * itinerary_draft.md 优先（planner 产出的完整方案）；缺失时退化 execution_result.md；
-     * 都无返回 null（本轮没走到方案产出，如反问轮/中途失败——正文为空，活动流已展示过程）。
+     * 读取规划最终正文：优先使用 itinerary_draft.json 的 markdownBody；JSON 缺失时兼容读取
+     * 旧 itinerary_draft.md 和 execution_result.md。没有可用产物时返回 null。
      */
     private String assemblePlanningReply(String userId, String agentSessionId) {
         try {
-            // S2.6：JSON 契约优先——planner 经 write_collab_file 产 itinerary_draft.json
-            //（markdownBody 即方案正文）；缺失时退回 v3 的 .md 产物（过渡期兼容）
+            // 当前契约正文位于 itinerary_draft.json.markdownBody。
             java.util.Optional<com.travelscope.collab.ItineraryDraft> draftJson =
                     taskWorkspaceService.readItineraryDraft(userId, agentSessionId);
             if (draftJson.isPresent() && draftJson.get().markdownBody() != null
@@ -1766,7 +1689,7 @@ public class ChatService {
                 return draftJson.get().markdownBody();
             }
             java.nio.file.Path dir = taskWorkspaceService.getTaskDir(userId, agentSessionId);
-            // 过渡（S0.5）：planner 产物 JSON 化前的 v3 存量 .md 兜底
+            // 旧 MD 会话兼容。
             java.nio.file.Path draft = dir.resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD);
             if (java.nio.file.Files.exists(draft)) {
                 String content = java.nio.file.Files.readString(draft, java.nio.charset.StandardCharsets.UTF_8);

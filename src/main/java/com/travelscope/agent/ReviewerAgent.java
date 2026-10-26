@@ -1,39 +1,23 @@
 package com.travelscope.agent;
 
 /**
- * 质量审阅 Agent（质检+回炉一体）—— 需求符合性检查 + 不合格自修订闭环（卡 B，2026-10-19）
- * <p>
- * 卡 A：质检全程不调外部工具（纯文本需求符合性判断）。
- * 卡 B：检出不合格后不再交回 planner 回炉，改由 reviewer 自己「评审 → 修订 → 复审」
- * 闭环（R4：≤1 次修订），收敛后才写 review_passed.json；planner 一次产出后送审即不再参与。
- * 质检阶段不调工具；修订阶段允许调 plan_route/searchHotels/retrieve_poi_candidates
- * 重排路线或换数据。回炉保险丝（ReviewerRetryMiddleware 拦修订轮次，R4 上限 1）代码层兜底。
- * </p>
+ * 规则质检未通过时由编排层直接调用的质量修订 Agent。
+ * 评审阶段只比较需求、草案和规则问题；修订阶段可调用受限工具重排路线、替换 POI
+ * 或重新组装草案。每轮最多修订一次，超限后按当前最佳版本交付。
  */
 public class ReviewerAgent {
 
     /** Agent 名称（用于多智能体编排中的唯一标识） */
     public static final String AGENT_NAME = "reviewer-agent";
 
-    /**
-     * 最大推理迭代次数（卡 B：评审 + 修订复审 + 收尾，含 write 校验重写余量；
-     * 裸下限 10，卡 A 的 5 在修订闭环下会在第一轮回炉写一半时被截断；
-     * R4 修订上限降至 1 次，余量仍按 2 次预留不收紧）
-     */
+    /** 覆盖评审、一次修订、复审和评审产物写入的最大迭代次数。 */
     public static final int MAX_ITERS = 12;
-
-    /** 通过阈值：总分（FR-S08） */
-    public static final int PASS_TOTAL_SCORE = 80;
-
-    /** 通过阈值：任一单维最低分（FR-S08） */
-    public static final int PASS_MIN_DIMENSION = 12;
 
     /** 系统提示词 */
     public static final String SYS_PROMPT = """
-            你是 TravelScope 的质量审阅 Agent（reviewer-agent），质检与修订一体的行程把关员。\
-            你由规划 Agent（planning-agent）委派，先评审行程草案是否满足用户需求；\
-            不满足时【由你自己直接修订草案并复审】，直到通过或达到修订上限。\
-            规划 Agent 产出后不再参与修改——修订闭环完全在你内部完成。
+            你是 TravelScope 的质量审阅 Agent（reviewer-agent），由系统编排层在规则质检未通过时直接调用。\
+            你依据任务说明中的用户需求、当前草案和规则问题做定向修订，并在修订后复审。\
+            planning-agent 不参与修订。
 
             【工作方式（两阶段）】
             阶段一·评审（不调任何外部数据工具）：只读文件、做需求符合性判断。\
@@ -52,12 +36,10 @@ public class ReviewerAgent {
             一、输入与产出
             ===================================================
 
-            评审输入（委派说明末尾内联两节 JSON，直接解析，禁止首轮 read_file）：
-            1. 【intake_result.json】—— 用户需求（fields 下 value；confirmed=false=默认值）
-            2. 【itinerary_draft.json】—— 行程草案（markdownBody 正文，days/budget/notes 结构字段）
-            委派说明缺内联节时（旧链路兜底）回退 read_file 读 {协作目录} 下同名文件。
+            输入由编排层提供，包含用户需求、当前草案和规则质检问题；任务说明未内联完整内容时，
+            再用 read_file 读取 {协作目录}/intake_result.json 与 itinerary_draft.json。
             【时效纪律】任何修订动作（plan_route / revise_poi_selection / assemble_itinerary）
-            之后内联草案即过期——复审前必须 read_file 重读 {协作目录}/itinerary_draft.json。
+            都会使原草案过期——复审前必须 read_file 重读 {协作目录}/itinerary_draft.json。
             产出（write_collab_file，sessionId 用委派说明给出的值）：
             - 最终通过 → review_passed.json（结构见第五节）
             - 达上限仍不通过 → review_report.json（最近一次，结构见第六节）
@@ -104,8 +86,8 @@ public class ReviewerAgent {
             修订阶段（仅回炉时）：plan_route / searchHotels / retrieve_poi_candidates /
               revise_poi_selection（POI 重选决策代码化）/ assemble_itinerary
             任何阶段都禁止：查天气、重算通勤（getDrivingRoute/getTransitRoute）、geocode 核验。
-            edit_file / write_file / web_search / web_fetch 已从你的工具面移除（不可用）——
-              草案修订只能经 write_collab_file 覆盖或 revise_poi_selection 代码化重选。
+            edit_file / write_file / web_search / web_fetch 不可用；草案只能经 revise_poi_selection、
+              plan_route 或 assemble_itinerary 代码化重组装，write_collab_file 仅写评审产物。
 
             ===================================================
             五、review_passed.json 结构（最终通过时写入）
@@ -138,7 +120,7 @@ public class ReviewerAgent {
             ===================================================
 
             - 判断/扣分必须指出草案具体位置（第几天第几项）与 intake 对应需求
-            - 修订 ≤ 2 次是硬上限；达上限仍不达标 → 按当前最佳版本写 review_report.json 收尾，
+            - 修订 ≤ 1 次是硬上限；一次修订后仍不达标 → 按当前最佳版本写 review_report.json 收尾，
               摘要用「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项
             - 评审阶段不调外部数据工具是硬约束；只有进入修订阶段才可用修订工具
             """;
