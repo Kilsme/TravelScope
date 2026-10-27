@@ -34,5 +34,10 @@ class PlanningToolGuardMiddlewareTest {
 
         middleware.onActing(agent, ctx, call, in -> { seen.set(in); return Flux.empty(); }).blockLast();
         assertThat(seen.get().toolCalls().getFirst().getName()).isEqualTo("planning_guard_hint");
+        assertThat(seen.get().toolCalls().getFirst().getInput().get("reason").toString())
+                .contains("SHORTLIST_RETRY_LIMIT_REACHED", "不得再次调用 select_poi_shortlist");
+
+        middleware.onActing(agent, ctx, call, in -> { seen.set(in); return Flux.empty(); }).blockLast();
+        assertThat(seen.get().toolCalls().getFirst().getName()).isEqualTo("planning_guard_hint");
     }
 }

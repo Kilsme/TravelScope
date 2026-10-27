@@ -68,8 +68,13 @@ class PoiRetrievalServiceTest {
     }
 
     private static String attractionJson(String name, String source) {
-        return "{\"name\":\"" + name + "\",\"address\":\"某某路1号\",\"location\":\"120.15,30.24\","
-                + "\"rating\":\"4.6\",\"source\":\"" + source + "\"}";
+        return attractionJson(name, source, "120.15,30.24", null);
+    }
+
+    private static String attractionJson(String name, String source, String location, String sourceId) {
+        return "{\"name\":\"" + name + "\",\"address\":\"某某路1号\",\"location\":\"" + location + "\","
+                + "\"rating\":\"4.6\",\"source\":\"" + source + "\""
+                + (sourceId == null ? "" : ",\"sourceId\":\"" + sourceId + "\"") + "}";
     }
 
     private static String poisResponse(String... attractions) {
@@ -194,6 +199,28 @@ class PoiRetrievalServiceTest {
         // 首个变体补满即停
         verify(attraction).searchPois("杭州", "杭州", 4);
         verify(attraction, never()).searchPois(any(), org.mockito.ArgumentMatchers.eq("西湖"), anyInt());
+    }
+
+    @Test
+    void candidatePoolResolvesConv102WestLakeAndKeepsTraceability() {
+        AttractionTool attraction = mock(AttractionTool.class);
+        when(attraction.searchPois("杭州", "杭州", 6)).thenReturn(poisResponse(
+                attractionJson("西湖风景名胜区", "飞猪", "120.121303,30.222741", "westlake-f"),
+                attractionJson("杭州西湖风景名胜区", "高德", "120.121358,30.222692", "westlake-a"),
+                attractionJson("雷峰塔景区", "高德", "120.148849,30.230934", "leifeng")));
+
+        PoiCandidatePool pool = service(new ScriptRagService(Map.of(), null), attraction)
+                .retrieve("杭州", List.of("自然风景"), 3);
+
+        assertThat(pool.candidates()).hasSize(2);
+        assertThat(pool.candidates()).anySatisfy(candidate -> {
+            assertThat(candidate.poiName()).contains("西湖");
+            assertThat(candidate.mergedFrom()).containsExactlyInAnyOrder(
+                    "hard:飞猪:西湖风景名胜区", "hard:高德:杭州西湖风景名胜区");
+            assertThat(candidate.mergeReason()).isEqualTo("NAME_COORDINATE_MATCH");
+        });
+        assertThat(pool.candidates()).anySatisfy(candidate ->
+                assertThat(candidate.poiName()).isEqualTo("雷峰塔景区"));
     }
 
     // ---------- 用例 5：L3 变体缓存 → 同需求第二轮零远程调用 ----------

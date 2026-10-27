@@ -6,6 +6,7 @@ import com.alibaba.fastjson2.JSONObject;
 import com.travelscope.agent.tools.AttractionTool;
 import com.travelscope.dto.RetrievedFragment;
 import com.travelscope.service.RagServiceImpl;
+import com.travelscope.service.poi.PoiEntityResolver;
 import com.travelscope.service.retrieval.dto.PoiCandidatePool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -144,7 +145,9 @@ public class PoiRetrievalService {
                 candidates.addAll(adds);
             }
         }
+        candidates = resolveStructuredCandidates(candidates, destination);
 
+        completed = (int) candidates.stream().filter(c -> "HARD_COMPLETE".equals(c.source())).count();
         PoiCandidatePool.PoolStats stats = new PoiCandidatePool.PoolStats(
                 variants.size(), hitsByVariant, byChunk.size(), completed);
         log.info("poi_retrieval 候选池: destination={}, variants={}, hitsByVariant={}, "
@@ -265,17 +268,67 @@ public class PoiRetrievalService {
                     continue;
                 }
                 String source = String.valueOf(poi.get("source"));
+                String candidateId = "hard:" + source + ":" + name;
+                double[] coordinate = parseCoordinate(poi.getString("location"));
+                String rawSourceId = poi.getString("sourceId");
+                String sourceId = rawSourceId == null || rawSourceId.isBlank()
+                        ? null : source + ":" + rawSourceId;
                 adds.add(new PoiCandidatePool.Candidate(
-                        "hard:" + source + ":" + name,
-                        formatCompletion(name, poi, source),
-                        "HARD_COMPLETE", 0, null, List.of(keyword),
-                        poi.getString("imageUrl")));
+                        candidateId, formatCompletion(name, poi, source),
+                        "HARD_COMPLETE", 0, null, List.of(keyword), poi.getString("imageUrl"),
+                        sourceId, name, coordinate == null ? null : coordinate[0],
+                        coordinate == null ? null : coordinate[1], List.of(candidateId), "NONE"));
             }
             return adds;
         } catch (Exception e) {
             log.warn("poi_retrieval 硬补全异常（按空结果降级）: keyword='{}': {}",
                     keyword, e.getMessage());
             return List.of();
+        }
+    }
+
+    /** 仅对具备结构化名称和坐标的候选做实体解析；原 candidate id 全量保存在 mergedFrom。 */
+    private static List<PoiCandidatePool.Candidate> resolveStructuredCandidates(
+            List<PoiCandidatePool.Candidate> candidates, String city) {
+        List<PoiCandidatePool.Candidate> structured = candidates.stream()
+                .filter(c -> c.poiName() != null && c.lng() != null && c.lat() != null)
+                .toList();
+        if (structured.size() < 2) return candidates;
+        PoiEntityResolver.Resolution resolution = new PoiEntityResolver().resolve(structured.stream()
+                .map(c -> new PoiEntityResolver.PoiInput(c.chunkId(), c.sourceId(), c.poiName(), c.lng(), c.lat()))
+                .toList(), city);
+        Map<String, PoiCandidatePool.Candidate> byId = candidates.stream()
+                .collect(java.util.stream.Collectors.toMap(PoiCandidatePool.Candidate::chunkId,
+                        c -> c, (a, b) -> a, LinkedHashMap::new));
+        Map<String, PoiEntityResolver.ResolvedEntity> entityByMember = new java.util.HashMap<>();
+        for (var entity : resolution.entities()) for (String id : entity.mergedFrom()) entityByMember.put(id, entity);
+        List<PoiCandidatePool.Candidate> resolved = new ArrayList<>();
+        java.util.Set<String> emitted = new java.util.HashSet<>();
+        for (PoiCandidatePool.Candidate candidate : candidates) {
+            var entity = entityByMember.get(candidate.chunkId());
+            if (entity == null || entity.mergedFrom().size() == 1) {
+                resolved.add(candidate);
+            } else if (emitted.add(entity.canonicalId())) {
+                PoiCandidatePool.Candidate winner = entity.mergedFrom().stream().map(byId::get)
+                        .max(Comparator.comparingDouble(PoiCandidatePool.Candidate::score)
+                                .thenComparing(PoiCandidatePool.Candidate::chunkId, Comparator.reverseOrder()))
+                        .orElseThrow();
+                resolved.add(new PoiCandidatePool.Candidate(entity.canonicalId(), winner.content(), winner.source(),
+                        winner.score(), winner.vectorScore(), winner.hitVariants(), winner.imageUrl(), winner.sourceId(),
+                        winner.poiName(), winner.lng(), winner.lat(), entity.mergedFrom(), entity.mergeReason().name()));
+            }
+        }
+        return resolved;
+    }
+
+    private static double[] parseCoordinate(String location) {
+        if (location == null || location.isBlank()) return null;
+        try {
+            String[] parts = location.split(",");
+            if (parts.length != 2) return null;
+            return new double[]{Double.parseDouble(parts[0].trim()), Double.parseDouble(parts[1].trim())};
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 

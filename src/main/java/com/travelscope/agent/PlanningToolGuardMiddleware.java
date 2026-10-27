@@ -49,8 +49,9 @@ public class PlanningToolGuardMiddleware implements MiddlewareBase {
             String reason = shortlistExists
                     ? "SHORTLIST_ALREADY_FINALIZED: poi_shortlist.json 已存在，禁止重复调用 select_poi_shortlist。"
                       + "立即进入 plan_route(sessionId)，不得再次检索或定案 POI。"
-                    : "SHORTLIST_RETRY_LIMIT_REACHED: select_poi_shortlist 首次调用未落盘，第二次调用已被拦截。"
-                      + "停止 POI 重试并结束 planning-agent；向 travel-master 明确报告草案未生成及失败原因。";
+                    : "SHORTLIST_RETRY_LIMIT_REACHED: select_poi_shortlist 首次调用未落盘，后续调用已被拦截。"
+                      + "不得再次调用 select_poi_shortlist；停止 POI 重试并结束 planning-agent；"
+                      + "向 travel-master 明确报告草案未生成及首次业务失败原因。";
             return new ToolUseBlock(call.getId(), HINT_TOOL, Map.of("reason", reason));
         }).toList();
         return next.apply(new ActingInput(guarded));

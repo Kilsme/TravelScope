@@ -150,6 +150,26 @@ class CollabToolsTest {
         assertThat(constraints.getValue().walkingTolerance()).isEqualTo("LOW");
     }
 
+    @Test
+    void planRouteDoesNotTreatUnknownOpenHoursAsAllDay() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        workspace.writePoiShortlist("u1", "conv-1", new PoiShortlist("杭州", "测试清单", List.of(
+                new PoiShortlist.PoiItem("室内展馆", 120.1, 30.2, 4.5, null, 120, "高德", null))));
+        RoutePlan stub = new RoutePlan(List.of(new RoutePlan.RouteDay(1, null, List.of(), 0)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap", 0, List.of()));
+        when(routePlanner.planAndWrite(eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"))).thenReturn(stub);
+
+        tools.plan_route("conv-1", null, null, ctx);
+
+        @SuppressWarnings("unchecked")
+        org.mockito.ArgumentCaptor<List<com.travelscope.service.route.dto.PoiCandidate>> candidates =
+                org.mockito.ArgumentCaptor.forClass(List.class);
+        org.mockito.Mockito.verify(routePlanner).planAndWrite(eq("u1"), eq("conv-1"), candidates.capture(),
+                any(), eq("杭州"));
+        assertThat(candidates.getValue().getFirst().openPolicy().status())
+                .isEqualTo(com.travelscope.service.route.dto.OpenWindowPolicy.OpenStatus.UNKNOWN);
+    }
+
     // ---------- 用例 5：plan_route 正常链（intake+shortlist 预置）→ 返回 RoutePlan JSON ----------
     @Test
     void planRouteHappyPath() {
@@ -229,6 +249,24 @@ class CollabToolsTest {
         assertThat(back.get().pois().get(0).source()).isEqualTo("RAG");
         assertThat(back.get().pois().get(1).reason()).isEqualTo("文化偏好");
         assertThat(back.get().pois().get(1).openHours()).isEqualTo("07:00-18:00");
+    }
+
+    @Test
+    void selectShortlistRejectsCanonicalDuplicatesWithoutPartialArtifact() {
+        workspace.writeIntakeResult("u1", "conv-1", intake());
+        stubSearchPois("{\"attractions\":["
+                + "{\"name\":\"西湖风景名胜区\",\"location\":\"120.121303,30.222741\",\"source\":\"飞猪\"},"
+                + "{\"name\":\"杭州西湖风景名胜区\",\"location\":\"120.121358,30.222692\",\"source\":\"高德\"}]}");
+
+        String result = tools.select_poi_shortlist("conv-1",
+                "西湖风景名胜区,杭州西湖风景名胜区", null, null, ctx);
+
+        assertThat(result).startsWith("ERROR:").contains("\"code\":\"DUPLICATE_POI\"")
+                .contains("\"retryable\":false")
+                .contains("\"recommendedAction\":\"RESELECT_WITHOUT_DUPLICATES\"")
+                .contains("西湖风景名胜区", "杭州西湖风景名胜区");
+        assertThat(workspace.readPoiShortlist("u1", "conv-1"))
+                .as("重复业务错误不得落盘部分 shortlist").isEmpty();
     }
 
     @Test

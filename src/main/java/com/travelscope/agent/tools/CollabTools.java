@@ -236,6 +236,10 @@ public class CollabTools {
                 return "ERROR: 以下 POI 在实时 POI 库中查无此地（未落盘任何内容）：" + rejected
                         + "——请核对名字（用候选池/常识中的正式名称）后重调";
             }
+            String duplicateError = duplicatePoiError(items, destination);
+            if (duplicateError != null) {
+                return duplicateError;
+            }
 
             String warn = days > 0 && items.size() < 2 * days
                     ? "（提示：选定 " + items.size() + " 个 < 2×days=" + (2 * days) + " 目标，确认是否漏选）" : "";
@@ -872,6 +876,38 @@ public class CollabTools {
     }
 
     /** 逗号/顿号分隔的 POI 名列表拆分（去空） */
+    /** 最终落盘门禁：复用实体解析规则，发现同一 canonical 实体即整体拒绝。 */
+    private static String duplicatePoiError(
+            List<com.travelscope.collab.PoiShortlist.PoiItem> items, String city) {
+        if (items.size() < 2) return null;
+        List<com.travelscope.service.poi.PoiEntityResolver.PoiInput> inputs = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            var item = items.get(i);
+            if (item.name() == null || item.lng() == null || item.lat() == null) continue;
+            inputs.add(new com.travelscope.service.poi.PoiEntityResolver.PoiInput(
+                    String.format(java.util.Locale.ROOT, "%04d:%s", i, item.name()),
+                    null, item.name(), item.lng(), item.lat()));
+        }
+        var resolution = new com.travelscope.service.poi.PoiEntityResolver().resolve(inputs, city);
+        var duplicates = resolution.entities().stream()
+                .filter(entity -> entity.mergedFrom().size() > 1)
+                .map(entity -> {
+                    com.alibaba.fastjson2.JSONObject duplicate = new com.alibaba.fastjson2.JSONObject();
+                    duplicate.put("canonicalId", entity.canonicalId());
+                    duplicate.put("mergedFrom", entity.mergedFrom().stream()
+                            .map(id -> id.substring(id.indexOf(':') + 1)).toList());
+                    duplicate.put("mergeReason", entity.mergeReason().name());
+                    return duplicate;
+                }).toList();
+        if (duplicates.isEmpty()) return null;
+        com.alibaba.fastjson2.JSONObject error = new com.alibaba.fastjson2.JSONObject();
+        error.put("code", "DUPLICATE_POI");
+        error.put("retryable", false);
+        error.put("recommendedAction", "RESELECT_WITHOUT_DUPLICATES");
+        error.put("duplicates", duplicates);
+        return "ERROR: " + error.toJSONString();
+    }
+
     private List<String> splitNames(String names) {
         if (names == null || names.isBlank()) {
             return List.of();
@@ -1296,20 +1332,17 @@ public class CollabTools {
         return "已写入 tasks/" + sessionId + "/" + fileName;
     }
 
-    /** PoiShortlist.PoiItem → 求解输入 PoiCandidate（openHours「HH:mm-HH:mm」拆解为开放窗；缺失=全天开放） */
+    /** PoiShortlist.PoiItem → 求解输入；缺失开放时间显式标记 UNKNOWN，不再等价于全天。 */
     private static PoiCandidate toCandidate(PoiShortlist.PoiItem item) {
+        var policy = new com.travelscope.service.route.OpenWindowPolicyResolver()
+                .resolve(item.name(), item.openHours(), item.source());
         String openStart = null;
         String openClose = null;
-        if (item.openHours() != null && item.openHours().contains("-")) {
-            String[] parts = item.openHours().split("-", 2);
-            String start = parts[0].trim();
-            String end = parts[1].trim();
-            if (start.matches("\\d{1,2}:\\d{2}") && end.matches("\\d{1,2}:\\d{2}")) {
-                openStart = start;
-                openClose = end;
-            }
+        if (!policy.windows().isEmpty()) {
+            openStart = policy.windows().getFirst().start();
+            openClose = policy.windows().getFirst().end();
         }
         return new PoiCandidate(item.name(), item.lng(), item.lat(), openStart, openClose,
-                item.durationMin(), item.rating(), item.source());
+                item.durationMin(), item.rating(), item.source(), policy);
     }
 }

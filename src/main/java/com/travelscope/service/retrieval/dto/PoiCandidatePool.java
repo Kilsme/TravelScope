@@ -61,16 +61,25 @@ public record PoiCandidatePool(List<Candidate> candidates, PoolStats stats) {
      *                     注意 toSlimView 不含它——模型筛选决策不需要 URL，省 token）
      */
     public record Candidate(String chunkId, String content, String source, double score,
-                            Double vectorScore, List<String> hitVariants, String imageUrl) {
+                            Double vectorScore, List<String> hitVariants, String imageUrl,
+                            String sourceId, String poiName, Double lng, Double lat,
+                            List<String> mergedFrom, String mergeReason) {
 
         public Candidate {
             Objects.requireNonNull(chunkId, "chunkId");
             Objects.requireNonNull(content, "content");
             Objects.requireNonNull(source, "source");
             hitVariants = List.copyOf(Objects.requireNonNull(hitVariants, "hitVariants"));
+            mergedFrom = mergedFrom == null ? List.of(chunkId) : List.copyOf(mergedFrom);
         }
 
-        /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
+        /** 旧调用便捷构造：无实体解析元数据。 */
+        public Candidate(String chunkId, String content, String source, double score,
+                         Double vectorScore, List<String> hitVariants, String imageUrl) {
+            this(chunkId, content, source, score, vectorScore, hitVariants, imageUrl,
+                    null, null, null, null, List.of(chunkId), "NONE");
+        }
+
         public Candidate(String chunkId, String content, String source, double score,
                          Double vectorScore, List<String> hitVariants) {
             this(chunkId, content, source, score, vectorScore, hitVariants, null);

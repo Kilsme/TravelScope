@@ -133,6 +133,7 @@ public class AttractionTool {
             for (Object item : FlyaiCliTool.itemListOf(response)) {
                 JSONObject raw = (JSONObject) item;
                 JSONObject poi = new JSONObject();
+                poi.put("sourceId", raw.getString("id"));
                 poi.put("name", raw.getString("name"));
                 poi.put("address", raw.getString("address"));
                 poi.put("location", raw.getString("longitude") + "," + raw.getString("latitude"));
@@ -202,6 +203,7 @@ public class AttractionTool {
         for (int i = 0; i < pois.size(); i++) {
             JSONObject poi = pois.getJSONObject(i);
             JSONObject item = new JSONObject();
+            item.put("sourceId", poi.getString("id"));
             item.put("name", poi.getString("name"));
             item.put("address", poi.getString("address"));
             item.put("location", poi.getString("location"));
@@ -311,6 +313,7 @@ public class AttractionTool {
         for (int i = 0; i < pois.size(); i++) {
             JSONObject poi = pois.getJSONObject(i);
             JSONObject item = new JSONObject();
+            item.put("sourceId", poi.getString("id"));
             item.put("name", poi.getString("name"));
             item.put("address", poi.getString("address"));
             item.put("location", poi.getString("location"));

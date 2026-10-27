@@ -46,6 +46,7 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
 
     private final CommuteMatrixBuilder commuteMatrixBuilder;
     private final TaskWorkspace taskWorkspace;
+    private final RouteWindowPolicyApplier windowPolicyApplier;
     /** 纯函数组件：无状态线程安全，直接实例化（同包风格） */
     private final DaySplitter daySplitter = new DaySplitter();
     private final TwoOptImprover twoOptImprover = new TwoOptImprover();
@@ -53,8 +54,16 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
 
     public RoutePlannerServiceImpl(CommuteMatrixBuilder commuteMatrixBuilder,
                                    TaskWorkspace taskWorkspace) {
+        this(commuteMatrixBuilder, taskWorkspace, city -> java.time.LocalTime.of(18, 0));
+    }
+
+    /** 测试/后续日照服务注入入口。 */
+    public RoutePlannerServiceImpl(CommuteMatrixBuilder commuteMatrixBuilder,
+                                   TaskWorkspace taskWorkspace,
+                                   SunTimeProvider sunTimeProvider) {
         this.commuteMatrixBuilder = commuteMatrixBuilder;
         this.taskWorkspace = taskWorkspace;
+        this.windowPolicyApplier = new RouteWindowPolicyApplier(sunTimeProvider);
     }
 
     @Override
@@ -74,11 +83,13 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
                 ? new PoiCandidate(constraints.hotelName(), constraints.hotelLng(),
                         constraints.hotelLat(), null, null, null, null, "hotel-anchor")
                 : null;
+        List<PoiCandidate> effectivePois = pois.stream()
+                .map(poi -> windowPolicyApplier.apply(poi, constraints, city)).toList();
         List<PoiCandidate> buildInput = new ArrayList<>();
         if (hotelAnchor != null) {
             buildInput.add(hotelAnchor);
         }
-        buildInput.addAll(pois);
+        buildInput.addAll(effectivePois);
         MatrixBuildOutcome outcome = commuteMatrixBuilder.build(
                 buildInput, city, constraints.preferTransit());
         TimeMatrix matrix = outcome.matrix();
@@ -220,7 +231,7 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
         return d.pois().stream()
                 .map(sp -> new RoutePlan.RoutePoi(sp.candidate().name(), sp.candidate().lng(),
                         sp.candidate().lat(), sp.startTime(), sp.endTime(), sp.transitFromPrev(),
-                        sp.commuteMinutesFromPrev()))
+                        sp.commuteMinutesFromPrev(), sp.candidate().scheduleNote()))
                 .toList();
     }
 

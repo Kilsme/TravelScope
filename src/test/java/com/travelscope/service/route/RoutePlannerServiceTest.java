@@ -8,6 +8,7 @@ import com.travelscope.collab.CollabSchemaValidator;
 import com.travelscope.collab.RoutePlan;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.service.TaskResultCache;
+import com.travelscope.service.route.dto.OpenWindowPolicy;
 import com.travelscope.service.route.dto.PoiCandidate;
 import com.travelscope.service.route.dto.RouteConstraints;
 import com.travelscope.service.route.dto.RouteSolveResult;
@@ -58,6 +59,34 @@ class RoutePlannerServiceTest {
                 drivingJson(distanceSeconds(inv.getArgument(0), inv.getArgument(1), 150, 60)));
         when(transportTool.getTransitRoute(any(), any(), any())).thenAnswer(inv ->
                 transitJson(distanceSeconds(inv.getArgument(0), inv.getArgument(1), 90, 420)));
+    }
+
+    @Test
+    void fixedSunsetReordersConv102JiuxiBeforeEveningActivity() {
+        TaskWorkspace workspace = new TaskWorkspace(
+                new CollabFileWriter(tempDir.toString()), new CollabFileReader());
+        RoutePlannerServiceImpl fixedSunPlanner = new RoutePlannerServiceImpl(
+                new CommuteMatrixBuilder(transportTool,
+                        new TaskResultCache(mock(StringRedisTemplate.class)), 0),
+                workspace, city -> java.time.LocalTime.of(17, 45));
+        var daylight = new OpenWindowPolicy(OpenWindowPolicy.OpenStatus.DAYLIGHT_ONLY,
+                List.of(new OpenWindowPolicy.TimeWindow("08:00", "18:00")), "conv-102", java.time.Instant.EPOCH);
+        var night = new OpenWindowPolicy(OpenWindowPolicy.OpenStatus.UNKNOWN,
+                List.of(), "conv-102", java.time.Instant.EPOCH);
+        List<PoiCandidate> input = List.of(
+                new PoiCandidate("西湖音乐喷泉夜景", 120.161, 30.252, null, null,
+                        60, 4.8, "fixture", night, null),
+                new PoiCandidate("九溪烟树", 120.11335, 30.202395, "08:00", "18:00",
+                        120, 4.8, "fixture", daylight, null));
+
+        RouteSolveResult result = fixedSunPlanner.solve(input,
+                new RouteConstraints(1, "15:00", "21:00", null, null, 90, 10,
+                        null, null, null, false), "杭州");
+
+        assertThat(result.days().getFirst().pois()).extracting(p -> p.candidate().name())
+                .containsExactly("九溪烟树", "西湖音乐喷泉夜景");
+        assertThat(result.days().getFirst().pois().getFirst().endTime()).isLessThanOrEqualTo("17:45");
+        assertThat(result.days().getFirst().pois().get(1).startTime()).isGreaterThanOrEqualTo("18:00");
     }
 
     // ---------- 用例 1（卡片指定）：12 POI 全链端到端 ----------

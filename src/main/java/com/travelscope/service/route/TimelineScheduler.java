@@ -99,6 +99,7 @@ public class TimelineScheduler {
             int arrive = k == 0
                     ? endMinute
                     : endMinute + (int) Math.round(legSec / 60.0) + constraints.transferBufferMin();
+            arrive = DaySplitter.serviceStart(node, arrive);
             // 午餐窗硬规则：区间相交（端点相接不算）→ 顺延至 lunchEnd
             if (lunchStart >= 0 && arrive < lunchEnd && arrive + duration > lunchStart) {
                 arrive = lunchEnd;

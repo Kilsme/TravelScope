@@ -19,7 +19,7 @@ import java.util.List;
  * 硬约束（任意插入均须满足，不可违反）：
  * <ul>
  *   <li>当日累计通勤 + 本次通勤 ≤ maxDailyCommuteMin</li>
- *   <li>开放窗兼容：预计到达 ≥ openStart 且 到达+游玩 ≤ openClose（皆空=全天兼容）；
+ *   <li>开放窗兼容：已知窗口要求预计到达 ≥ openStart 且 到达+游玩 ≤ openClose；UNKNOWN 暂不加硬窗；
  *       到达时刻 = 上一节点结束 + 通勤 + transferBufferMin</li>
  *   <li>当日链路末端不超 dailyEnd</li>
  *   <li>矩阵单元 -1（查询失败）→ 该组合不可行；与所有节点均不可达 → MATRIX_MISSING</li>
@@ -85,7 +85,9 @@ public class DaySplitter {
                     }
                     if (best == null
                             || ins.commuteSec < best.commuteSec
-                            || (ins.commuteSec == best.commuteSec && ins.slackMin > best.slackMin)) {
+                            || (ins.commuteSec == best.commuteSec && ins.slackMin > best.slackMin)
+                            || (ins.commuteSec == best.commuteSec && ins.slackMin == best.slackMin
+                                && closeMinute(nodes.get(ins.poiIndex)) < closeMinute(nodes.get(best.poiIndex)))) {
                         best = ins;
                     }
                 }
@@ -207,6 +209,7 @@ public class DaySplitter {
             }
             // 硬约束 2：开放窗兼容
             int duration = durationOf(candidate);
+            arriveMinute = serviceStart(candidate, arriveMinute);
             if (!windowCompatible(candidate, arriveMinute, duration)) {
                 return null;
             }
@@ -251,6 +254,15 @@ public class DaySplitter {
         }
         return arriveMinute >= minutesOf(p.openStart())
                 && arriveMinute + durationMin <= minutesOf(p.openClose());
+    }
+
+    /** 提前到达允许等待至开门，等待不计通勤但占用当日时间轴。 */
+    static int serviceStart(PoiCandidate p, int arriveMinute) {
+        return p.openStart() == null ? arriveMinute : Math.max(arriveMinute, minutesOf(p.openStart()));
+    }
+
+    private static int closeMinute(PoiCandidate p) {
+        return p.openClose() == null ? Integer.MAX_VALUE : minutesOf(p.openClose());
     }
 
     static int durationOf(PoiCandidate p) {

@@ -78,7 +78,13 @@ public record RoutePlan(
             String startTime,
             String endTime,
             String transitFromPrev,
-            Integer commuteMinutesFromPrev) {
+            Integer commuteMinutesFromPrev,
+            String scheduleNote) {
+
+        public RoutePoi(String name, Double lng, Double lat, String startTime, String endTime,
+                        String transitFromPrev, Integer commuteMinutesFromPrev) {
+            this(name, lng, lat, startTime, endTime, transitFromPrev, commuteMinutesFromPrev, null);
+        }
 
         public RoutePoi {
             Objects.requireNonNull(name, "name");
