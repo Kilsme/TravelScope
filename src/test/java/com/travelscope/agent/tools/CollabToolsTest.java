@@ -119,6 +119,37 @@ class CollabToolsTest {
         assertThat(result).startsWith("ERROR").contains("poi_shortlist.json");
     }
 
+    @Test
+    void planRouteReceivesTravelPreferenceWindowWithoutChangingSolver() {
+        var preference = new com.travelscope.collab.TravelPreference(
+                com.travelscope.collab.TravelPreference.Pace.RELAXED,
+                new com.travelscope.collab.TravelPreference.DailyWindow("10:00", "20:30"),
+                com.travelscope.collab.TravelPreference.WalkingTolerance.LOW,
+                com.travelscope.collab.TravelPreference.Source.DERIVED_SPECIAL_NEEDS,
+                com.travelscope.collab.TravelPreference.Source.USER_EXPLICIT,
+                com.travelscope.collab.TravelPreference.Source.DERIVED_SPECIAL_NEEDS);
+        workspace.writeIntakeResult("u1", "conv-1", new IntakeResult("conv-1", IntakeResult.Status.DONE, 0,
+                new IntakeResult.RequirementFields(fv("杭州"), fv("2"), fv("2026-10-24"), fv("上海"),
+                        fv(null), fv(null), fv(null), fv("带老人"), null, preference),
+                false, "2026-10-18 10:00:00"));
+        seedShortlist();
+        RoutePlan stub = new RoutePlan(List.of(new RoutePlan.RouteDay(1, null, List.of(), 30)),
+                new RoutePlan.SolverMeta("NN+2opt", "amap-transit", 5, List.of()));
+        when(routePlanner.planAndWrite(eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州")))
+                .thenReturn(stub);
+
+        tools.plan_route("conv-1", null, null, ctx);
+
+        org.mockito.ArgumentCaptor<com.travelscope.service.route.dto.RouteConstraints> constraints =
+                org.mockito.ArgumentCaptor.forClass(com.travelscope.service.route.dto.RouteConstraints.class);
+        org.mockito.Mockito.verify(routePlanner).planAndWrite(eq("u1"), eq("conv-1"), anyList(),
+                constraints.capture(), eq("杭州"));
+        assertThat(constraints.getValue().dailyStart()).isEqualTo("10:00");
+        assertThat(constraints.getValue().dailyEnd()).isEqualTo("20:30");
+        assertThat(constraints.getValue().pace()).isEqualTo("RELAXED");
+        assertThat(constraints.getValue().walkingTolerance()).isEqualTo("LOW");
+    }
+
     // ---------- 用例 5：plan_route 正常链（intake+shortlist 预置）→ 返回 RoutePlan JSON ----------
     @Test
     void planRouteHappyPath() {

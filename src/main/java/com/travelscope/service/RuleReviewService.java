@@ -201,9 +201,12 @@ public class RuleReviewService {
         // ---------- 段3：预算 + 偏好（预算贴线/偏好部分覆盖为 SOFT，其余 HARD） ----------
         int costBudget = 20;
         if (intakeOpt.isPresent() && draft.budget() != null) {
-            String budgetLimit = valueOf(intakeOpt.get().fields().budget());
+            var budgetConstraint = intakeOpt.get().effectiveBudgetConstraint();
+            String budgetLimit = budgetConstraint == null ? valueOf(intakeOpt.get().fields().budget())
+                    : budgetConstraint.rawText();
             String estimate = draft.budget().totalEstimate();
-            Double limit = maxNumber(budgetLimit);
+            Double limit = budgetConstraint != null && budgetConstraint.max() != null
+                    ? budgetConstraint.max().doubleValue() : maxNumber(budgetLimit);
             Double est = maxNumber(estimate);
             if (limit == null || est == null || limit <= 0) {
                 // R1：预算无法核对从「静默保守放行」改为可见软提示

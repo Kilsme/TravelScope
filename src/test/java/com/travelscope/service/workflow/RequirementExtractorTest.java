@@ -84,7 +84,10 @@ class RequirementExtractorTest {
         RequirementExtraction extraction = RequirementExtraction.parse(CANNED, 0.7);
 
         assertThat(extraction.fields()).containsOnlyKeys("destination", "days", "startDate");
-        assertThat(RequirementExtraction.FIELDS).hasSize(8);
+        assertThat(RequirementExtraction.FIELDS).containsExactly(
+                "destination", "days", "startDate", "fromCity",
+                "budget", "preference", "people", "special",
+                "pace", "dailyWindow", "walkingTolerance");
     }
 
     // ---------- parse：数字与字符串值都接受（Integer 转换留给 S2.2） ----------

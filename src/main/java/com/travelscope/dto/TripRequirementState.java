@@ -35,6 +35,9 @@ public class TripRequirementState {
     public String preference;
     public Integer people;
     public String special;
+    public String pace;
+    public String dailyWindow;
+    public String walkingTolerance;
 
     /** 当前状态 */
     public Status status = Status.COLLECTING;

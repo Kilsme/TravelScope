@@ -18,12 +18,24 @@ import java.util.Objects;
  * RequirementTools.update_requirement_state 的 getInteger 语义）。
  * </p>
  */
-public record RequirementExtraction(Map<String, Object> fields, String rawJson) {
+public record RequirementExtraction(Map<String, Object> fields, String rawJson,
+                                    com.travelscope.collab.BudgetConstraint budgetConstraint) {
+
+    public RequirementExtraction(Map<String, Object> fields, String rawJson) {
+        this(fields, rawJson, parseBudget(fields));
+    }
+
+    private static com.travelscope.collab.BudgetConstraint parseBudget(Map<String, Object> fields) {
+        Object raw = fields == null ? null : fields.get("budget");
+        return new com.travelscope.service.workflow.BudgetConstraintParser()
+                .parse(raw == null ? null : String.valueOf(raw)).constraint();
+    }
 
     /** 8 个需求字段（与 TripRequirementState 字段名一一对应） */
     public static final List<String> FIELDS = List.of(
             "destination", "days", "startDate", "fromCity",
-            "budget", "preference", "people", "special");
+            "budget", "preference", "people", "special",
+            "pace", "dailyWindow", "walkingTolerance");
 
     /** 空结果（模型异常/超时/解析失败——状态机以空抽取走表单/反问兜底） */
     public static final RequirementExtraction EMPTY = new RequirementExtraction(Map.of(), "");

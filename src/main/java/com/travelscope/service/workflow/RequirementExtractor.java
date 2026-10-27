@@ -58,10 +58,13 @@ public class RequirementExtractor {
             - days：游玩天数（数字，如「三天」→ 3）
             - startDate：出发日期（YYYY-MM-DD；相对日期按输入给出的「今天是」推算，如「下周六」）
             - fromCity：出发城市
-            - budget：预算（保留用户原文表述，如「人均一千」「5000 以内」）
+            - budget：预算（必须保留用户原文，包括金额口径和旅行档次，如「人均一千」「两人总共5000」「酒店每晚800左右」「高端一点」；不得自行补全口径）
             - preference：偏好（用户原话关键词，如「自然风景、人文古迹」）
             - people：人数（数字；仅用户明确说了总人数才填——「带爸妈」没说总数则 null）
             - special：特殊需求（用户原话，如「不吃辣」「带老人小孩」）
+            - pace：旅行节奏，仅明确表达时填 RELAXED/MODERATE/INTENSIVE
+            - dailyWindow：每日活动时间窗，仅明确表达时填 HH:mm-HH:mm
+            - walkingTolerance：步行承受度，仅明确表达时填 LOW/MEDIUM/HIGH
 
             规则（宁缺毋滥）：
             - 只填用户明确表达或可直接换算的字段；模糊、推测、联想出来的一律 null
@@ -177,6 +180,9 @@ public class RequirementExtractor {
         public FieldVal preference;
         public FieldVal people;
         public FieldVal special;
+        public FieldVal pace;
+        public FieldVal dailyWindow;
+        public FieldVal walkingTolerance;
     }
 
     /**

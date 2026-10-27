@@ -468,6 +468,14 @@ public class CollabTools {
                     userId, days, destination, null, null, false);
         }
         RouteConstraints constraints = RouteConstraints.ofDays(days);
+        var travelPreference = intake.get().effectiveTravelPreference();
+        if (travelPreference != null) {
+            constraints = constraints.withTravelPreference(
+                    travelPreference.dailyWindow().earliestStart(),
+                    travelPreference.dailyWindow().latestEnd(),
+                    travelPreference.pace().name(),
+                    travelPreference.walkingTolerance().name());
+        }
         if (maxDailyCommuteMin != null) {
             constraints = new RouteConstraints(constraints.days(), constraints.dailyStart(),
                     constraints.dailyEnd(), constraints.lunchStart(), constraints.lunchEnd(),
@@ -974,6 +982,10 @@ public class CollabTools {
         putIfPresent(o, "startDate", f.startDate());
         putIfPresent(o, "fromCity", f.fromCity());
         putIfPresent(o, "budget", f.budget());
+        if (intake.effectiveBudgetConstraint() != null) {
+            o.put("budgetConstraint", intake.effectiveBudgetConstraint());
+        }
+        o.put("travelPreference", intake.effectiveTravelPreference());
         putIfPresent(o, "preference", f.preference());
         return o.toJSONString();
     }

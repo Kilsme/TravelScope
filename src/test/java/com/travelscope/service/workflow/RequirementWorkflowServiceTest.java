@@ -129,6 +129,79 @@ class RequirementWorkflowServiceTest {
         });
     }
 
+    @Test
+    void ambiguousBudgetScopeMustAskBeforeCollecting() {
+        StubExtractor extractor = new StubExtractor(Map.of(
+                "杭州两日游，从上海出发，10月30日走，预算2000以上",
+                ext(Map.of("destination", "杭州", "days", 2,
+                        "startDate", "2026-10-30", "fromCity", "上海", "budget", "2000以上"))), false);
+        RequirementWorkflowService service = new RequirementWorkflowService(extractor, store, workspace, transport);
+
+        CollectOutcome out = service.handle(
+                "杭州两日游，从上海出发，10月30日走，预算2000以上", "u1", "conv-budget");
+
+        assertThat(out.status()).isEqualTo(CollectOutcome.Status.NEED_USER_INPUT);
+        assertThat(out.hint()).contains("预算").contains("人均").contains("总预算");
+        assertThat(store.get("u1", "conv-budget").status)
+                .isEqualTo(TripRequirementState.Status.COLLECTING);
+        assertThat(workspace.readIntakeResult("u1", "conv-budget")).isEmpty();
+    }
+
+    @Test
+    void structuredBudgetIsPersistedAlongsideRawBudget() {
+        StubExtractor extractor = new StubExtractor(Map.of(
+                "杭州两日游，从上海出发，10月30日走，人均2000以内",
+                ext(Map.of("destination", "杭州", "days", 2,
+                        "startDate", "2026-10-30", "fromCity", "上海", "budget", "人均2000以内"))), false);
+        RequirementWorkflowService service = new RequirementWorkflowService(extractor, store, workspace, transport);
+
+        CollectOutcome out = service.handle(
+                "杭州两日游，从上海出发，10月30日走，人均2000以内", "u1", "conv-budget-ok");
+
+        assertThat(out.status()).isEqualTo(CollectOutcome.Status.COLLECTED);
+        assertThat(workspace.readIntakeResult("u1", "conv-budget-ok")).hasValueSatisfying(r -> {
+            assertThat(r.fields().budget().value()).isEqualTo("人均2000以内");
+            assertThat(r.fields().budgetConstraint().scope())
+                    .isEqualTo(com.travelscope.collab.BudgetConstraint.Scope.PER_PERSON_TOTAL);
+            assertThat(r.fields().budgetConstraint().max()).isEqualByComparingTo("2000");
+        });
+    }
+
+    @Test
+    void seniorNeedsDeriveRelaxedPreferenceWithSource() {
+        StubExtractor extractor = new StubExtractor(Map.of("带老人去杭州两天",
+                ext(Map.of("destination", "杭州", "days", 2, "startDate", "2026-10-30",
+                        "fromCity", "上海", "special", "带老人"))), false);
+        RequirementWorkflowService service = new RequirementWorkflowService(extractor, store, workspace, transport);
+
+        assertThat(service.handle("带老人去杭州两天", "u1", "conv-pref").status())
+                .isEqualTo(CollectOutcome.Status.COLLECTED);
+        assertThat(workspace.readIntakeResult("u1", "conv-pref")).hasValueSatisfying(r -> {
+            assertThat(r.fields().travelPreference().pace())
+                    .isEqualTo(com.travelscope.collab.TravelPreference.Pace.RELAXED);
+            assertThat(r.fields().travelPreference().paceSource())
+                    .isEqualTo(com.travelscope.collab.TravelPreference.Source.DERIVED_SPECIAL_NEEDS);
+        });
+    }
+
+    @Test
+    void explicitTimeWindowOverridesDefaultWindow() {
+        String message = "带老人去杭州两天，每天十点开始，晚上八点半结束";
+        StubExtractor extractor = new StubExtractor(Map.of(message,
+                ext(Map.of("destination", "杭州", "days", 2, "startDate", "2026-10-30",
+                        "fromCity", "上海", "special", "带老人", "dailyWindow", "10:00-20:30"))), false);
+        RequirementWorkflowService service = new RequirementWorkflowService(extractor, store, workspace, transport);
+
+        assertThat(service.handle(message, "u1", "conv-window").status())
+                .isEqualTo(CollectOutcome.Status.COLLECTED);
+        assertThat(workspace.readIntakeResult("u1", "conv-window")).hasValueSatisfying(r -> {
+            assertThat(r.fields().travelPreference().dailyWindow().earliestStart()).isEqualTo("10:00");
+            assertThat(r.fields().travelPreference().dailyWindow().latestEnd()).isEqualTo("20:30");
+            assertThat(r.fields().travelPreference().dailyWindowSource())
+                    .isEqualTo(com.travelscope.collab.TravelPreference.Source.USER_EXPLICIT);
+        });
+    }
+
     // ---------- 用例 2：缺 2 必填 → NEED_USER_INPUT + formSpec 标注 ----------
     @Test
     void missingTwoNeedInputWithFormSpec() {

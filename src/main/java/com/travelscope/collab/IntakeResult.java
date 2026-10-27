@@ -47,6 +47,24 @@ public record IntakeResult(
     }
 
     /** 需求收集状态（对齐 TripRequirementState.Status） */
+    /** 结构预算优先；旧会话没有该字段时按原 budget 文本即时解析。 */
+    public BudgetConstraint effectiveBudgetConstraint() {
+        if (fields.budgetConstraint() != null) {
+            return fields.budgetConstraint();
+        }
+        String raw = fields.budget() == null ? null : fields.budget().value();
+        return new com.travelscope.service.workflow.BudgetConstraintParser().parse(raw).constraint();
+    }
+
+    /** 旧 intake 没有结构节奏时返回带 SYSTEM_DEFAULT 来源的兼容值。 */
+    public TravelPreference effectiveTravelPreference() {
+        if (fields.travelPreference() != null) {
+            return fields.travelPreference();
+        }
+        String special = fields.special() == null ? null : fields.special().value();
+        return new com.travelscope.service.workflow.TravelPreferenceParser().parse(null, special);
+    }
+
     public enum Status {
         /** 收集中（仍有必填缺项） */
         COLLECTING,
@@ -68,7 +86,23 @@ public record IntakeResult(
             FieldValue budget,
             FieldValue preference,
             FieldValue people,
-            FieldValue special) {
+            FieldValue special,
+            BudgetConstraint budgetConstraint,
+            TravelPreference travelPreference) {
+
+        /** 旧调用与旧 JSON 兼容：结构预算缺失时保留原 budget 文本，由消费方按需解析。 */
+        public RequirementFields(FieldValue destination, FieldValue days, FieldValue startDate,
+                                 FieldValue fromCity, FieldValue budget, FieldValue preference,
+                                 FieldValue people, FieldValue special) {
+            this(destination, days, startDate, fromCity, budget, preference, people, special, null, null);
+        }
+
+        public RequirementFields(FieldValue destination, FieldValue days, FieldValue startDate,
+                                 FieldValue fromCity, FieldValue budget, FieldValue preference,
+                                 FieldValue people, FieldValue special, BudgetConstraint budgetConstraint) {
+            this(destination, days, startDate, fromCity, budget, preference, people, special,
+                    budgetConstraint, null);
+        }
     }
 
     /**

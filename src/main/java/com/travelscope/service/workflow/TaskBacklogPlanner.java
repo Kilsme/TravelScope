@@ -105,7 +105,7 @@ public class TaskBacklogPlanner {
         String from = val(f.fromCity());
         String people = val(f.people());
         String pref = val(f.preference());
-        String budget = val(f.budget());
+        String budget = budgetSummary(f);
         String special = val(f.special());
 
         List<PlanningTask> tasks = new ArrayList<>(5);
@@ -163,6 +163,20 @@ public class TaskBacklogPlanner {
         t.suggestedTool = tool;
         t.priority = priority;
         return t;
+    }
+
+    private static String budgetSummary(IntakeResult.RequirementFields fields) {
+        var structured = fields.budgetConstraint();
+        if (structured == null) {
+            structured = new BudgetConstraintParser().parse(val(fields.budget())).constraint();
+        }
+        if (structured == null) return val(fields.budget());
+        StringBuilder summary = new StringBuilder(structured.rawText());
+        if (structured.scope() != null) summary.append(" [").append(structured.scope());
+        if (structured.min() != null) summary.append(" min=").append(structured.min().toPlainString());
+        if (structured.max() != null) summary.append(" max=").append(structured.max().toPlainString());
+        if (structured.scope() != null) summary.append(']');
+        return summary.toString();
     }
 
     /** 字段值（未收集 → null） */

@@ -63,6 +63,7 @@ public class RequirementWorkflowService {
     private final TripRequirementStore store;
     private final TaskWorkspace taskWorkspace;
     private final TransportTool transportTool;
+    private final BudgetConstraintParser budgetParser = new BudgetConstraintParser();
 
     public RequirementWorkflowService(RequirementExtractor extractor,
                                       TripRequirementStore store,
@@ -120,6 +121,12 @@ public class RequirementWorkflowService {
         }
         // 用户已填字段先 merge（__action__ 不在白名单自然忽略；skip 同样先保留已填项）
         int applied = merge(state, form);
+        BudgetConstraintParser.ParseResult formBudget = budgetParser.parse(state.budget);
+        if (formBudget.requiresClarification()) {
+            store.save(userId, sessionId, state);
+            return CollectOutcome.needUserInput(RequirementFormSpec.generate(state),
+                    "请确认预算口径：这是人均总预算、全部人的总预算，还是酒店每晚预算？");
+        }
         // S2.3 提交校验：destination/fromCity 走高德 geocode（控件天然免疫错值的字段不查）。
         // 校验只针对本次提交携带的字段（避免每轮重复请求）；失败时不落状态机、不填默认值，
         // 用内存中已合并的 state 回推清单（用户已填内容不丢）+ 打回字段标红
@@ -155,6 +162,14 @@ public class RequirementWorkflowService {
                     "没听懂要改哪项，可直接点卡片修改");
         }
         int applied = merge(state, extraction.fields());
+        BudgetConstraintParser.ParseResult budget = budgetParser.parse(state.budget);
+        if (budget.requiresClarification()) {
+            store.save(userId, sessionId, state);
+            log.info("预算口径存在歧义，继续收集: 用户={}, 会话={}, reasonCode={}",
+                    userId, sessionId, budget.reasonCode());
+            return CollectOutcome.needUserInput(RequirementFormSpec.generate(state),
+                    "请确认预算口径：这是人均总预算、全部人的总预算，还是酒店每晚预算？");
+        }
         if (state.missingFields().isEmpty()) {
             finalizeCollected(state, userId, sessionId, Set.of(), "text-complete");
             return CollectOutcome.collected();
@@ -245,6 +260,9 @@ public class RequirementWorkflowService {
                 case "budget" -> state.budget = String.valueOf(raw);
                 case "preference" -> state.preference = String.valueOf(raw);
                 case "special" -> state.special = String.valueOf(raw);
+                case "pace" -> state.pace = String.valueOf(raw);
+                case "dailyWindow" -> state.dailyWindow = String.valueOf(raw);
+                case "walkingTolerance" -> state.walkingTolerance = String.valueOf(raw);
                 default -> {
                     // 白名单外的键不出现（FIELDS 即白名单）
                 }
@@ -320,11 +338,19 @@ public class RequirementWorkflowService {
                 fieldValue(state.budget, "budget", defaulted),
                 fieldValue(state.preference, "preference", defaulted),
                 fieldValue(state.people, "people", defaulted),
-                fieldValue(state.special, "special", defaulted));
+                fieldValue(state.special, "special", defaulted),
+                new BudgetConstraintParser().parse(state.budget).constraint(),
+                new TravelPreferenceParser().parse(explicitTravelPreference(state), state.special));
         return new IntakeResult(sessionId,
                 IntakeResult.Status.valueOf(state.status.name()),
                 state.clarifyCycles, fields, !defaulted.isEmpty(),
                 LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+    }
+
+    private static String explicitTravelPreference(TripRequirementState state) {
+        return java.util.stream.Stream.of(state.pace, state.dailyWindow, state.walkingTolerance)
+                .filter(v -> v != null && !v.isBlank())
+                .collect(java.util.stream.Collectors.joining(" "));
     }
 
     private static IntakeResult.FieldValue fieldValue(Object value, String name,
