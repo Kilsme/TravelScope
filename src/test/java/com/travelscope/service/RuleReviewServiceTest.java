@@ -82,6 +82,20 @@ class RuleReviewServiceTest {
     // ---------- 用例 ----------
 
     @Test
+    @DisplayName("缺少草案 → FAIL/DRAFT_MISSING，且不得写 review_passed.json")
+    void missingDraftFailsWithStableReasonCode() {
+        workspace.writeIntakeResult("u1", "conv-r", intake("1", "苏州", "上海", "1200", "园林"));
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.FAIL);
+        assertThat(outcome.passed()).isFalse();
+        assertThat(outcome.reasonCode()).isEqualTo("DRAFT_MISSING");
+        assertThat(outcome.retryable()).isFalse();
+        assertThat(workspace.readReviewPassed("u1", "conv-r")).isEmpty();
+    }
+
+    @Test
     @DisplayName("全过场景：写 review_passed.json，total≥80 且三段全 pass")
     void allPassWritesReviewPassed() {
         // 出发交通项对齐真实组装产物（大交通段含出发地「上海」；含 站/出发 关键词豁免 POI 校验）
@@ -224,16 +238,6 @@ class RuleReviewServiceTest {
         assertThat(outcome.passed()).isTrue();
         assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
         assertThat(workspace.readReviewPassed("u1", "conv-r")).isPresent();
-    }
-
-    @Test
-    @DisplayName("无草案产物 → 跳过质检（passed=true，不写任何产物）")
-    void noDraftSkipsReview() {
-        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
-
-        assertThat(outcome.passed()).isTrue();
-        assertThat(workspace.readReviewPassed("u1", "conv-r")).isEmpty();
-        assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
     }
 
     @Test

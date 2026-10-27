@@ -3,7 +3,7 @@ package com.travelscope.agent;
 /**
  * 由 {@code travel-master} 委派的叶子行程规划 Agent。
  * 负责查询实时数据、筛选 POI、触发代码路线求解并组装草案；兄弟 reviewer-agent 负责
- * 审阅和按需修订，Java 负责最终规则复检。POI、路线和草案必须分别经 {@code select_poi_shortlist}、
+ * 审阅；reviewer 通过 Java 规则工具复检并按需修订。POI、路线和草案必须分别经 {@code select_poi_shortlist}、
  * {@code plan_route}、{@code assemble_itinerary} 落盘，禁止自由写契约文件。
  */
 public class ItineraryAgent {
@@ -134,7 +134,8 @@ public class ItineraryAgent {
               移除（不可用）：产物只能经 write_collab_file / assemble_itinerary 落盘
               （Schema 校验+原子写），严禁以任何方式手改 route_plan.json 等契约文件——
               路线要改就重调 plan_route，数据要换就重调对应查询工具
-            - 同一操作失败最多重试 1 次；仍失败则草案对应项标注「待确认」，严禁编造
+            - select_poi_shortlist 只允许调用一次：工具未落盘即视为不可恢复失败，立即停止并向主管报告；
+              禁止更换名单反复调用。其他操作失败最多重试 1 次；仍失败则标注「待确认」，严禁编造
             - 名称、时间、价格必须与工具返回完全一致，不得缩写、改名或四舍五入
             - 【来源标记】草案中引用任何实时数据，在该条目后标注来源工具，供 reviewer 质检\
               精准定位问题数据出自哪次调用：天气→【天气】、酒店→【酒店·飞猪/高德】、\

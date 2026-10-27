@@ -37,16 +37,18 @@ public class CollabFileWriter {
     private static final Logger log = LoggerFactory.getLogger(CollabFileWriter.class);
 
     /** 契约文件名 → 期望 DTO 类型（命中映射强校验；未命中放行仅记 debug） */
-    private static final Map<String, Class<?>> EXPECTED_TYPE_BY_FILENAME = Map.of(
-            "intake_result.json", IntakeResult.class,
-            "task_backlog.json", TaskBacklog.class,
-            "poi_shortlist.json", PoiShortlist.class,
-            "route_plan.json", RoutePlan.class,
-            "execution_result.json", ExecutionResult.class,
-            "itinerary_draft.json", ItineraryDraft.class,
-            "review_report.json", ReviewReport.class,
-            "review_passed.json", ReviewPassed.class,
-            "session_meta.json", SessionMeta.class);
+    private static final Map<String, Class<?>> EXPECTED_TYPE_BY_FILENAME = Map.ofEntries(
+            Map.entry("intake_result.json", IntakeResult.class),
+            Map.entry("task_backlog.json", TaskBacklog.class),
+            Map.entry("poi_shortlist.json", PoiShortlist.class),
+            Map.entry("route_plan.json", RoutePlan.class),
+            Map.entry("execution_result.json", ExecutionResult.class),
+            Map.entry("itinerary_draft.json", ItineraryDraft.class),
+            Map.entry("review_report.json", ReviewReport.class),
+            Map.entry("review_passed.json", ReviewPassed.class),
+            Map.entry("planner_stage_result.json", AgentStageResult.class),
+            Map.entry("reviewer_stage_result.json", AgentStageResult.class),
+            Map.entry("session_meta.json", SessionMeta.class));
 
     /** 工作区根路径（travelscope.agentscope.workspace-path；S0.5 迁移后由 TaskWorkspace 统一解析） */
     private final String workspaceRoot;

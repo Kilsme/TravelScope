@@ -37,6 +37,8 @@ public class TaskWorkspace {
     public static final String FILE_ITINERARY_DRAFT = "itinerary_draft.json";
     public static final String FILE_REVIEW_REPORT = "review_report.json";
     public static final String FILE_REVIEW_PASSED = "review_passed.json";
+    public static final String FILE_PLANNER_STAGE_RESULT = "planner_stage_result.json";
+    public static final String FILE_REVIEWER_STAGE_RESULT = "reviewer_stage_result.json";
     public static final String FILE_SESSION_META = "session_meta.json";
 
     // ==================== 旧 MD 会话兼容 ====================
@@ -181,6 +183,27 @@ public class TaskWorkspace {
 
     public Optional<ReviewPassed> readReviewPassed(String userId, String sessionId) {
         return readJson(userId, sessionId, FILE_REVIEW_PASSED, "review_passed.md", ReviewPassed.class);
+    }
+
+    public void writeAgentStageResult(String userId, String sessionId, AgentStageResult value) {
+        writer.write(getTaskDir(userId, sessionId), stageResultFile(value.stage()), value);
+    }
+
+    public Optional<AgentStageResult> readAgentStageResult(
+            String userId, String sessionId, AgentStageResult.Stage stage) {
+        return readJson(userId, sessionId, stageResultFile(stage), null, AgentStageResult.class)
+                .filter(result -> result.stage() == stage);
+    }
+
+    public void deleteAgentStageResults(String userId, String sessionId) {
+        Path dir = getTaskDir(userId, sessionId);
+        writer.delete(dir, FILE_PLANNER_STAGE_RESULT);
+        writer.delete(dir, FILE_REVIEWER_STAGE_RESULT);
+    }
+
+    private static String stageResultFile(AgentStageResult.Stage stage) {
+        return stage == AgentStageResult.Stage.PLANNER
+                ? FILE_PLANNER_STAGE_RESULT : FILE_REVIEWER_STAGE_RESULT;
     }
 
     /**

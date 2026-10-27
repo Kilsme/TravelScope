@@ -75,6 +75,7 @@ class ChatServicePlanningOrchestrationTest {
     private PointsService pointsService;
     private ObservationStore observationStore;
     private ChatService chatService;
+    private Boolean reviewerPassed;
 
     @BeforeEach
     void setUp() {
@@ -100,6 +101,7 @@ class ChatServicePlanningOrchestrationTest {
         when(loadShedService.tryAdmit(anyBoolean())).thenReturn(null);
         when(conversationService.listMessages(any())).thenReturn(List.of());
 
+        reviewerPassed = null;
         chatService = new ChatService(travelMasterAgent, intentCascadeRouter, ragService,
                 conversationService, workspace, tripRequirementStore, llmGateway, loadShedService,
                 conversationSummaryService, TracingHelper.NOOP, new AppProperties(),
@@ -136,7 +138,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -173,7 +178,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -245,7 +253,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -279,7 +290,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
@@ -311,7 +325,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划西安四日游"), "done");
 
@@ -332,7 +349,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
@@ -362,15 +382,21 @@ class ChatServicePlanningOrchestrationTest {
         });
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
         workspace.writeItineraryDraft("1", "conv-13", draftForTest());
 
-        awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
+        List<String> items = awaitEvent(
+                ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "error");
 
         // 结果缓存按关键字段变化全清
         verify(cache).invalidate("1", "conv-13", null);
-        // 旧 review_passed 在编排起点被清除（ruleReviewService 未注入 → 本轮不重写，文件应不存在）
+        // 旧 review_passed 在编排起点被清除；本轮 reviewer 未产终态时硬门禁拒绝正常交付。
         assertThat(workspace.readReviewPassed("1", "conv-13")).isEmpty();
+        assertThat(eventNames(items)).doesNotContain("done");
+        assertThat(payloadOf(items, "error")).contains("质量审阅未完成");
         // 委派文本内联的是新 intake（含杭州、不含苏州）
         ArgumentCaptor<UserMessage> delegated = ArgumentCaptor.forClass(UserMessage.class);
         verify(travelMasterAgent).streamEvents(delegated.capture(), any(RuntimeContext.class));
@@ -389,7 +415,10 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"), any(IntakeResult.class))).thenReturn(backlog());
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
 
         List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
 
@@ -426,10 +455,11 @@ class ChatServicePlanningOrchestrationTest {
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.error(new java.util.concurrent.TimeoutException("synthetic timeout")));
 
-        List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "规划杭州两日游"), "done");
+        List<String> items = awaitEvent(ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "规划杭州两日游"), "error");
 
-        assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案").contains("已尽力");
-        assertThat(eventNames(items)).doesNotContain("error");
+        // 根泳道超时意味着 reviewer 未完成：草案可保留，但硬门禁禁止正常交付。
+        assertThat(eventNames(items)).doesNotContain("done", "review_report");
+        assertThat(payloadOf(items, "error")).contains("质量审阅未完成");
         verify(observationStore).timeout(sameObservation(observation));
     }
 
@@ -439,8 +469,10 @@ class ChatServicePlanningOrchestrationTest {
         ObservationContext observation = observeTurns();
         HarnessAgent isolatedMaster = mock(HarnessAgent.class, RETURNS_DEEP_STUBS);
         workspace.writeIntakeResult("13", "conv-13", intakeResult());
-        Files.writeString(workspace.getTaskDir("13", "conv-13").resolve(TaskWorkspace.FILE_ITINERARY_DRAFT_MD),
-                "# 隔离评测的行程方案");
+        workspace.writeItineraryDraft("13", "conv-13", new com.travelscope.collab.ItineraryDraft(
+                List.of(), null, List.of(), List.of(), "# 隔离评测的行程方案"));
+        workspace.writeReviewPassed("13", "conv-13",
+                new com.travelscope.collab.ReviewPassed(90, 15, List.of("fixture 通过"), "2026-10-18 12:00:00"));
         when(intentCascadeRouter.classify(anyString(), eq(""), eq("13"), eq("conv-13"), sameObservation(observation)))
                 .thenReturn(new IntentResult("PLANNING", "行程规划"));
         when(requirementWorkflowService.handle(anyString(), eq("13"), eq("conv-13"), sameObservation(observation),
@@ -448,7 +480,12 @@ class ChatServicePlanningOrchestrationTest {
                 .thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("13"), any(IntakeResult.class))).thenReturn(backlog());
         when(isolatedMaster.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
-                .thenReturn(Flux.empty());
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    workspace.writeReviewPassed("13", "conv-13",
+                            new com.travelscope.collab.ReviewPassed(90, 15,
+                                    List.of("fixture 通过"), "2026-10-18 12:00:00"));
+                    return Flux.empty();
+                }));
 
         String result = chatService.executeAssessment(13L, "规划杭州两日游", observation,
                 "FIXTURE", true, "EC-018", isolatedMaster).block(Duration.ofSeconds(5));
@@ -509,34 +546,26 @@ class ChatServicePlanningOrchestrationTest {
         return c;
     }
 
-    /** 预置协作产物：intake_result.json + itinerary_draft.json；评审产物由 stubRuleReview 在编排中写实 */
+    /** 预置 reviewer 已完成后的协作产物；step5 只消费，不再调用规则服务。 */
     private void seedIntakeAndArtifacts(boolean passed) throws Exception {
         workspace.writeIntakeResult("1", "conv-13", intakeResult());
         workspace.writeItineraryDraft("1", "conv-13", draftForTest());
-        stubRuleReview(passed);
+        reviewerPassed = passed;
     }
 
-    /** 规则质检打桩：step5 编排调用时把评审产物写实（对齐真实链路：规则服务写产物、渲染层读产物） */
-    private void stubRuleReview(boolean passed) {
-        RuleReviewService stub = mock(RuleReviewService.class);
-        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
-            String u = inv.getArgument(0);
-            String s = inv.getArgument(1);
-            if (passed) {
-                workspace.writeReviewPassed(u, s,
-                        new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
-                return new RuleReviewService.Outcome(true, List.of(), null);
-            }
-            workspace.writeReviewReport(u, s, new com.travelscope.collab.ReviewReport(
+    private void writeReviewerArtifact() {
+        if (Boolean.TRUE.equals(reviewerPassed)) {
+            workspace.writeReviewPassed("1", "conv-13",
+                    new com.travelscope.collab.ReviewPassed(91, 15, List.of("核验一致"), "2026-10-18 12:00:00"));
+        } else {
+            workspace.writeReviewReport("1", "conv-13", new com.travelscope.collab.ReviewReport(
                     List.of(
                             new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
                             new com.travelscope.collab.ReviewReport.ReviewSegment(2, false, List.of("第二天时间过密")),
                             new com.travelscope.collab.ReviewReport.ReviewSegment(3, true, List.of())),
                     new com.travelscope.collab.ReviewReport.ReviewScores(15, 14, 13, 15, 15),
                     72, java.util.Map.of(), "2026-10-18 12:00:00"));
-            return new RuleReviewService.Outcome(false, List.of("第二天时间过密"), null);
-        });
-        ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+        }
     }
 
     private static com.travelscope.collab.ItineraryDraft draftForTest() {
@@ -636,7 +665,10 @@ class ChatServicePlanningOrchestrationTest {
         when(intentCascadeRouter.classify(anyString(),anyString(),anyString(),anyString())).thenReturn(new IntentResult("PLANNING","plan"));
         when(requirementWorkflowService.handle(anyString(),anyString(),anyString())).thenReturn(CollectOutcome.collected());
         when(taskBacklogPlanner.plan(eq("1"),any(IntakeResult.class))).thenReturn(backlog());
-        when(travelMasterAgent.streamEvents(any(UserMessage.class),any(RuntimeContext.class))).thenReturn(Flux.empty());
+        when(travelMasterAgent.streamEvents(any(UserMessage.class),any(RuntimeContext.class))).thenAnswer(inv -> Flux.defer(() -> {
+                    if (reviewerPassed != null) writeReviewerArtifact();
+                    return Flux.empty();
+                }));
         var execution=chatService.execution(conversation(),1L,"Plan a trip",null,UUID.randomUUID(),"en",cost->true);
         var events=execution.events.collectList().block(Duration.ofSeconds(5));
         ArgumentCaptor<RuntimeContext> context=ArgumentCaptor.forClass(RuntimeContext.class);

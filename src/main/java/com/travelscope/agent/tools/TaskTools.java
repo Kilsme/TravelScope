@@ -106,10 +106,17 @@ public class TaskTools {
     /**
      * Reviewer 回炉保险丝的纠正提示（ReviewerRetryMiddleware 拦截超限修订后重定向到此工具），Agent 不要主动调用
      */
-    @Tool(description = "系统内部工具：质检修订超限被拦截时的纠正提示，不要主动调用")
-    public String review_retry_hint(
+    @Tool(description = "系统内部工具：规划工具调用被门禁拦截时的纠正提示，不要主动调用")
+    public io.agentscope.core.message.ToolResultBlock planning_guard_hint(
             @ToolParam(name = "reason", description = "拦截原因")
             String reason) {
-        return reason;
+        return io.agentscope.core.message.ToolResultBlock.error(reason);
+    }
+
+    @Tool(description = "系统内部工具：质检修订超限被拦截时的纠正提示，不要主动调用")
+    public io.agentscope.core.message.ToolResultBlock review_retry_hint(
+            @ToolParam(name = "reason", description = "拦截原因")
+            String reason) {
+        return io.agentscope.core.message.ToolResultBlock.error(reason);
     }
 }

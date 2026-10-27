@@ -92,6 +92,25 @@ class TaskWorkspaceTest {
     }
 
     @Test
+    void stageResultTypedRoundTripAndIsolation() {
+        AgentStageResult planner = new AgentStageResult(
+                AgentStageResult.Stage.PLANNER, AgentStageResult.Status.DONE,
+                null, false, List.of(TaskWorkspace.FILE_ITINERARY_DRAFT),
+                "2026-10-27 20:30:00");
+        AgentStageResult reviewer = new AgentStageResult(
+                AgentStageResult.Stage.REVIEWER, AgentStageResult.Status.NOT_READY,
+                "DRAFT_MISSING", false, List.of(), "2026-10-27 20:31:00");
+
+        workspace.writeAgentStageResult("u1", "conv-1", planner);
+        workspace.writeAgentStageResult("u1", "conv-1", reviewer);
+
+        assertThat(workspace.readAgentStageResult("u1", "conv-1", AgentStageResult.Stage.PLANNER))
+                .contains(planner);
+        assertThat(workspace.readAgentStageResult("u1", "conv-1", AgentStageResult.Stage.REVIEWER))
+                .contains(reviewer);
+    }
+
+    @Test
     void routePlanTypedRoundTrip() {
         RoutePlan plan = new RoutePlan(List.of(
                 new RoutePlan.RouteDay(1, "2026-10-25", List.of(

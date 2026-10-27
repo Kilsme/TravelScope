@@ -105,15 +105,8 @@ class ChatServiceReviewEventTest {
     @DisplayName("passed 产物存在 → review_report 事件载荷 total=85")
     void passedArtifactEmitsPayload() throws Exception {
         seedPlanningChain();
-        // 规则质检打桩：step5 编排调用时写实 review_passed（对齐真实链路：规则服务写产物、渲染层读产物；
-        // 预置静态文件会被编排起点的跨轮清理删掉）
-        RuleReviewService stub = mock(RuleReviewService.class);
-        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
-            workspace.writeReviewPassed(inv.getArgument(0), inv.getArgument(1),
-                    new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-19 12:00:00"));
-            return new RuleReviewService.Outcome(true, List.of(), null);
-        });
-        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+        reviewerCompletes(() -> workspace.writeReviewPassed("1", "conv-13",
+                new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-19 12:00:00")));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -130,16 +123,77 @@ class ChatServiceReviewEventTest {
     // ---------- 用例 2：两产物都缺 → 不发 review_report 事件 ----------
 
     @Test
-    @DisplayName("缺 review 产物 → 不发 review_report 事件，done 照常")
-    void missingArtifactsSkipsEvent() throws Exception {
+    @DisplayName("有草案但缺 review 终态 → 审阅未完成，禁止正常 done 交付")
+    void draftWithoutReviewCannotCompleteNormally() throws Exception {
         seedPlanningChain();
         // 不写任何 review 产物
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
-        List<String> items = awaitEvent(emitter, "done");
+        List<String> items = awaitEvent(emitter, "error");
 
-        assertThat(eventNames(items)).doesNotContain("review_report");
-        assertThat(payloadOf(items, "done")).contains("杭州两日游完整方案");
+        assertThat(eventNames(items)).doesNotContain("review_report", "done");
+        assertThat(payloadOf(items, "error")).contains("质量审阅未完成");
+    }
+
+    @Test
+    @DisplayName("无草案且无 review 终态 → 规划失败，不渲染方案")
+    void noDraftAndNoReviewFailsWithoutRendering() throws Exception {
+        seedPlanningChain();
+        java.nio.file.Files.deleteIfExists(workspace.getTaskDir("1", "conv-13")
+                .resolve(com.travelscope.collab.TaskWorkspace.FILE_ITINERARY_DRAFT));
+
+        SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
+        List<String> items = awaitEvent(emitter, "error");
+
+        assertThat(eventNames(items)).doesNotContain("review_report", "done");
+        assertThat(payloadOf(items, "error")).contains("未生成行程草案");
+    }
+
+    @Test
+    @DisplayName("新契约：阶段 DONE 与产物一致 → 正常交付")
+    void matchingStageResultsAllowDelivery() throws Exception {
+        seedPlanningChain();
+        reviewerCompletes(() -> {
+            workspace.writeAgentStageResult("1", "conv-13", new com.travelscope.collab.AgentStageResult(
+                    com.travelscope.collab.AgentStageResult.Stage.PLANNER,
+                    com.travelscope.collab.AgentStageResult.Status.DONE, null, false,
+                    List.of(com.travelscope.collab.TaskWorkspace.FILE_ITINERARY_DRAFT), "2026-10-27 20:30:00"));
+            workspace.writeReviewPassed("1", "conv-13",
+                    new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-27 20:31:00"));
+            workspace.writeAgentStageResult("1", "conv-13", new com.travelscope.collab.AgentStageResult(
+                    com.travelscope.collab.AgentStageResult.Stage.REVIEWER,
+                    com.travelscope.collab.AgentStageResult.Status.DONE, null, false,
+                    List.of(com.travelscope.collab.TaskWorkspace.FILE_REVIEW_PASSED), "2026-10-27 20:31:00"));
+        });
+
+        List<String> items = awaitEvent(
+                ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "done");
+
+        assertThat(eventNames(items)).contains("review_report", "done").doesNotContain("error");
+    }
+
+    @Test
+    @DisplayName("新契约：reviewer DONE 声明产物与文件冲突 → 按未完成处理")
+    void reviewerStateArtifactMismatchFailsClosed() throws Exception {
+        seedPlanningChain();
+        reviewerCompletes(() -> {
+            workspace.writeAgentStageResult("1", "conv-13", new com.travelscope.collab.AgentStageResult(
+                    com.travelscope.collab.AgentStageResult.Stage.PLANNER,
+                    com.travelscope.collab.AgentStageResult.Status.DONE, null, false,
+                    List.of(com.travelscope.collab.TaskWorkspace.FILE_ITINERARY_DRAFT), "2026-10-27 20:30:00"));
+            workspace.writeReviewPassed("1", "conv-13",
+                    new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-27 20:31:00"));
+            workspace.writeAgentStageResult("1", "conv-13", new com.travelscope.collab.AgentStageResult(
+                    com.travelscope.collab.AgentStageResult.Stage.REVIEWER,
+                    com.travelscope.collab.AgentStageResult.Status.DONE, null, false,
+                    List.of(com.travelscope.collab.TaskWorkspace.FILE_REVIEW_REPORT), "2026-10-27 20:31:00"));
+        });
+
+        List<String> items = awaitEvent(
+                ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游"), "error");
+
+        assertThat(eventNames(items)).doesNotContain("done", "review_report");
+        assertThat(payloadOf(items, "error")).contains("reviewer 终态与质量产物不一致");
     }
 
     // ---------- 用例 3：R1 PASS_WITH_WARNINGS → 载荷带 warnings，done 标注含提示数 ----------
@@ -152,17 +206,9 @@ class ChatServiceReviewEventTest {
                 new com.travelscope.collab.ReviewPassed.ReviewWarning("BUDGET_DEVIATION",
                         "预算超支：估算 1344 vs 预算上限 1200（偏差 12%）",
                         "偏差在 10%~15% 贴线区间，可按当前预算交付");
-        RuleReviewService stub = mock(RuleReviewService.class);
-        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
-            // 对齐真实链路：规则质检写带 warnings 的 review_passed，编排层零回炉直接交付
-            workspace.writeReviewPassed(inv.getArgument(0), inv.getArgument(1),
-                    new com.travelscope.collab.ReviewPassed(88, 16, List.of("核验一致"),
-                            List.of(warning), "2026-10-21 12:00:00"));
-            return new RuleReviewService.Outcome(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS,
-                    List.of("预算超支：估算 1344 vs 预算上限 1200（偏差 12%）"),
-                    List.of(warning), null);
-        });
-        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+        reviewerCompletes(() -> workspace.writeReviewPassed("1", "conv-13",
+                new com.travelscope.collab.ReviewPassed(88, 16, List.of("核验一致"),
+                        List.of(warning), "2026-10-21 12:00:00")));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -197,6 +243,8 @@ class ChatServiceReviewEventTest {
                                 "09:00-11:30", "环湖漫步", "西湖", "免费", null)))),
                 null, List.of(), List.of(),
                 "# 杭州两日游完整方案\n\n## Day 1（2026-10-24）西湖环线\n\n| 时间 | 活动 |\n| --- | --- |\n| 09:00 | 环湖 |\n"));
+        reviewerCompletes(() -> workspace.writeReviewPassed("1", "conv-13",
+                new com.travelscope.collab.ReviewPassed(85, 16, List.of("核验一致"), "2026-10-19 12:00:00")));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -223,24 +271,17 @@ class ChatServiceReviewEventTest {
     @DisplayName("R4 终检 FAIL → review_report.json 重写 DEGRADED+未解决清单，载荷/标注同源")
     void degradedDeliveryMarkedAndEmitted() throws Exception {
         seedPlanningChain();
-        // 规则质检打桩：终检仍 FAIL（reviewer 修订上限 1 已耗尽或未收敛），写 NORMAL 态 FAIL 报告
-        // ——编排层 markDegradedDeliveryIfNeeded 应重写为 DEGRADED 并汇总失败段问题
-        RuleReviewService stub = mock(RuleReviewService.class);
-        when(stub.check(anyString(), anyString())).thenAnswer(inv -> {
-            workspace.writeReviewReport(inv.getArgument(0), inv.getArgument(1),
-                    new com.travelscope.collab.ReviewReport(
-                            List.of(new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
-                                    new com.travelscope.collab.ReviewReport.ReviewSegment(2, false,
-                                            List.of("Day1 第2项「灵隐寺」开始(11:30) 早于上一项「西湖游船」结束(12:00)")),
-                                    new com.travelscope.collab.ReviewReport.ReviewSegment(3, false,
-                                            List.of("预算超支：估算 1500 vs 预算上限 1200（偏差 25%）"))),
-                            new com.travelscope.collab.ReviewReport.ReviewScores(18, 14, 10, 12, 16),
-                            70, java.util.Map.of("2", List.of("调整 Day1 顺序"), "3", List.of("换经济酒店")),
-                            "2026-10-21 12:00:00"));
-            return new RuleReviewService.Outcome(RuleReviewService.Outcome.Verdict.FAIL,
-                    List.of("时间线重叠", "预算超支"), List.of(), "修订任务（测试桩不会消费）");
-        });
-        org.springframework.test.util.ReflectionTestUtils.setField(chatService, "ruleReviewService", stub);
+        // reviewer 完成时写 NORMAL 态 FAIL 报告；编排层只负责标记 DEGRADED。
+        reviewerCompletes(() -> workspace.writeReviewReport("1", "conv-13",
+                new com.travelscope.collab.ReviewReport(
+                        List.of(new com.travelscope.collab.ReviewReport.ReviewSegment(1, true, List.of()),
+                                new com.travelscope.collab.ReviewReport.ReviewSegment(2, false,
+                                        List.of("Day1 第2项「灵隐寺」开始(11:30) 早于上一项「西湖游船」结束(12:00)")),
+                                new com.travelscope.collab.ReviewReport.ReviewSegment(3, false,
+                                        List.of("预算超支：估算 1500 vs 预算上限 1200（偏差 25%）"))),
+                        new com.travelscope.collab.ReviewReport.ReviewScores(18, 14, 10, 12, 16),
+                        70, java.util.Map.of("2", List.of("调整 Day1 顺序"), "3", List.of("换经济酒店")),
+                        "2026-10-21 12:00:00")));
 
         SseEmitter emitter = ChatExecutionTestSupport.stream(chatService, conversation(), 1L, "帮我规划杭州两日游");
         List<String> items = awaitEvent(emitter, "done");
@@ -282,6 +323,22 @@ class ChatServiceReviewEventTest {
         when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
                 .thenReturn(Flux.empty());
     }
+
+    /** 模拟根 Agent 同步等待 reviewer：reviewer 写完产物后根流才完成。 */
+    private void reviewerCompletes(ThrowingAction action) {
+        when(travelMasterAgent.streamEvents(any(UserMessage.class), any(RuntimeContext.class)))
+                .thenAnswer(inv -> Flux.defer(() -> {
+                    try {
+                        action.run();
+                        return Flux.empty();
+                    } catch (Exception e) {
+                        return Flux.error(e);
+                    }
+                }));
+    }
+
+    @FunctionalInterface
+    private interface ThrowingAction { void run() throws Exception; }
 
     private static Conversation conversation() {
         Conversation c = new Conversation();

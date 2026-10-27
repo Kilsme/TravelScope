@@ -86,7 +86,8 @@ public class RuleReviewService {
      * 内联 intake/草案 JSON 正文——reviewer 首轮免 read_file；修订后重读由提示词约束）。
      */
     public record Outcome(Verdict verdict, List<String> issues,
-                          List<ReviewPassed.ReviewWarning> warnings, String revisionTaskText) {
+                          List<ReviewPassed.ReviewWarning> warnings, String revisionTaskText,
+                          String reasonCode, boolean retryable) {
 
         /** 三级裁决：PASS 全过；PASS_WITH_WARNINGS 仅软问题（带 warning 交付）；FAIL 含硬伤（回炉） */
         public enum Verdict { PASS, PASS_WITH_WARNINGS, FAIL }
@@ -96,6 +97,14 @@ public class RuleReviewService {
             warnings = List.copyOf(Objects.requireNonNull(warnings, "warnings"));
         }
 
+        /** 保持既有规则调用方兼容；无单一稳定原因码时省略。 */
+        public Outcome(Verdict verdict, List<String> issues,
+                       List<ReviewPassed.ReviewWarning> warnings, String revisionTaskText) {
+            this(verdict, issues, warnings, revisionTaskText,
+                    verdict == Verdict.FAIL ? "RULE_VIOLATION" : "NONE",
+                    verdict == Verdict.FAIL);
+        }
+
         /** 非 FAIL 即视为通过（编排层据此决定是否唤起 reviewer；SOFT 不占用回炉额度） */
         public boolean passed() {
             return verdict != Verdict.FAIL;
@@ -103,7 +112,8 @@ public class RuleReviewService {
 
         /** 兼容构造（布尔视角）：true→PASS / false→FAIL，无软提示——既有打桩与测试零改动 */
         public Outcome(boolean passed, List<String> issues, String revisionTaskText) {
-            this(passed ? Verdict.PASS : Verdict.FAIL, issues, List.of(), revisionTaskText);
+            this(passed ? Verdict.PASS : Verdict.FAIL, issues, List.of(), revisionTaskText,
+                    passed ? "NONE" : "RULE_VIOLATION", !passed);
         }
     }
 
@@ -116,8 +126,11 @@ public class RuleReviewService {
     public Outcome check(String userId, String sessionId) {
         Optional<ItineraryDraft> draftOpt = taskWorkspace.readItineraryDraft(userId, sessionId);
         if (draftOpt.isEmpty()) {
-            log.info("规则质检跳过（无行程草案产物）: 用户={}, 会话={}", userId, sessionId);
-            return new Outcome(Outcome.Verdict.PASS, List.of(), List.of(), null);
+            String issue = "缺少 itinerary_draft.json，规划草案尚未生成，无法执行质量复检";
+            log.warn("规则质检失败（DRAFT_MISSING）: 用户={}, 会话={}", userId, sessionId);
+            // 缺少上游草案不是 reviewer 可修订的问题：FAIL 但不可重试，且绝不写 review_passed。
+            return new Outcome(Outcome.Verdict.FAIL, List.of(issue), List.of(), null,
+                    "DRAFT_MISSING", false);
         }
         ItineraryDraft draft = draftOpt.get();
         Optional<IntakeResult> intakeOpt = taskWorkspace.readIntakeResult(userId, sessionId);

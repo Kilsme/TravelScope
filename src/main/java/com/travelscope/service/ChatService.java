@@ -56,7 +56,7 @@ import java.util.Map;
  *   ├─ CHAT / TOOL_CALL / RAG → 主 Agent + 路由指令（IntentRouterMiddleware 禁止委派）
  *   ├─ RAG（知识库可用时）    → 先检索知识片段拼入上下文再回答
  *   └─ PLANNING              → 需求采集与任务登记 → travel-master 依次委派 planner/reviewer →
- *                              Java 最终规则复检与渲染（见 planningOrchestration）
+ *                              验收 reviewer 最终产物并渲染（见 planningOrchestration）
  * </pre>
  * 事件流通过 SseEmitter 推送给前端；意图分类（阻塞调用）与 Agent 执行均调度到
  * boundedElastic 线程池，不占用容器线程。
@@ -69,10 +69,7 @@ public class ChatService {
     @org.springframework.beans.factory.annotation.Autowired
     @org.springframework.beans.factory.annotation.Qualifier("assessmentMasterAgent")
     private org.springframework.beans.factory.ObjectProvider<HarnessAgent> assessmentAgents;
-    /** 规则质检（零 LLM）：PLANNING 收尾前执行；字段注入避免撑大构造器（测试走 ReflectionTestUtils） */
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private RuleReviewService ruleReviewService;
-    /** 结果缓存（同对话二次规划时按需求关键字段变化失效；字段注入同 ruleReviewService 模式） */
+    /** 结果缓存（同对话二次规划时按需求关键字段变化失效；可选注入便于降级测试） */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.travelscope.service.TaskResultCache taskResultCache;
     /** 任务状态容器（缓存预检命中项顺手标 DONE；字段注入避免撑大构造器） */
@@ -213,8 +210,8 @@ public class ChatService {
      *       （planner 提示词中的 .md 路径差异由 S2.6 提示词重写收口）</li>
      *   <li><b>step4 等待完成</b>：共用管线 600s 泳道超时；超时按 wait_async_results 等价
      *       语义截断，转 step5 尽力渲染</li>
-     *   <li><b>step5 终检与渲染</b>：读取两个叶子 Agent 的产物，执行 Java 最终规则复检，
-     *       随后从 JSON 的 markdownBody 渲染最终正文并发送结构化 review_report 事件。</li>
+     *   <li><b>step5 验收与渲染</b>：reviewer 内部已调用 Java 规则工具完成终检；编排层验收
+     *       review 产物，从最新 JSON 的 markdownBody 渲染正文并发送 review_report 事件。</li>
      * </ol>
      */
     private Flux<ChatEvent> planningOrchestration(Conversation conversation, Long userId,
@@ -292,6 +289,7 @@ public class ChatService {
             log.info("同对话二次规划（需求关键字段变化）: 会话={}, 结果缓存已全清", sessionId);
         }
         taskWorkspaceService.deleteReviewArtifacts(userIdStr, sessionId);
+        taskWorkspaceService.deleteAgentStageResults(userIdStr, sessionId);
         TaskBacklog backlog = taskBacklogPlanner.plan(userIdStr, intake);
         log.info("PLANNING 编排: 会话={}, 任务清单已登记 {} 项，开始委派 planning-agent",
                 sessionId, backlog.tasks().size());
@@ -343,11 +341,12 @@ public class ChatService {
         return Flux.concat(
                 Flux.just(milestoneStatus("任务清单已登记（" + backlog.tasks().size() + " 项），开始行程规划")),
                 plannerFlow,
-                // ---------- step5：规则质检（零 LLM）→ 降级交付标记 → 修订差量重推 → 渲染收尾 ----------
+                // ---------- step5：消费 reviewer 最终产物 → 降级标记 → 修订差量重推 → 渲染收尾 ----------
                 Flux.defer(() -> {
-                    if (cancellation != null) cancellation.call(() -> { runRuleReview(userIdStr, sessionId, observation, locale); return true; });
-                    else runRuleReview(userIdStr, sessionId, observation, locale);
-                    // R4：终检仍未通过（回炉上限 1 拦第 2 次修订）→ 契约标记 DEGRADED+未解决清单，
+                    // reviewer-agent 已在子任务内完成首次规则复检、按需修订和修订后终检。
+                    // step5 先做交付硬门禁：必须同时存在草案与一种 JSON review 终态。
+                    validatePlanningDelivery(userIdStr, sessionId);
+                    // R4：终检仍未通过（回炉上限 1）→ 契约标记 DEGRADED+未解决清单，
                     // 后续 ⚠️ 标注与 review_report 事件载荷据此携带可展开问题清单
                     markDegradedDeliveryIfNeeded(userIdStr, sessionId);
                     // R3②：reviewer 修订流不经 planner 事件流——质检/修订完成后差量补推
@@ -422,32 +421,54 @@ public class ChatService {
     }
 
     /**
-     * 规则质检（质检降级为规则校验）：planner 结束后先跑 RuleReviewService（纯 Java 三段规则，
-     * 常规路径零 LLM <1s）——全过则 review_passed.json 直接落盘；不通过才唤起独立质检 Agent
-     * 做定向修订（修订后重跑规则校验收敛）。无草案产物（规划中途失败）则跳过。
-     * 任何异常只记日志，绝不影响 step5 渲染。
+     * PLANNING 最终交付硬门禁：只有草案不能代表 reviewer 已完成。
+     * 正常交付必须是 draft+review_passed；带问题交付必须是 draft+review_report。
+     * 本方法只读取 reviewer 产物，不调用 RuleReviewService。
      */
-    private void runRuleReview(String userId, String sessionId,
-                               com.travelscope.assessment.ObservationContext observation, String locale) {
-        if (ruleReviewService == null) {
-            return;
-        }
-        try {
-            if (taskWorkspaceService.readItineraryDraft(userId, sessionId).isEmpty()) {
+    private void validatePlanningDelivery(String userId, String sessionId) {
+        var draft = taskWorkspaceService.readItineraryDraft(userId, sessionId);
+        var planner = taskWorkspaceService.readAgentStageResult(
+                userId, sessionId, com.travelscope.collab.AgentStageResult.Stage.PLANNER);
+        if (planner.isEmpty()) {
+            // 兼容升级前已完成的旧会话：仅在没有任何阶段状态时退回既有文件契约。
+            var reviewer = taskWorkspaceService.readAgentStageResult(
+                    userId, sessionId, com.travelscope.collab.AgentStageResult.Stage.REVIEWER);
+            if (reviewer.isEmpty()) {
+                validateLegacyPlanningDelivery(userId, sessionId, draft.isPresent());
                 return;
             }
-            RuleReviewService.Outcome outcome = ruleReviewService.check(userId, sessionId);
-            // R1 质检分级：PASS / PASS_WITH_WARNINGS（仅软问题）均不唤起 reviewer——
-            // 软提示已随 review_passed.json 落盘并经 review_report 事件下发，带 warning 交付零回炉
-            if (outcome.passed()) {
-                return;
-            }
-            // reviewer-agent 已在根 Agent 的固定拓扑中执行；Java 终检只负责生成最终契约，
-            // 不再创建独立 reviewer 实例。
-        } catch (Exception e) {
-            TurnCancellation.rethrow(e, observation);
-            log.warn("规则质检/修订异常（不影响方案渲染）: 会话={}, 原因={}", sessionId, e.getMessage());
+            throw new ExecutionFailure("PLANNER_STAGE_MISSING", "缺少 planner 阶段终态，规划尚未完成");
         }
+        if (planner.get().status() != com.travelscope.collab.AgentStageResult.Status.DONE
+                || !planner.get().artifacts().contains(com.travelscope.collab.TaskWorkspace.FILE_ITINERARY_DRAFT)
+                || draft.isEmpty()) {
+            throw new ExecutionFailure("PLANNER_STATE_ARTIFACT_MISMATCH", "planner 终态与行程草案不一致，按未完成处理");
+        }
+
+        var reviewer = taskWorkspaceService.readAgentStageResult(
+                userId, sessionId, com.travelscope.collab.AgentStageResult.Stage.REVIEWER);
+        if (reviewer.isEmpty() || reviewer.get().status() != com.travelscope.collab.AgentStageResult.Status.DONE) {
+            throw new ExecutionFailure("REVIEWER_NOT_DONE", "质量审阅未完成，禁止正常交付");
+        }
+        boolean passed = taskWorkspaceService.readReviewPassed(userId, sessionId).isPresent();
+        boolean reported = taskWorkspaceService.readReviewReport(userId, sessionId).isPresent();
+        boolean declaresActualArtifact = (passed && reviewer.get().artifacts().contains(com.travelscope.collab.TaskWorkspace.FILE_REVIEW_PASSED))
+                || (reported && reviewer.get().artifacts().contains(com.travelscope.collab.TaskWorkspace.FILE_REVIEW_REPORT));
+        if (!declaresActualArtifact) {
+            throw new ExecutionFailure("REVIEWER_STATE_ARTIFACT_MISMATCH", "reviewer 终态与质量产物不一致，按未完成处理");
+        }
+    }
+
+    private void validateLegacyPlanningDelivery(String userId, String sessionId, boolean draftPresent) {
+        if (!draftPresent) {
+            throw new ExecutionFailure("DRAFT_MISSING", "未生成行程草案，规划失败，无法交付");
+        }
+        boolean passed = taskWorkspaceService.readReviewPassed(userId, sessionId).isPresent();
+        boolean reported = taskWorkspaceService.readReviewReport(userId, sessionId).isPresent();
+        if (!passed && !reported) {
+            throw new ExecutionFailure("REVIEW_TERMINAL_MISSING", "行程草案已生成，但质量审阅未完成，禁止正常交付");
+        }
+        log.info("兼容旧会话：未发现 AgentStageResult，按既有 JSON 产物验收，用户={}, 会话={}", userId, sessionId);
     }
 
     /**

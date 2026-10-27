@@ -49,7 +49,8 @@ import java.util.Map;
 /**
  * AgentScope 运行时配置。
  * 唯一生产根 travel-master 处理直接请求；完整规划时依次委派 planning-agent 和
- * reviewer-agent 两个叶子。ChatService 负责需求采集、任务登记、最终规则复检与渲染。
+ * reviewer-agent 两个叶子。reviewer 内部调用 Java 规则工具完成复检闭环；ChatService 负责
+ * 需求采集、任务登记、最终产物验收与渲染。
  * 在线与评测使用相同的父子拓扑，评测根实例使用独立状态。
  */
 @Configuration
@@ -359,9 +360,10 @@ public class AgentConfig {
     public HarnessAgent travelMasterAgent(Toolkit toolkit, Model gatewayChatModel, Model gatewayReviewerModel,
                                            TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
                                            com.travelscope.service.TaskResultCache taskResultCache,
-                                          io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
+                                           com.travelscope.service.RuleReviewService ruleReviewService,
+                                           io.agentscope.core.state.AgentStateStore travelAgentStateStore) throws IOException {
         return buildMasterAgent(toolkit, gatewayChatModel, gatewayReviewerModel, travelAgentStateStore,
-                taskWorkspace, taskRegistry, taskResultCache);
+                taskWorkspace, taskRegistry, taskResultCache, ruleReviewService);
     }
 
     @Bean
@@ -370,16 +372,18 @@ public class AgentConfig {
             @org.springframework.beans.factory.annotation.Qualifier("gatewayChatModel") Model mainModel,
             @org.springframework.beans.factory.annotation.Qualifier("gatewayReviewerModel") Model reviewerModel,
             TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
-            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
+            com.travelscope.service.TaskResultCache taskResultCache,
+            com.travelscope.service.RuleReviewService ruleReviewService) throws IOException {
         return buildMasterAgent(toolkit.copy(), mainModel, reviewerModel, new InMemoryAgentStateStore(),
-                taskWorkspace, taskRegistry, taskResultCache);
+                taskWorkspace, taskRegistry, taskResultCache, ruleReviewService);
     }
 
     private HarnessAgent buildMasterAgent(Toolkit toolkit, Model gatewayChatModel,
             Model gatewayReviewerModel,
             io.agentscope.core.state.AgentStateStore travelAgentStateStore,
             TaskWorkspace taskWorkspace, TaskRegistry taskRegistry,
-            com.travelscope.service.TaskResultCache taskResultCache) throws IOException {
+            com.travelscope.service.TaskResultCache taskResultCache,
+            com.travelscope.service.RuleReviewService ruleReviewService) throws IOException {
         HarnessAgent agent = HarnessAgent.builder()
                 .name(TravelMasterAgent.AGENT_NAME)
                 .sysPrompt(TravelMasterAgent.FULL_SYS_PROMPT)
@@ -414,7 +418,8 @@ public class AgentConfig {
                         })
                 .subagentFactory(ReviewerAgent.AGENT_NAME,
                         "叶子质量审阅 Agent：审查并按需修订草案，写入结构化质检产物",
-                        name -> buildReviewerAgent(toolkit, gatewayReviewerModel, taskWorkspace, true))
+                        name -> buildReviewerAgent(toolkit, gatewayReviewerModel, taskWorkspace,
+                                ruleReviewService, true))
                 .build();
 
         log.info("主 Agent 构建完成: {} (workspace={})", TravelMasterAgent.AGENT_NAME,
@@ -433,7 +438,10 @@ public class AgentConfig {
         try {
             HarnessAgent.Builder builder = HarnessAgent.builder()
                     .name(ItineraryAgent.AGENT_NAME)
-                    .middlewares(List.of(observationMiddleware, bookkeeping))
+                    .middlewares(List.of(observationMiddleware,
+                            new com.travelscope.agent.AgentStageResultMiddleware(taskWorkspace,
+                                    com.travelscope.collab.AgentStageResult.Stage.PLANNER),
+                            new com.travelscope.agent.PlanningToolGuardMiddleware(taskWorkspace), bookkeeping))
                     .sysPrompt(ItineraryAgent.SYS_PROMPT)
                     .model(gatewayChatModel)
                     .toolkit(plannerToolkitView(toolkit))
@@ -467,10 +475,12 @@ public class AgentConfig {
     }
 
     private HarnessAgent buildReviewerAgent(Toolkit toolkit, Model gatewayReviewerModel,
-            TaskWorkspace taskWorkspace, boolean leaf) {
+            TaskWorkspace taskWorkspace, com.travelscope.service.RuleReviewService ruleReviewService,
+            boolean leaf) {
         Toolkit view = toolkit.copy();
+        view.registerTool(new com.travelscope.agent.tools.ReviewerRuleTools(ruleReviewService));
         for (String name : new java.util.ArrayList<>(view.getToolNames())) {
-            if (!REVIEWER_TOOL_WHITELIST.contains(name) && !name.startsWith("mcp__")) {
+            if (!REVIEWER_TOOL_WHITELIST.contains(name)) {
                 view.removeTool(name);
             }
         }
@@ -481,6 +491,8 @@ public class AgentConfig {
                 .toolkit(view)
                 .maxIters(ReviewerAgent.MAX_ITERS)
                 .middlewares(List.of(observationMiddleware,
+                        new com.travelscope.agent.AgentStageResultMiddleware(taskWorkspace,
+                                com.travelscope.collab.AgentStageResult.Stage.REVIEWER),
                         new ReviewerRetryMiddleware(taskWorkspace, tracingHelper)))
                 .enablePendingToolRecovery(true)
                 .permissionContext(PermissionContextState.builder()
@@ -497,9 +509,10 @@ public class AgentConfig {
 
     /** 独立修订 Agent 的工具白名单。 */
     private static final java.util.Set<String> REVIEWER_TOOL_WHITELIST = java.util.Set.of(
-            "write_collab_file", "register_task_result", "get_cached_task_result",
+            "register_task_result", "get_cached_task_result",
             "plan_route", "searchHotels", "retrieve_poi_candidates",
-            "revise_poi_selection", "assemble_itinerary", "review_retry_hint");
+            "revise_poi_selection", "assemble_itinerary", "review_retry_hint",
+            com.travelscope.agent.tools.ReviewerRuleTools.TOOL_NAME);
 
 
     /**
@@ -516,7 +529,7 @@ public class AgentConfig {
             // update_task_status 已移除——planner 的任务状态由 BookkeepingMiddleware 代码副作用维护
             "register_task_result", "get_cached_task_result",
             "get_task_progress",
-            "review_retry_hint");
+            "planning_guard_hint", "review_retry_hint");
 
     /** 共享 toolkit 的 planner 视图：copy 后按白名单剪枝（mcp__* 前缀放行；agent_spawn/task_*
      *  由 SubagentsMiddleware 内置注册，不经 toolkit，不受剪枝影响） */
@@ -527,7 +540,17 @@ public class AgentConfig {
                 view.removeTool(name);
             }
         }
+        // select_poi_shortlist 等遗留工具返回 String；将 ERROR: 文本提升为框架 ERROR 状态，
+        // 让模型和中间件都能正确识别失败，而不是 SUCCESS + 错误文本。
+        wrapErrorTextTool(view, "select_poi_shortlist");
         return view;
+    }
+
+    private static void wrapErrorTextTool(Toolkit toolkit, String name) {
+        io.agentscope.core.tool.AgentTool delegate = toolkit.getTool(name);
+        if (delegate == null) return;
+        toolkit.removeTool(name);
+        toolkit.registerAgentTool(new com.travelscope.agent.tools.ErrorStateToolWrapper(delegate));
     }
 
     /** 创建无工具、无子 Agent 的 L3 意图分类器，由 IntentCascadeRouter 在前层未命中时调用。 */

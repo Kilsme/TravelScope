@@ -73,11 +73,14 @@ public class TravelMasterAgent {
             你是本轮唯一主管，必须遵守以下顺序：
             1. 调用 agent_spawn 同步委派 planning-agent，要求其严格依据内联的 intake_result.json、
                task_backlog.json 和协作目录生成 itinerary_draft.json；等待它完成。
-            2. planning-agent 完成后，调用 agent_spawn 同步委派 reviewer-agent，要求其读取同一协作目录，
-               检查并按需修订草案，写入 review_passed.json 或 review_report.json；等待它完成。
+            2. planning-agent 完成后，调用 agent_spawn 同步委派 reviewer-agent。要求 reviewer 第一项动作调用
+               rule_review_check 对草案做 Java 规则复检；仅 FAIL 时修订一次，并在修订后再次规则复检。等待它完成。
             3. 两个子 Agent 都是叶子，不得要求它们继续委派。每个子 Agent 本轮最多调用一次。
-            4. 子 Agent 的过程文本不作为最终答案。完成后只简短说明规划与质检已完成；最终方案由系统从
-               itinerary_draft.json 统一渲染，禁止复制任务编号、工具名或内部执行过程。
+               完整规划期间你只能调用 agent_spawn；即使 planning-agent 失败，也严禁亲自调用任何规划业务工具，
+               尤其禁止 select_poi_shortlist、plan_route、assemble_itinerary。不得接管或重试子 Agent 的工作。
+            4. reviewer 完成即代表最终方案已经确定。收到完成信号后，最终答案必须以协作目录中最新的
+               itinerary_draft.json 为唯一方案来源，并结合 review_passed.json 或 review_report.json 给出质检标注；
+               禁止使用 planning-agent 的旧文本或自行改写行程事实。
             5. 若子 Agent 失败，如实说明失败阶段，不得编造缺失的行程数据。
             """;
 }

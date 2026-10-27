@@ -42,26 +42,19 @@ class ReviewerOutputJsonTest {
         ctx = RuntimeContext.builder().userId("u1").sessionId("conv-r").build();
     }
 
-    // ---------- 用例 1：提示词锚点——产物 JSON 化 + REVIEW_RESULT 裸标记保留 + 评分细则未动 ----------
+    // ---------- 用例 1：规则工具是唯一裁决入口，修订后必须再次复检 ----------
     @Test
-    void promptAnchorsJsonOutputs() {
+    void promptAnchorsRuleDrivenReviewFlow() {
         assertThat(ReviewerAgent.SYS_PROMPT)
-                .contains("write_collab_file")
-                .contains("review_passed.json")
-                .contains("review_report.json")
+                .contains("第一项动作必须调用 rule_review_check")
+                .contains("PASS / PASS_WITH_WARNINGS：不得修订")
+                .contains("发生任何修订后，必须再次调用 rule_review_check")
+                .contains("FINAL_ARTIFACT")
                 .contains("itinerary_draft.json")
                 .contains("REVIEW_RESULT")
+                .contains("禁止用 write_collab_file 手写或覆盖评审产物")
                 .doesNotContain("review_passed.md")
-                .doesNotContain("review_report.md")
-                .doesNotContain("itinerary_draft.md")
-                // 自由写文件与联网检索只允许以禁令形式出现一次。
-                .containsOnlyOnce("write_file")
-                .contains("edit_file / write_file / web_search / web_fetch 不可用");
-        // 卡 A/B 后：5 维评分维度（含偏好匹配）、通过标准保留；「POI 合理性」已改为「偏好匹配」
-        assertThat(ReviewerAgent.SYS_PROMPT)
-                .contains("完备性").contains("可行性").contains("时间冲突")
-                .contains("费用预算").contains("偏好匹配")
-                .contains("总分 ≥ 80").contains("无任一维度 < 12").contains("三段全部 pass");
+                .doesNotContain("review_report.md");
     }
 
     // ---------- 用例 2：通过路径 → review_passed.json 落盘并读回一致 ----------

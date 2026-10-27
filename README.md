@@ -42,7 +42,7 @@
 
 ## ✨ 核心特性
 
-- 🤖 **一个主 Agent + 两个叶子子 Agent** — `travel-master` 是唯一生产根 Agent；PLANNING 时依次同步委派 `planning-agent` 生成草案、`reviewer-agent` 审阅并按需修订。`ChatService` 只负责需求采集、任务登记、Java 最终规则复检和渲染，慢泳道 600s
+- 🤖 **一个主 Agent + 两个叶子子 Agent** — `travel-master` 是唯一生产根 Agent；PLANNING 时依次同步委派 `planning-agent` 生成草案、`reviewer-agent` 先调用 Java 规则工具复检、按需修订并终检。`ChatService` 负责需求采集、任务登记、最终产物验收和渲染，慢泳道 600s
 - 🧠 **LLM 只做两件事** — planner 首轮并行抓齐全量数据后，POI 偏好筛选（名单制工具）与草案结构字段产出是仅有的 LLM 决策点；检索、路线求解、组装、质检、记账全部代码化（OpenAI Agents SDK「LLM 产结构化 JSON → 代码执行」模式），happy path 全链仅 5~7 次 LLM 调用
 - 📜 **JSON 契约驱动协作** — 六个契约文件（`intake_result` / `poi_shortlist` / `route_plan` / `itinerary_draft` / `review_report` / `review_passed`）+ collab 五件套（9 个 DTO + Schema 校验 + 原子写 + TaskWorkspace + TaskRegistry）；工具面收编：`write_collab_file` 是唯一落盘口，`edit_file` / `write_file` / `web_search` / `web_fetch` 已从 planner 工具面移除
 - ✅ **子 Agent 审阅 + Java 终检** — planning 完成后始终由 `reviewer-agent` 审阅并按需用 `revise_poi_selection` 修订，修订上限 1 次由中间件硬拦；随后 `RuleReviewService` 以三段规则在 <1s 内生成最终交付契约
@@ -67,7 +67,7 @@ flowchart TD
         S1["step1 需求采集 workflow<br/>零 LLM · 缺字段推 requirement_form 卡片"]
         S2["step2 任务登记 T1~T5 + 缓存预检<br/>命中内联进委派说明 · 标 DONE"]
         S34["step3~4 委派 planning-agent 并等待"]
-        S5["step5 规则质检 + 渲染<br/>读 itinerary_draft.json 的 markdownBody"]
+        S5["step5 验收 reviewer 产物 + 渲染<br/>读最新 itinerary_draft.json 的 markdownBody"]
         S1 --> S2 --> S34 --> S5
     end
 
