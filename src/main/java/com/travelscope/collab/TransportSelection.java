@@ -1,7 +1,10 @@
 package com.travelscope.collab;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import com.travelscope.price.PriceFact;
+import com.travelscope.price.PriceUnit;
 import java.util.List;
 import java.util.Objects;
 
@@ -42,6 +45,10 @@ public record TransportSelection(int schemaVersion, DirectionSelection outbound,
             if (price.signum() < 0 || durationMinutes <= 0 || transferCount < 0)
                 throw new IllegalArgumentException("价格、耗时或换乘数非法");
             if (!arrivalTime.isAfter(departureTime)) throw new IllegalArgumentException("到达时间必须晚于出发时间");
+        }
+
+        public PriceFact priceFact(Instant fetchedAt) {
+            return new PriceFact(price, "CNY", PriceUnit.PER_PERSON_TRIP, source, fetchedAt, false);
         }
     }
 }

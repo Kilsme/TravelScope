@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -61,6 +62,8 @@ public class RuleReviewService {
     private static final String RULE_UNPLACED_TRADEOFF = "UNPLACED_TRADEOFF";
     private static final String RULE_BUDGET_DEVIATION = "BUDGET_DEVIATION";
     private static final String RULE_BUDGET_UNPARSEABLE = "BUDGET_UNPARSEABLE";
+    private static final String RULE_BUDGET_ARITHMETIC_MISMATCH = "BUDGET_ARITHMETIC_MISMATCH";
+    private static final String RULE_PRICE_SOURCE_MISSING = "PRICE_SOURCE_MISSING";
     private static final String RULE_PREFERENCE_COVERAGE = "PREFERENCE_COVERAGE";
     private static final String RULE_ROUTE_PLAN_MISSING = "ROUTE_PLAN_MISSING";
 
@@ -200,6 +203,9 @@ public class RuleReviewService {
 
         // ---------- 段3：预算 + 偏好（预算贴线/偏好部分覆盖为 SOFT，其余 HARD） ----------
         int costBudget = 20;
+        if (draft.budget() != null && !draft.budget().breakdown().isEmpty()) {
+            validateBudgetFacts(draft.budget(), violations, seg3Issues, verified);
+        }
         if (intakeOpt.isPresent() && draft.budget() != null) {
             var budgetConstraint = intakeOpt.get().effectiveBudgetConstraint();
             String budgetLimit = budgetConstraint == null ? valueOf(intakeOpt.get().fields().budget())
@@ -458,6 +464,42 @@ public class RuleReviewService {
     }
 
     /** 提取文本中的最大数字（预算区间取上限做保守比对）；无数字返回 null */
+    private static void validateBudgetFacts(ItineraryDraft.Budget budget, List<Violation> violations,
+                                            List<String> issues, List<String> verified) {
+        BigDecimal sum = BigDecimal.ZERO;
+        boolean complete = true;
+        for (ItineraryDraft.BudgetItem item : budget.breakdown()) {
+            BigDecimal amount = firstDecimal(item.amount());
+            if (amount == null) {
+                complete = false;
+                continue;
+            }
+            sum = sum.add(amount);
+            String note = item.note();
+            if (note == null || (!note.contains("来源=") && !note.contains("估算") && !note.contains("待确认"))) {
+                String detail = "预算分项缺少价格来源或估算标记: " + item.category();
+                issues.add(detail);
+                violations.add(new Violation(RULE_PRICE_SOURCE_MISSING, 3, Severity.HARD, detail,
+                        "补充来源=平台，或明确标注估算/待确认"));
+            }
+        }
+        BigDecimal total = firstDecimal(budget.totalEstimate());
+        if (complete && total != null && sum.compareTo(total) != 0) {
+            String detail = "预算算术不一致: 分项合计 " + sum + "，总额 " + total;
+            issues.add(detail);
+            violations.add(new Violation(RULE_BUDGET_ARITHMETIC_MISMATCH, 3, Severity.HARD, detail,
+                    "用分项金额机械求和生成总额"));
+        } else if (complete && total != null) {
+            verified.add("预算分项可机械复算，总额=" + total);
+        }
+    }
+
+    private static BigDecimal firstDecimal(String text) {
+        if (text == null) return null;
+        Matcher matcher = NUMBER.matcher(text);
+        return matcher.find() ? new BigDecimal(matcher.group()) : null;
+    }
+
     private static Double maxNumber(String text) {
         if (text == null || text.isBlank()) {
             return null;

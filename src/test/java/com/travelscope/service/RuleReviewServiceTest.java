@@ -82,6 +82,24 @@ class RuleReviewServiceTest {
     // ---------- 用例 ----------
 
     @Test
+    void deterministicBudgetRejectsArithmeticMismatchAndMissingSource() {
+        ItineraryDraft base = draft(List.of(
+                new DraftItem("09:00-11:00", "游览拙政园", "拙政园", "¥80", null)),
+                "100.00", List.of(), List.of());
+        ItineraryDraft malformed = new ItineraryDraft(base.days(),
+                new Budget("CNY", "100.00", List.of(
+                        new ItineraryDraft.BudgetItem("门票", "80.00", "来源=飞猪"),
+                        new ItineraryDraft.BudgetItem("餐饮", "10.00", null))),
+                base.notes(), base.pendingConfirm(), base.markdownBody());
+        seedAll(malformed);
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.issues()).anyMatch(s -> s.contains("预算算术不一致"))
+                .anyMatch(s -> s.contains("缺少价格来源"));
+    }
+
+    @Test
     @DisplayName("缺少草案 → FAIL/DRAFT_MISSING，且不得写 review_passed.json")
     void missingDraftFailsWithStableReasonCode() {
         workspace.writeIntakeResult("u1", "conv-r", intake("1", "苏州", "上海", "1200", "园林"));

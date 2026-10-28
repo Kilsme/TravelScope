@@ -613,10 +613,57 @@ public class CollabTools {
         // 防幻觉与偏好硬约束的校验输入
         PoiShortlist shortlist = taskWorkspace.readPoiShortlist(userId, sessionId).orElse(null);
         List<String> preferences = extractPreferences(intake);
+        com.travelscope.service.budget.BudgetCalculator calculator =
+                new com.travelscope.service.budget.BudgetCalculator();
+        java.util.List<com.travelscope.service.budget.BudgetCalculator.PricedItem> priced = new java.util.ArrayList<>();
+        java.time.Instant fetchedAt = java.time.Instant.now();
+        taskWorkspace.readTransportSelection(userId, sessionId).ifPresent(selection -> {
+            priced.add(new com.travelscope.service.budget.BudgetCalculator.PricedItem("去程",
+                    com.travelscope.service.budget.BudgetCalculator.Category.INTERCITY_TRANSPORT,
+                    selection.outbound().selected().priceFact(fetchedAt), 1));
+            priced.add(new com.travelscope.service.budget.BudgetCalculator.PricedItem("返程",
+                    com.travelscope.service.budget.BudgetCalculator.Category.INTERCITY_TRANSPORT,
+                    selection.inbound().selected().priceFact(fetchedAt), 1));
+        });
+        int nights = Math.max(0, routePlan.days().size() - 1);
+        taskWorkspace.readHotelSelection(userId, sessionId).ifPresent(selection -> priced.add(
+                new com.travelscope.service.budget.BudgetCalculator.PricedItem(selection.selected().name(),
+                        com.travelscope.service.budget.BudgetCalculator.Category.HOTEL,
+                        selection.selected().priceFact(fetchedAt), 1)));
+        int people = parsePositiveInt(intake.fields().people() == null ? null : intake.fields().people().value(), 1);
+        java.util.List<String> budgetPending = new java.util.ArrayList<>();
+        if (taskWorkspace.readTransportSelection(userId, sessionId).isEmpty()) budgetPending.add("城际交通：缺失价格");
+        if (taskWorkspace.readHotelSelection(userId, sessionId).isEmpty()) budgetPending.add("住宿：缺失价格");
+        java.util.Map<String, com.travelscope.price.PriceFact> poiPrices = new java.util.HashMap<>();
+        if (shortlist != null) shortlist.pois().forEach(p -> poiPrices.put(p.name(), p.ticketPrice()));
+        for (var day : skeleton.days()) {
+            for (var item : day.items()) {
+                priced.add(new com.travelscope.service.budget.BudgetCalculator.PricedItem(item.location(),
+                        com.travelscope.service.budget.BudgetCalculator.Category.TICKET,
+                        poiPrices.get(item.location()), 1));
+            }
+        }
+        budgetPending.add("市内交通：缺失价格");
+        budgetPending.add("餐饮：缺失价格");
+        var calculated = calculator.calculate(new com.travelscope.service.budget.BudgetCalculator.Input(
+                people, 1, nights, priced, budgetPending));
+        calculator.logComparison(skeleton.budget(), calculated);
+        java.util.List<String> mergedPending = new java.util.ArrayList<>(skeleton.pendingConfirm());
+        mergedPending.addAll(calculated.pending());
+        ItineraryDraft deterministicSkeleton = new ItineraryDraft(skeleton.days(),
+                calculator.toLegacyBudget(calculated), skeleton.notes(), mergedPending, skeleton.markdownBody());
         ItineraryDraft draft = itineraryAssembler.assemble(
-                skeleton, routePlan, weather, hotel, train, shortlist, preferences,locale);
+                deterministicSkeleton, routePlan, weather, hotel, train, shortlist, preferences,locale);
         taskWorkspace.writeItineraryDraft(userId, sessionId, draft);
         return draft;
+    }
+
+    private static int parsePositiveInt(String text, int fallback) {
+        if (text == null) return fallback;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\d+").matcher(text);
+        if (!matcher.find()) return fallback;
+        int value = Integer.parseInt(matcher.group());
+        return value > 0 ? value : fallback;
     }
 
     /**
@@ -1054,7 +1101,7 @@ public class CollabTools {
         }
     }
 
-    /** P3 全局段：budget + notes + pendingConfirm（一次小调用产出；budget 可空） */
+    /** P3 全局段：LLM 仅产 notes/pendingConfirm；budget 仅为旧 JSON 响应兼容，业务忽略。 */
     public record GlobalCopy(com.travelscope.collab.ItineraryDraft.Budget budget,
                              List<String> notes, List<String> pendingConfirm) {
         public GlobalCopy {
@@ -1174,18 +1221,17 @@ public class CollabTools {
         }
     }
 
-    /** P3④ 真实调用：全局 budget/notes/pendingConfirm（关思考；budget 按全部天估算） */
+    /** P3④ 真实调用：全局 notes/pendingConfirm；LLM 禁止生成金额。 */
     private GlobalCopy callGlobalCopyLlm(String allDaysView, String intakeView) {
-        String prompt = "基于以下全部天的行程与用户需求，输出全局段：budget（currency=CNY、totalEstimate 字符串、"
-                + "breakdown 分项含 category/amount/note，按 门票/交通/住宿/餐饮 估算）、notes（注意事项）、"
-                + "pendingConfirm（待确认事项）。金额为估算，注明「约」。\n\n全部行程：\n"
+        String prompt = "基于以下全部天的行程与用户需求，只输出 notes（注意事项）和 pendingConfirm（待确认事项）。"
+                + "budget 必须为 null；禁止生成、推测或改写任何金额。\n\n全部行程：\n"
                 + allDaysView + "\n\n用户需求：\n" + intakeView;
         RuntimeContext callCtx = RuntimeContext.builder()
                 .userId("itinerary-assembler").sessionId("itinerary-globalcopy").build();
         try {
             var agent = io.agentscope.core.ReActAgent.builder()
                     .name("itinerary-globalcopy")
-                    .sysPrompt("你是行程全局段整理器。只输出给定结构（budget/notes/pendingConfirm），不编造。")
+                    .sysPrompt("你是行程全局提醒整理器。只输出 notes/pendingConfirm，budget 固定为 null，禁止生成金额。")
                     .model(chatModel)
                     .maxIters(1)
                     .generateOptions(ASSEMBLER_NO_THINKING)

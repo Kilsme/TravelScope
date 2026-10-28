@@ -53,17 +53,24 @@ public record PoiShortlist(
             Integer durationMin,
             String source,
             String reason,
-            String imageUrl) {
+            String imageUrl,
+            com.travelscope.price.PriceFact ticketPrice) {
 
         public PoiItem {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(source, "source");
         }
 
-        /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
+        /** 旧调用便捷构造：无图片、无结构门票价。 */
         public PoiItem(String name, Double lng, Double lat, Double rating, String openHours,
                        Integer durationMin, String source, String reason) {
-            this(name, lng, lat, rating, openHours, durationMin, source, reason, null);
+            this(name, lng, lat, rating, openHours, durationMin, source, reason, null, null);
+        }
+
+        /** E3 前 JSON/调用兼容：有图片、无结构门票价。 */
+        public PoiItem(String name, Double lng, Double lat, Double rating, String openHours,
+                       Integer durationMin, String source, String reason, String imageUrl) {
+            this(name, lng, lat, rating, openHours, durationMin, source, reason, imageUrl, null);
         }
     }
 }

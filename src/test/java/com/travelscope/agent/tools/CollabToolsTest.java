@@ -522,13 +522,14 @@ class CollabToolsTest {
         assertThat(day1.theme()).isEqualTo("园林禅意日");
         // P3 护栏：time/location/activity 由 route_plan 结构直出，LLM 文案只进 theme/note/cost
         assertThat(day1.items().get(0).time()).isEqualTo("09:00-11:00");
-        assertThat(day1.items().get(0).activity()).isEqualTo("西湖");
+        assertThat(day1.items().get(0).activity()).isEqualTo("📍 景点：西湖");
         assertThat(day1.items().get(0).location()).isEqualTo("西湖");
         assertThat(day1.items().get(0).note()).isEqualTo("环湖漫步");
         assertThat(day1.items().get(0).cost()).isEqualTo("免费");
         assertThat(day1.items().get(1).cost()).isEqualTo("¥30");
         assertThat(draft.days().get(1).theme()).isEqualTo("登塔远眺");
-        assertThat(draft.budget().totalEstimate()).isEqualTo("约 1000 元");
+        assertThat(draft.budget().totalEstimate()).isEqualTo("0.00");
+        assertThat(draft.pendingConfirm()).anyMatch(p -> p.contains("缺失价格"));
         assertThat(draft.notes()).contains("注意防晒");
         assertThat(draft.pendingConfirm()).contains("预算为估算待确认");
         assertThat(draft.markdownBody()).contains("## Day 1").contains("园林禅意日").contains("环湖漫步");
@@ -581,7 +582,7 @@ class CollabToolsTest {
                 .containsExactly(1, 2, 3);
         assertThat(draft.days().get(1).theme()).as("day2 降级无主题").isNull();
         assertThat(draft.days().get(1).items().get(0).activity()).as("降级天 activity=POI 名直出")
-                .isEqualTo("灵隐寺");
+                .isEqualTo("📍 景点：灵隐寺");
         assertThat(draft.notes()).as("降级注记进 notes").anySatisfy(
                 n -> assertThat(n).contains("第 2 天文案生成失败"));
     }

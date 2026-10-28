@@ -1,7 +1,10 @@
 package com.travelscope.collab;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
+import com.travelscope.price.PriceFact;
+import com.travelscope.price.PriceUnit;
 import java.util.List;
 import java.util.Objects;
 
@@ -41,6 +44,11 @@ public record HotelSelection(int schemaVersion, HotelOption selected,
 
         public BigDecimal totalPrice() {
             return nightlyPrice.multiply(BigDecimal.valueOf(Math.max(1, nights())));
+        }
+
+        public PriceFact priceFact(Instant fetchedAt) {
+            return new PriceFact(nightlyPrice, "CNY", PriceUnit.PER_ROOM_NIGHT,
+                    source, fetchedAt, false);
         }
     }
 }
