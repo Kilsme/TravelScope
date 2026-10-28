@@ -33,6 +33,8 @@ public class TaskWorkspace {
     public static final String FILE_TASK_BACKLOG = "task_backlog.json";
     public static final String FILE_POI_SHORTLIST = "poi_shortlist.json";
     public static final String FILE_ROUTE_PLAN = "route_plan.json";
+    public static final String FILE_TRANSPORT_SELECTION = "transport_selection.json";
+    public static final String FILE_HOTEL_SELECTION = "hotel_selection.json";
     public static final String FILE_EXECUTION_RESULT = "execution_result.json";
     public static final String FILE_ITINERARY_DRAFT = "itinerary_draft.json";
     public static final String FILE_REVIEW_REPORT = "review_report.json";
@@ -141,6 +143,22 @@ public class TaskWorkspace {
 
     public Optional<RoutePlan> readRoutePlan(String userId, String sessionId) {
         return readJson(userId, sessionId, FILE_ROUTE_PLAN, "route_plan.md", RoutePlan.class);
+    }
+
+    public void writeTransportSelection(String userId, String sessionId, TransportSelection value) {
+        writer.write(getTaskDir(userId, sessionId), FILE_TRANSPORT_SELECTION, value);
+    }
+
+    public Optional<TransportSelection> readTransportSelection(String userId, String sessionId) {
+        return reader.read(getTaskDir(userId, sessionId), FILE_TRANSPORT_SELECTION, TransportSelection.class);
+    }
+
+    public void writeHotelSelection(String userId, String sessionId, HotelSelection value) {
+        writer.write(getTaskDir(userId, sessionId), FILE_HOTEL_SELECTION, value);
+    }
+
+    public Optional<HotelSelection> readHotelSelection(String userId, String sessionId) {
+        return reader.read(getTaskDir(userId, sessionId), FILE_HOTEL_SELECTION, HotelSelection.class);
     }
 
     public Optional<ExecutionResult> readExecutionResult(String userId, String sessionId) {

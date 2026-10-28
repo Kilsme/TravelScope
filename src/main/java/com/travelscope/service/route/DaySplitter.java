@@ -106,15 +106,32 @@ public class DaySplitter {
             placedIndices.addAll(day.nodeIndices());
         }
         for (int idx : pending) {
-            boolean matrixMissing = placedIndices.isEmpty()
-                    || placedIndices.stream().allMatch(pi -> matrix.get(pi, idx) < 0 && matrix.get(idx, pi) < 0);
+            boolean matrixMissing = !placedIndices.isEmpty()
+                    && placedIndices.stream().allMatch(pi -> matrix.get(pi, idx) < 0 && matrix.get(idx, pi) < 0);
+            boolean transportConflict = !matrixMissing && hasTransportBoundary(c)
+                    && !fitsAnyTransportDay(nodes.get(idx), c);
             unplaced.add(new RouteSolveResult.UnplacedPoi(nodes.get(idx).name(),
-                    matrixMissing
-                            ? RouteSolveResult.UnplacedReason.MATRIX_MISSING
+                    matrixMissing ? RouteSolveResult.UnplacedReason.MATRIX_MISSING
+                            : transportConflict ? RouteSolveResult.UnplacedReason.TRANSPORT_WINDOW_CONFLICT
                             : RouteSolveResult.UnplacedReason.COMMUTE_OVERFLOW));
         }
 
         return new SplitOutcome(days, List.copyOf(unplaced));
+    }
+
+    private boolean hasTransportBoundary(RouteConstraints c) {
+        return c.firstDayStart() != null || c.lastDayEnd() != null;
+    }
+
+    private boolean fitsAnyTransportDay(PoiCandidate p, RouteConstraints c) {
+        int duration = durationOf(p);
+        for (int day = 1; day <= c.days(); day++) {
+            int start = serviceStart(p, minutesOf(c.startForDay(day)));
+            if (windowCompatible(p, start, duration) && start + duration <= minutesOf(c.endForDay(day))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 轮外硬拒：只保留开放窗本身不可行（永远不可能，无歧义） */
@@ -141,7 +158,7 @@ public class DaySplitter {
         DayAcc(int dayNumber, PoiCandidate hotel, RouteConstraints c) {
             this.dayNumber = dayNumber;
             this.hotel = hotel;
-            this.endMinute = minutesOf(c.dailyStart());
+            this.endMinute = minutesOf(c.startForDay(dayNumber));
             if (hotel != null) {
                 sequence.add(hotel);
             }
@@ -193,7 +210,7 @@ public class DaySplitter {
             if (lastNode() == null) {
                 // 空天且无酒店锚：首个 POI 通勤记 0
                 commuteSec = 0;
-                arriveMinute = minutesOf(c.dailyStart());
+                arriveMinute = minutesOf(c.startForDay(dayNumber));
             } else {
                 int fromIdx = indexOf(lastNode(), nodes);
                 long m = matrix.get(fromIdx, idx);
@@ -203,8 +220,15 @@ public class DaySplitter {
                 commuteSec = m;
                 arriveMinute = endMinute + (int) Math.round(commuteSec / 60.0) + c.transferBufferMin();
             }
-            // 硬约束 1：通勤上限
-            if (commuteMinutesTotal() + Math.round(commuteSec / 60.0) > c.maxDailyCommuteMin()) {
+            // 硬约束 1：通勤上限；有酒店时预留候选点返回酒店的末段，不能只保证出发锚。
+            long returnSec = 0;
+            if (hotel != null) {
+                int hotelIdx = indexOf(hotel, nodes);
+                returnSec = matrix.get(idx, hotelIdx);
+                if (returnSec < 0) return null;
+            }
+            if (commuteMinutesTotal() + Math.round(commuteSec / 60.0)
+                    + Math.round(returnSec / 60.0) > c.maxDailyCommuteMin()) {
                 return null;
             }
             // 硬约束 2：开放窗兼容
@@ -214,7 +238,7 @@ public class DaySplitter {
                 return null;
             }
             // 硬约束 3：当日链路不超 dailyEnd
-            if (arriveMinute + duration > minutesOf(c.dailyEnd())) {
+            if (arriveMinute + duration > minutesOf(c.endForDay(dayNumber))) {
                 return null;
             }
             return new Insertion(this, idx, commuteSec, slackMinutes(c), arriveMinute, duration);

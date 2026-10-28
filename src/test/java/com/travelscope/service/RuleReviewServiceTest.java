@@ -195,6 +195,22 @@ class RuleReviewServiceTest {
     }
 
     @Test
+    @DisplayName("统一节点：LUGGAGE 等非 POI 不走幻觉过滤")
+    void nonPoiRouteNodeBypassesHallucinationFilter() {
+        seedAll(draft(List.of(new DraftItem("08:00-08:30", "🧳 行李：临时寄存",
+                "行李服务点", null, null)), "约 1100 元", List.of(), List.of()));
+        RoutePlan.RouteNode luggage = new RoutePlan.RouteNode("临时寄存", RoutePlan.NodeType.LUGGAGE,
+                true, null, null, "08:00", "08:30", null, null, null);
+        workspace.writeRoutePlan("u1", "conv-r", new RoutePlan(List.of(
+                new RoutePlan.RouteDay(1, null, null, List.of(luggage), 0, null)),
+                new RoutePlan.SolverMeta("fixed", "manual", 1, List.of())));
+
+        RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
+
+        assertThat(outcome.issues()).noneMatch(i -> i.contains("疑似幻觉"));
+    }
+
+    @Test
     @DisplayName("防幻觉：候选池外 POI → 检出并记段1 问题")
     void hallucinatedPoiDetected() {
         seedAll(draft(List.of(

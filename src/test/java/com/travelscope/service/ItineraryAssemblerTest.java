@@ -49,6 +49,27 @@ class ItineraryAssemblerTest {
     }
 
     @Test
+    @DisplayName("RouteNode 渲染：交通、酒店和餐食按类型展示")
+    void routeNodesRenderByTypeSnapshot() {
+        var day = new com.travelscope.collab.RoutePlan.RouteDay(1, "2026-10-25", null, List.of(
+                new com.travelscope.collab.RoutePlan.RouteNode("G7331 上海虹桥→杭州东",
+                        com.travelscope.collab.RoutePlan.NodeType.INTERCITY_TRANSPORT, true,
+                        null, null, "08:00", "09:00", null, null, null),
+                new com.travelscope.collab.RoutePlan.RouteNode("西湖",
+                        com.travelscope.collab.RoutePlan.NodeType.POI, false,
+                        120.1, 30.2, "10:00", "12:00", "地铁", 30, null),
+                new com.travelscope.collab.RoutePlan.RouteNode("湖滨午餐",
+                        com.travelscope.collab.RoutePlan.NodeType.MEAL, true,
+                        null, null, "12:00", "13:00", null, null, null)), 30, null);
+
+        DraftDay rendered = ItineraryAssembler.skeletonDay(day);
+
+        assertThat(rendered.items()).extracting(DraftItem::activity).containsExactly(
+                "🚄 城际交通：G7331 上海虹桥→杭州东", "📍 景点：西湖", "🍽 用餐：湖滨午餐");
+        assertThat(rendered.items().getFirst().location()).isEqualTo("交通节点");
+    }
+
+    @Test
     @DisplayName("校验：时间线冲突（下一项开始早于上一项结束）进 notes 提示")
     void assembleDetectsTimelineConflict() {
         ItineraryDraft skeleton = skeleton(List.of(

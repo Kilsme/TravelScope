@@ -66,7 +66,8 @@ public class ItineraryAssembler {
         List<DraftDay> cleanedDays = skeleton.days();
         List<String> hallucinations = new ArrayList<>();
         if (!knownPoiNames.isEmpty()) {
-            cleanedDays = filterHallucinatedPois(skeleton.days(), knownPoiNames, hallucinations);
+            cleanedDays = filterHallucinatedPois(skeleton.days(), knownPoiNames,
+                    nonPoiNodeNames(routePlan), hallucinations);
         }
         // v5-F2 图片透传：shortlist 的 imageUrl 挂载到匹配行程项（随草案 JSON 持久化，
         // ItineraryProgress 逐天事件与修订增量链自动继承；renderDaySection 渲染图集行）
@@ -116,12 +117,14 @@ public class ItineraryAssembler {
      */
     private List<DraftDay> filterHallucinatedPois(List<DraftDay> days,
                                                   java.util.Set<String> knownPoiNames,
+                                                  java.util.Set<String> nonPoiNodeNames,
                                                   List<String> hallucinations) {
         List<DraftDay> result = new ArrayList<>();
         for (DraftDay day : days) {
             List<DraftItem> kept = new ArrayList<>();
             for (DraftItem item : day.items()) {
-                if (isNonPoiItem(item) || poiMentioned(item, knownPoiNames)) {
+                if (isNonPoiItem(item) || routeNodeMentioned(item, nonPoiNodeNames)
+                        || poiMentioned(item, knownPoiNames)) {
                     kept.add(item);
                 } else {
                     hallucinations.add("Day" + day.day() + "「" + item.activity() + "/" + item.location()
@@ -133,12 +136,24 @@ public class ItineraryAssembler {
         return result;
     }
 
+    static java.util.Set<String> nonPoiNodeNames(RoutePlan routePlan) {
+        if (routePlan == null) return java.util.Set.of();
+        return routePlan.days().stream().flatMap(d -> d.nodes().stream())
+                .filter(n -> n.type() != RoutePlan.NodeType.POI).map(RoutePlan.RouteNode::name)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    static boolean routeNodeMentioned(DraftItem item, java.util.Set<String> names) {
+        String text = nvl(item.activity()) + nvl(item.location());
+        return names.stream().anyMatch(name -> name != null && !name.isBlank() && text.contains(name));
+    }
+
     /** 非景点项豁免：车站/机场/酒店/餐厅/车次/航班/交通/集合等（包内共享给质检） */
     static boolean isNonPoiItem(DraftItem item) {
         String text = (nvl(item.activity()) + nvl(item.location())).toLowerCase();
         String[] exempt = {"站", "机场", "酒店", "宾馆", "餐", "饭", "吃", "高铁", "火车",
                 "航班", "飞机", "地铁", "公交", "打车", "集合", "出发", "抵达", "入住",
-                "退房", "休息", "早餐", "午餐", "晚餐", "夜市", "购物"};
+                "退房", "休息", "早餐", "午餐", "晚餐", "夜市", "购物", "行李", "寄存", "接驳"};
         for (String kw : exempt) {
             if (text.contains(kw)) {
                 return true;
@@ -227,12 +242,34 @@ public class ItineraryAssembler {
      */
     public static DraftDay skeletonDay(RoutePlan.RouteDay routeDay) {
         List<DraftItem> items = new ArrayList<>();
-        for (RoutePlan.RoutePoi p : routeDay.pois()) {
+        for (RoutePlan.RouteNode node : routeDay.nodes()) {
             items.add(new DraftItem(
-                    (p.startTime() == null ? "" : p.startTime()) + "-" + (p.endTime() == null ? "" : p.endTime()),
-                    p.name(), p.name(), null, null));
+                    node.startTime() + "-" + node.endTime(),
+                    nodeLabel(node.type()) + node.name(), nodeLocation(node), null, node.scheduleNote()));
         }
         return new DraftDay(routeDay.day(), routeDay.date(), null, items);
+    }
+
+    private static String nodeLabel(RoutePlan.NodeType type) {
+        return switch (type) {
+            case POI -> "📍 景点：";
+            case INTERCITY_TRANSPORT -> "🚄 城际交通：";
+            case LOCAL_TRANSFER -> "🚕 市内接驳：";
+            case HOTEL_CHECKIN -> "🏨 酒店入住：";
+            case HOTEL_CHECKOUT -> "🏨 酒店退房：";
+            case LUGGAGE -> "🧳 行李：";
+            case MEAL -> "🍽 用餐：";
+        };
+    }
+
+    private static String nodeLocation(RoutePlan.RouteNode node) {
+        return switch (node.type()) {
+            case POI -> node.name();
+            case INTERCITY_TRANSPORT, LOCAL_TRANSFER -> "交通节点";
+            case HOTEL_CHECKIN, HOTEL_CHECKOUT -> "酒店";
+            case LUGGAGE -> "行李服务点";
+            case MEAL -> "餐饮地点";
+        };
     }
 
     /**

@@ -112,7 +112,7 @@ public class ItineraryProgress {
         StringBuilder sb = new StringBuilder();
         for (RoutePlan.RouteDay day : plan.days()) {
             sb.append(day.day()).append(':');
-            day.pois().forEach(p -> sb.append(p.name()).append(','));
+            day.nodes().forEach(node -> sb.append(node.type()).append('@').append(node.name()).append(','));
             sb.append('|');
         }
         return sb.toString();
@@ -133,6 +133,7 @@ public class ItineraryProgress {
             JSONObject o = new JSONObject();
             o.put("day", d.day());
             o.put("poiNames", d.pois().stream().map(RoutePlan.RoutePoi::name).toList());
+            o.put("nodes", d.nodes());
             days.add(o);
         });
         JSONObject payload = new JSONObject();

@@ -150,10 +150,30 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
     public RoutePlan planAndWrite(String userId, String sessionId, List<PoiCandidate> pois,
                                   RouteConstraints constraints, String city) {
         RouteSolveResult result = solve(pois, constraints, city);
-        RoutePlan plan = toPlan(result);
+        RoutePlan plan = toPlan(result, constraints);
         taskWorkspace.writeRoutePlan(userId, sessionId, plan);
         log.info("route_plan.json 已落盘: userId={}, sessionId={}, days={}, unplaced={}",
                 userId, sessionId, plan.days().size(), plan.solverMeta().unplaced().size());
+        return plan;
+    }
+
+    /** D3：交通主方案仅收紧首末日窗口并附加固定节点，不改变 POI 求解策略。 */
+    public RoutePlan planAndWriteWithTransport(String userId, String sessionId, List<PoiCandidate> pois,
+                                               RouteConstraints constraints, String city,
+                                               com.travelscope.collab.TransportSelection selection,
+                                               int exitBufferMin, int arrivalTransferMin,
+                                               int luggageMin, int stationTransferMin,
+                                               int securityBufferMin) {
+        TransportRouteBoundary boundary = TransportRouteBoundary.from(selection, constraints,
+                exitBufferMin, arrivalTransferMin, luggageMin, stationTransferMin, securityBufferMin);
+        RouteSolveResult result = solve(pois, boundary.constraints(), city);
+        RoutePlan base = toPlan(result, boundary.constraints());
+        List<RoutePlan.RouteDay> days = base.days().stream().map(day ->
+                new RoutePlan.RouteDay(day.day(), day.date(), day.pois(),
+                        boundary.nodesForDay(day.day(), base.days().size(), day.nodes()),
+                        day.commuteMinutesTotal(), day.inputFingerprint())).toList();
+        RoutePlan plan = new RoutePlan(days, base.solverMeta());
+        taskWorkspace.writeRoutePlan(userId, sessionId, plan);
         return plan;
     }
 
@@ -186,7 +206,7 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
             String fingerprint = fingerprintOf(newPois);
             RoutePlan.RouteDay old = oldByFingerprint.get(fingerprint);
             if (old != null) {
-                days.add(new RoutePlan.RouteDay(d.day(), old.date(), old.pois(),
+                days.add(new RoutePlan.RouteDay(d.day(), old.date(), old.pois(), old.nodes(),
                         old.commuteMinutesTotal(), fingerprint));
                 reusedDays.add(d.day());
             } else {
@@ -208,14 +228,31 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
     }
 
     /** 求解结果 → 落盘契约（逐天记录输入指纹） */
-    private static RoutePlan toPlan(RouteSolveResult result) {
+    private static RoutePlan toPlan(RouteSolveResult result, RouteConstraints constraints) {
         List<RoutePlan.RouteDay> days = new ArrayList<>();
         for (RouteSolveResult.RouteDay d : result.days()) {
             List<RoutePlan.RoutePoi> pois = toRoutePois(d);
-            days.add(new RoutePlan.RouteDay(d.day(), null, pois, d.commuteMinutesTotal(),
+            List<RoutePlan.RouteNode> nodes = pois.stream().map(RoutePlan.RouteNode::fromPoi).toList();
+            if (constraints.hotelName() != null) {
+                java.util.ArrayList<RoutePlan.RouteNode> anchored = new java.util.ArrayList<>();
+                anchored.add(hotelNode(constraints, true));
+                anchored.addAll(nodes);
+                anchored.add(hotelNode(constraints, false));
+                nodes = List.copyOf(anchored);
+            }
+            days.add(new RoutePlan.RouteDay(d.day(), null, pois, nodes, d.commuteMinutesTotal(),
                     fingerprintOf(pois)));
         }
         return new RoutePlan(days, toSolverMeta(result));
+    }
+
+    private static RoutePlan.RouteNode hotelNode(RouteConstraints constraints, boolean checkin) {
+        return new RoutePlan.RouteNode(constraints.hotelName(),
+                checkin ? RoutePlan.NodeType.HOTEL_CHECKIN : RoutePlan.NodeType.HOTEL_CHECKOUT,
+                true, constraints.hotelLng(), constraints.hotelLat(),
+                checkin ? constraints.dailyStart() : constraints.dailyEnd(),
+                checkin ? constraints.dailyStart() : constraints.dailyEnd(),
+                null, null, checkin ? "每日从主酒店出发" : "每日返回主酒店");
     }
 
     private static RoutePlan.SolverMeta toSolverMeta(RouteSolveResult result) {
@@ -262,10 +299,12 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
     /** 单日：2-opt 改进 → 时段顺排 → RouteDay（纯函数，ForkJoin 任务体内线程安全） */
     private RouteSolveResult.RouteDay planOneDay(DaySplitter.DayAcc day, TimeMatrix matrix,
                                                  RouteConstraints constraints) {
+        RouteConstraints dayConstraints = constraints.withDailyWindow(
+                constraints.startForDay(day.dayNumber()), constraints.endForDay(day.dayNumber()));
         TwoOptImprover.Improvement improvement =
-                twoOptImprover.improve(day.sequence(), matrix, constraints);
+                twoOptImprover.improve(day.sequence(), matrix, dayConstraints);
         TimelineScheduler.DayTimeline timeline =
-                timelineScheduler.schedule(improvement.sequence(), matrix, constraints);
+                timelineScheduler.schedule(improvement.sequence(), matrix, dayConstraints);
         log.info("day {} 完成: items={}, 2opt改进={}s, 通勤={}min",
                 day.dayNumber(), timeline.pois().size(), improvement.improvementSec(),
                 timeline.commuteMinutesTotal());

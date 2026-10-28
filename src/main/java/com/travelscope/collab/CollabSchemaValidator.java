@@ -135,8 +135,8 @@ public final class CollabSchemaValidator {
 
     private static void checkRoutePlan(RoutePlan routePlan) {
         for (RoutePlan.RouteDay day : routePlan.days()) {
-            int sum = day.pois().stream()
-                    .map(RoutePlan.RoutePoi::commuteMinutesFromPrev)
+            int sum = day.nodes().stream()
+                    .map(RoutePlan.RouteNode::commuteMinutesFromPrev)
                     .filter(Objects::nonNull)
                     .mapToInt(Integer::intValue)
                     .sum();

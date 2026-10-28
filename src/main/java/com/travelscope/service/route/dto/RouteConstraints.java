@@ -20,7 +20,9 @@ public record RouteConstraints(
         Double hotelLat,
         boolean preferTransit,
         String pace,
-        String walkingTolerance) {
+        String walkingTolerance,
+        String firstDayStart,
+        String lastDayEnd) {
 
     /** 旧调用兼容；节奏字段只透传，不参与本 Slice 求解评分。 */
     public RouteConstraints(int days, String dailyStart, String dailyEnd,
@@ -28,7 +30,8 @@ public record RouteConstraints(
                             int transferBufferMin, String hotelName, Double hotelLng,
                             Double hotelLat, boolean preferTransit) {
         this(days, dailyStart, dailyEnd, lunchStart, lunchEnd, maxDailyCommuteMin,
-                transferBufferMin, hotelName, hotelLng, hotelLat, preferTransit, null, null);
+                transferBufferMin, hotelName, hotelLng, hotelLat, preferTransit, null, null,
+                null, null);
     }
 
     public RouteConstraints {
@@ -73,21 +76,21 @@ public record RouteConstraints(
     public RouteConstraints withHotel(String name, double lng, double lat) {
         return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
                 maxDailyCommuteMin, transferBufferMin, name, lng, lat, preferTransit,
-                pace, walkingTolerance);
+                pace, walkingTolerance, firstDayStart, lastDayEnd);
     }
 
     /** 复制并切换通勤方式偏好 */
     public RouteConstraints withPreferTransit(boolean prefer) {
         return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
                 maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat, prefer,
-                pace, walkingTolerance);
+                pace, walkingTolerance, firstDayStart, lastDayEnd);
     }
 
     /** 复制并设置午餐窗（传 null,null 关闭——不预留午餐时段） */
     public RouteConstraints withLunchWindow(String start, String end) {
         return new RouteConstraints(days, dailyStart, dailyEnd, start, end,
                 maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat, preferTransit,
-                pace, walkingTolerance);
+                pace, walkingTolerance, firstDayStart, lastDayEnd);
     }
 
     /** 从需求契约透传节奏约束；当前求解器只使用时间窗，pace/walking 仅保留在请求 DTO。 */
@@ -95,6 +98,26 @@ public record RouteConstraints(
                                                  String pace, String walkingTolerance) {
         return new RouteConstraints(days, start, end, lunchStart, lunchEnd,
                 maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat,
-                preferTransit, pace, walkingTolerance);
+                preferTransit, pace, walkingTolerance, firstDayStart, lastDayEnd);
+    }
+
+    public RouteConstraints withDailyWindow(String start, String end) {
+        return new RouteConstraints(days, start, end, lunchStart, lunchEnd,
+                maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat,
+                preferTransit, pace, walkingTolerance, null, null);
+    }
+
+    public RouteConstraints withTransportWindows(String firstDayStart, String lastDayEnd) {
+        return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
+                maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat,
+                preferTransit, pace, walkingTolerance, firstDayStart, lastDayEnd);
+    }
+
+    public String startForDay(int day) {
+        return day == 1 && firstDayStart != null ? firstDayStart : dailyStart;
+    }
+
+    public String endForDay(int day) {
+        return day == days && lastDayEnd != null ? lastDayEnd : dailyEnd;
     }
 }

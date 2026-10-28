@@ -33,6 +33,32 @@ class DaySplitterTest {
         return new TimeMatrix(names, d);
     }
 
+    @Test
+    void transportBoundariesConstrainFirstAndLastDayWithoutShrinkingBuffers() {
+        List<PoiCandidate> pois = List.of(poi("首日景点", 120), poi("末日景点", 120));
+        TimeMatrix matrix = uniformMatrix(List.of("首日景点", "末日景点"), 10 * 60);
+        RouteConstraints constraints = RouteConstraints.ofDays(2)
+                .withTransportWindows("12:00", "15:00");
+
+        var outcome = new DaySplitter().split(pois, matrix, constraints);
+
+        assertThat(outcome.days().get(0).endMinute()).isGreaterThanOrEqualTo(14 * 60);
+        assertThat(outcome.days().get(1).endMinute()).isLessThanOrEqualTo(15 * 60);
+    }
+
+    @Test
+    void poiThatOnlyFitsNormalWindowUsesTransportConflictReason() {
+        PoiCandidate longPoi = poi("长时景点", 240);
+        RouteConstraints constraints = RouteConstraints.ofDays(1)
+                .withTransportWindows("12:00", "15:00");
+
+        var outcome = new DaySplitter().split(List.of(longPoi),
+                uniformMatrix(List.of("长时景点"), 0), constraints);
+
+        assertThat(outcome.unplaced()).singleElement().satisfies(item ->
+                assertThat(item.reason()).isEqualTo(RouteSolveResult.UnplacedReason.TRANSPORT_WINDOW_CONFLICT));
+    }
+
     // ---------- 用例 1：就近分日 + 不变式 ----------
     @Test
     void nearestNeighborSplitRespectsCommuteCap() {

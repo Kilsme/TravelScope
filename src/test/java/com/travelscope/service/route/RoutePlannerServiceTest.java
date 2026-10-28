@@ -7,6 +7,7 @@ import com.travelscope.collab.CollabFileWriter;
 import com.travelscope.collab.CollabSchemaValidator;
 import com.travelscope.collab.RoutePlan;
 import com.travelscope.collab.TaskWorkspace;
+import com.travelscope.collab.TransportSelection;
 import com.travelscope.service.TaskResultCache;
 import com.travelscope.service.route.dto.OpenWindowPolicy;
 import com.travelscope.service.route.dto.PoiCandidate;
@@ -17,7 +18,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.math.BigDecimal;
 import java.nio.file.Files;
+import java.time.LocalDateTime;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -59,6 +62,47 @@ class RoutePlannerServiceTest {
                 drivingJson(distanceSeconds(inv.getArgument(0), inv.getArgument(1), 150, 60)));
         when(transportTool.getTransitRoute(any(), any(), any())).thenAnswer(inv ->
                 transitJson(distanceSeconds(inv.getArgument(0), inv.getArgument(1), 90, 420)));
+    }
+
+    @Test
+    void selectedHotelAppearsAsEveryDayStartAndEndNode() {
+        RoutePlan plan = planner.planAndWrite("u1", "conv-d4-route",
+                List.of(new PoiCandidate("西湖", 120.12, 30.22, null, null, 60, 4.8, "fixture")),
+                RouteConstraints.ofDays(2).withHotel("主酒店", 120.10, 30.20)
+                        .withPreferTransit(false), null);
+
+        assertThat(plan.days()).allSatisfy(day -> {
+            assertThat(day.nodes().getFirst().type()).isEqualTo(RoutePlan.NodeType.HOTEL_CHECKIN);
+            assertThat(day.nodes().getLast().type()).isEqualTo(RoutePlan.NodeType.HOTEL_CHECKOUT);
+            assertThat(day.nodes().getFirst().name()).isEqualTo("主酒店");
+            assertThat(day.nodes().getLast().name()).isEqualTo("主酒店");
+        });
+    }
+
+    @Test
+    void selectedTransportCreatesFixedBoundariesAndUnplacesConflict() {
+        PoiCandidate tooLong = new PoiCandidate("超长景点", 120.1, 30.2,
+                null, null, 240, 4.5, "fixture");
+        var outbound = transport("G1", "2026-10-25T09:00", "2026-10-25T10:00");
+        var inbound = transport("G2", "2026-10-25T16:00", "2026-10-25T17:00");
+        var selection = new TransportSelection(
+                new TransportSelection.DirectionSelection(outbound, List.of()),
+                new TransportSelection.DirectionSelection(inbound, List.of()));
+
+        RoutePlan plan = planner.planAndWriteWithTransport("u1", "conv-d3", List.of(tooLong),
+                RouteConstraints.ofDays(1).withPreferTransit(false), null, selection,
+                30, 30, 20, 30, 60);
+
+        assertThat(plan.days().getFirst().nodes()).extracting(RoutePlan.RouteNode::type)
+                .containsExactly(RoutePlan.NodeType.INTERCITY_TRANSPORT,
+                        RoutePlan.NodeType.INTERCITY_TRANSPORT);
+        assertThat(plan.solverMeta().unplaced()).singleElement().satisfies(item ->
+                assertThat(item.reason()).isEqualTo("TRANSPORT_WINDOW_CONFLICT"));
+    }
+
+    private static TransportSelection.TransportOption transport(String no, String dep, String arr) {
+        return new TransportSelection.TransportOption(no, "TRAIN", BigDecimal.valueOf(100),
+                LocalDateTime.parse(dep), LocalDateTime.parse(arr), 60, 0, true, "飞猪", null);
     }
 
     @Test

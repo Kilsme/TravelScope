@@ -64,7 +64,7 @@ public record RouteSolveResult(
 
     /** 未排入原因：单日通勤装不下 / 开放时间窗不兼容 / 通勤矩阵缺失该点 */
     public enum UnplacedReason {
-        COMMUTE_OVERFLOW, TIME_WINDOW_MISS, MATRIX_MISSING
+        COMMUTE_OVERFLOW, TIME_WINDOW_MISS, MATRIX_MISSING, TRANSPORT_WINDOW_CONFLICT
     }
 
     /** 求解元信息：algorithm 如 "NN+2opt"；matrixSource 如 "amap-transit"/"amap-driving" */

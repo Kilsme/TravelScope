@@ -47,6 +47,7 @@ public record RoutePlan(
             int day,
             String date,
             List<RoutePoi> pois,
+            List<RouteNode> nodes,
             int commuteMinutesTotal,
             String inputFingerprint) {
 
@@ -54,16 +55,25 @@ public record RoutePlan(
             if (day < 1) {
                 throw new IllegalArgumentException("day 从 1 起，实际: " + day);
             }
-            pois = List.copyOf(Objects.requireNonNull(pois, "pois"));
+            List<RoutePoi> legacy = pois == null ? List.of() : List.copyOf(pois);
+            List<RouteNode> unified = nodes == null ? List.of() : List.copyOf(nodes);
+            if (unified.isEmpty() && !legacy.isEmpty()) unified = legacy.stream().map(RouteNode::fromPoi).toList();
+            if (legacy.isEmpty() && !unified.isEmpty()) legacy = unified.stream()
+                    .filter(n -> n.type() == NodeType.POI).map(RouteNode::toPoi).toList();
+            pois = legacy;
+            nodes = unified;
             if (commuteMinutesTotal < 0) {
                 throw new IllegalArgumentException("commuteMinutesTotal 不能为负: " + commuteMinutesTotal);
             }
-            // inputFingerprint 可空（存量产物未记录）
         }
 
-        /** 兼容构造（v4 原签名）：不记输入指纹（增量轮按 RoutePoi 现算匹配） */
+        public RouteDay(int day, String date, List<RoutePoi> pois, int commuteMinutesTotal,
+                        String inputFingerprint) {
+            this(day, date, pois, null, commuteMinutesTotal, inputFingerprint);
+        }
+
         public RouteDay(int day, String date, List<RoutePoi> pois, int commuteMinutesTotal) {
-            this(day, date, pois, commuteMinutesTotal, null);
+            this(day, date, pois, null, commuteMinutesTotal, null);
         }
     }
 
@@ -92,6 +102,38 @@ public record RoutePlan(
             Objects.requireNonNull(lat, "lat");
             Objects.requireNonNull(startTime, "startTime");
             Objects.requireNonNull(endTime, "endTime");
+        }
+    }
+
+    public enum NodeType {
+        POI, INTERCITY_TRANSPORT, LOCAL_TRANSFER, HOTEL_CHECKIN, HOTEL_CHECKOUT, LUGGAGE, MEAL
+    }
+
+    /** 统一路线节点。fixed=true 表示固定时间节点，false 表示可由排程器调整的弹性节点。 */
+    public record RouteNode(String name, NodeType type, boolean fixed,
+                            Double lng, Double lat, String startTime, String endTime,
+                            String transitFromPrev, Integer commuteMinutesFromPrev,
+                            String scheduleNote) {
+        public RouteNode {
+            Objects.requireNonNull(name, "name");
+            Objects.requireNonNull(type, "type");
+            Objects.requireNonNull(startTime, "startTime");
+            Objects.requireNonNull(endTime, "endTime");
+            if (type == NodeType.POI) {
+                Objects.requireNonNull(lng, "POI lng");
+                Objects.requireNonNull(lat, "POI lat");
+            }
+        }
+
+        public static RouteNode fromPoi(RoutePoi poi) {
+            return new RouteNode(poi.name(), NodeType.POI, false, poi.lng(), poi.lat(),
+                    poi.startTime(), poi.endTime(), poi.transitFromPrev(),
+                    poi.commuteMinutesFromPrev(), poi.scheduleNote());
+        }
+
+        RoutePoi toPoi() {
+            return new RoutePoi(name, lng, lat, startTime, endTime,
+                    transitFromPrev, commuteMinutesFromPrev, scheduleNote);
         }
     }
 

@@ -42,6 +42,8 @@ public class CollabFileWriter {
             Map.entry("task_backlog.json", TaskBacklog.class),
             Map.entry("poi_shortlist.json", PoiShortlist.class),
             Map.entry("route_plan.json", RoutePlan.class),
+            Map.entry("transport_selection.json", TransportSelection.class),
+            Map.entry("hotel_selection.json", HotelSelection.class),
             Map.entry("execution_result.json", ExecutionResult.class),
             Map.entry("itinerary_draft.json", ItineraryDraft.class),
             Map.entry("review_report.json", ReviewReport.class),

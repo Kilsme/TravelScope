@@ -294,10 +294,13 @@ public class RuleReviewService {
         if (shortlistOpt.isPresent()) {
             Set<String> known = new HashSet<>();
             shortlistOpt.get().pois().forEach(p -> known.add(p.name()));
+            Set<String> nonPoiNodes = routePlanOpt.map(ItineraryAssembler::nonPoiNodeNames)
+                    .orElseGet(Set::of);
             if (!known.isEmpty()) {
                 for (DraftDay day : draft.days()) {
                     for (DraftItem item : day.items()) {
                         if (!ItineraryAssembler.isNonPoiItem(item)
+                                && !ItineraryAssembler.routeNodeMentioned(item, nonPoiNodes)
                                 && !ItineraryAssembler.poiMentioned(item, known)) {
                             String issueText = "Day" + day.day() + "「" + item.activity() + "/" + item.location()
                                     + "」不在已核验 POI 清单（疑似幻觉）";
