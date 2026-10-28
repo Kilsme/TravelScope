@@ -478,7 +478,7 @@ public class AgentConfig {
             TaskWorkspace taskWorkspace, com.travelscope.service.RuleReviewService ruleReviewService,
             boolean leaf) {
         Toolkit view = toolkit.copy();
-        view.registerTool(new com.travelscope.agent.tools.ReviewerRuleTools(ruleReviewService));
+        view.registerTool(new com.travelscope.agent.tools.ReviewerRuleTools(ruleReviewService, taskWorkspace));
         for (String name : new java.util.ArrayList<>(view.getToolNames())) {
             if (!REVIEWER_TOOL_WHITELIST.contains(name)) {
                 view.removeTool(name);

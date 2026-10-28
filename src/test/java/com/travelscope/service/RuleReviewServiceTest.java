@@ -341,8 +341,8 @@ class RuleReviewServiceTest {
     }
 
     @Test
-    @DisplayName("R1 unplaced=1（带 reason）→ SOFT 带 warning 交付，不写 review_report")
-    void singleUnplacedDeliversWithWarning() {
+    @DisplayName("G1 unplaced=1 但草案未解释 → Gate FAIL 并给出稳定原因码")
+    void singleUnplacedWithoutExplanationFailsGate() {
         seedAll(draft(cleanItems(), "约 1100 元", List.of(), List.of()));
         workspace.writeRoutePlan("u1", "conv-r", new RoutePlan(List.of(),
                 new RoutePlan.SolverMeta("NN+2opt", "amap", 27,
@@ -350,12 +350,10 @@ class RuleReviewServiceTest {
 
         RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
 
-        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.PASS_WITH_WARNINGS);
-        assertThat(outcome.warnings()).singleElement().satisfies(w -> {
-            assertThat(w.rule()).isEqualTo("UNPLACED_TRADEOFF");
-            assertThat(w.detail()).contains("周庄古镇").contains("COMMUTE_OVERFLOW");
-        });
-        assertThat(workspace.readReviewReport("u1", "conv-r")).isEmpty();
+        assertThat(outcome.verdict()).isEqualTo(RuleReviewService.Outcome.Verdict.FAIL);
+        assertThat(outcome.reasonCode()).isEqualTo("UNEXPLAINED_UNPLACED");
+        assertThat(outcome.revisionTaskText()).contains("周庄古镇").contains("UNEXPLAINED_UNPLACED");
+        assertThat(workspace.readReviewReport("u1", "conv-r")).isPresent();
     }
 
     @Test

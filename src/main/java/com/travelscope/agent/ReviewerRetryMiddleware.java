@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * reviewer-agent 修订次数保险丝。每个用户会话最多允许一次 {@code revise_poi_selection}；
+ * reviewer-agent 修订次数保险丝。每个用户会话最多允许一次草案修订工具调用；
  * 后续尝试改写为 {@code review_retry_hint}，由编排层按当前最佳版本生成降级交付标记。
  */
 public class ReviewerRetryMiddleware implements MiddlewareBase {
@@ -57,7 +57,7 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
     @Override
     public Flux<AgentEvent> onActing(Agent agent, RuntimeContext ctx, ActingInput input,
                                      java.util.function.Function<ActingInput, Flux<AgentEvent>> next) {
-        // 只拦 reviewer-agent 的 POI 重选修订动作（其余透传）
+        // 拦截 reviewer-agent 的所有草案修订动作（其余透传）
         boolean isReviewerRevise = ReviewerAgent.AGENT_NAME.equals(agent.getName())
                 && input.toolCalls().stream().anyMatch(this::isReviseCall);
         if (!isReviewerRevise) {
@@ -95,7 +95,7 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
                 attempt, MAX_REVIEW_RETRIES, userId, sessionId,
                 lastOutcome.getOrDefault("result", "?"), lastOutcome.getOrDefault("score", "?"));
         String hint = "RETRY_LIMIT_REACHED: 修订已达上限（" + MAX_REVIEW_RETRIES
-                + " 次），本次 POI 修订已被系统拦截未执行。"
+                + " 次），本次修订已被系统拦截未执行。"
                 + "请立即停止修订，按当前最佳版本收尾：写 review_report.json（若尚无）"
                 + "并输出 REVIEW_RESULT: FAIL 总分=xx 失败段=…，"
                 + "摘要标注「⚠️ 当前最佳版本（已尽力，评分 x/100）」并列出未解决项。";
@@ -111,9 +111,12 @@ public class ReviewerRetryMiddleware implements MiddlewareBase {
         return next.apply(new ActingInput(rewritten));
     }
 
-    /** 是否为「reviewer 的 POI 重选修订」调用（卡 E：拦 revise_poi_selection） */
+    /** 所有会改变草案的 reviewer 修订调用共享一次性保险丝。 */
     private boolean isReviseCall(ToolUseBlock call) {
-        return "revise_poi_selection".equals(call.getName());
+        return switch (call.getName()) {
+            case "revise_poi_selection", "plan_route", "searchHotels", "assemble_itinerary" -> true;
+            default -> false;
+        };
     }
 
     private static String containerKey(String userId, String sessionId) {

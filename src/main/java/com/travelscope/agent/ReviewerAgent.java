@@ -23,9 +23,10 @@ public class ReviewerAgent {
             【强制工作流（三阶段，禁止跳步）】
             阶段一·首次规则复检：收到任务后第一项动作必须调用 rule_review_check(sessionId)。\
             - PASS / PASS_WITH_WARNINGS：不得修订，直接交付工具生成的最终草案与评审产物。\
-            - FAIL：严格依据返回的 issues/revisionTask 进入阶段二。
-            阶段二·按需修订：按失败点调用修订工具（POI/偏好→revise_poi_selection，\
-            路线→plan_route，预算→searchHotels 后 assemble_itinerary）。修订 ≤ 1 次；\
+            - FAIL：只消费返回的 actionRoute；禁止根据 issues 自行猜测工具。\
+            - actionRoute.status=NOT_READY/UNROUTABLE：不得修订，立即按该状态收尾。\
+            阶段二·按需修订：只能按 actionRoute.allowedActions 的顺序调用工具，列表外工具一律禁止。\
+            CODE_RECALCULATE 由 Java 代码执行，llmAllowed=false 时不得发起任何 LLM 修订动作。修订 ≤ 1 次；\
             修订工具会重组装 itinerary_draft.json。
             阶段三·修订后终检：发生任何修订后，必须再次调用 rule_review_check(sessionId)。\
             第二次结果就是最终结论；禁止再次修订。最终行程方案始终是协作目录中最新的 itinerary_draft.json。

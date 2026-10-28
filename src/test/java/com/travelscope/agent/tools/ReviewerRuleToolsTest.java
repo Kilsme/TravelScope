@@ -34,6 +34,9 @@ class ReviewerRuleToolsTest {
         assertThat(result.getBooleanValue("retryable")).isTrue();
         assertThat(result.getJSONArray("issues").getString(0)).contains("时间冲突");
         assertThat(result.getString("revisionTask")).isEqualTo("修订路线");
+        assertThat(result.getJSONObject("actionRoute").getJSONArray("allowedActions"))
+                .containsExactly("plan_route");
+        assertThat(result.getJSONObject("actionRoute").getBooleanValue("mustRecheck")).isTrue();
         verify(service).check("u1", "conv-1");
     }
 

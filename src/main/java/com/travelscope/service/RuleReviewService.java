@@ -66,6 +66,9 @@ public class RuleReviewService {
     private static final String RULE_PRICE_SOURCE_MISSING = "PRICE_SOURCE_MISSING";
     private static final String RULE_PREFERENCE_COVERAGE = "PREFERENCE_COVERAGE";
     private static final String RULE_ROUTE_PLAN_MISSING = "ROUTE_PLAN_MISSING";
+    private static final Set<String> GATE_CODES = Set.of("DUPLICATE_POI", "OPENING_HOUR_CONFLICT",
+            "LATE_OUTDOOR_ACTIVITY", "TRANSPORT_TIMELINE_CONFLICT", "BUDGET_ARITHMETIC_MISMATCH",
+            "UNEXPLAINED_UNPLACED", "REVIEW_STALE_DRAFT");
 
     private final TaskWorkspace taskWorkspace;
 
@@ -139,12 +142,27 @@ public class RuleReviewService {
         Optional<IntakeResult> intakeOpt = taskWorkspace.readIntakeResult(userId, sessionId);
         Optional<PoiShortlist> shortlistOpt = taskWorkspace.readPoiShortlist(userId, sessionId);
         Optional<RoutePlan> routePlanOpt = taskWorkspace.readRoutePlan(userId, sessionId);
+        boolean previousQualityAttempt = taskWorkspace.readReviewReport(userId, sessionId)
+                .map(r -> r.segments().stream().flatMap(s -> s.issues().stream())
+                        .anyMatch(i -> i.contains("QUALITY_BELOW_THRESHOLD")))
+                .orElse(false);
 
         List<String> seg1Issues = new ArrayList<>();
         List<String> seg2Issues = new ArrayList<>();
         List<String> seg3Issues = new ArrayList<>();
         List<String> verified = new ArrayList<>();
         List<Violation> violations = new ArrayList<>();
+        List<com.travelscope.service.review.ReviewGateRules.Failure> gateFailures = new ArrayList<>();
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.duplicatePoi(draft));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.openingHourConflict(
+                routePlanOpt.orElse(null), shortlistOpt.orElse(null)));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.lateOutdoorActivity(routePlanOpt.orElse(null)));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.transportTimelineConflict(routePlanOpt.orElse(null)));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.budgetArithmetic(draft));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.unexplainedUnplaced(routePlanOpt.orElse(null), draft));
+        gateFailures.addAll(com.travelscope.service.review.ReviewGateRules.staleDraft(taskWorkspace.getTaskDir(userId, sessionId)));
+        gateFailures.forEach(f -> violations.add(new Violation(f.reasonCode(), 1, Severity.HARD, f.detail(), null)));
+        gateFailures.forEach(f -> seg1Issues.add("[" + f.reasonCode() + "] " + f.detail()));
 
         // ---------- 段1：基本要素（天数 / 目的地 / 出发地）——均为 HARD ----------
         int completeness = 20;
@@ -326,14 +344,26 @@ public class RuleReviewService {
             }
         }
 
+        // ---------- G2：Gate 通过后才计算确定性交付质量 ----------
+        com.travelscope.service.review.QualityRubric.Result quality = null;
         // ---------- R1 三级裁决（评分照常计算落产物，门控只看违例级别） ----------
         boolean anyHard = violations.stream().anyMatch(v -> v.severity() == Severity.HARD);
         Outcome.Verdict verdict = anyHard ? Outcome.Verdict.FAIL
                 : violations.isEmpty() ? Outcome.Verdict.PASS : Outcome.Verdict.PASS_WITH_WARNINGS;
-        List<ReviewPassed.ReviewWarning> warnings = violations.stream()
+        if (!anyHard) quality = new com.travelscope.service.review.QualityRubric().score(
+                draft, routePlanOpt.orElse(null), shortlistOpt.orElse(null), intakeOpt.orElse(null));
+        List<ReviewPassed.ReviewWarning> warnings = new ArrayList<>(violations.stream()
                 .filter(v -> v.severity() == Severity.SOFT)
                 .map(v -> new ReviewPassed.ReviewWarning(v.rule(), v.detail(), v.suggestion()))
-                .toList();
+                .toList());
+        boolean qualityLow = quality != null && !quality.deliverable();
+        if (qualityLow) {
+            String detail = "确定性质量评分 " + quality.total() + "/100，低于阈值 " + quality.threshold();
+            warnings.add(new ReviewPassed.ReviewWarning("QUALITY_BELOW_THRESHOLD", detail,
+                    quality.suggestions().stream().map(s -> s.dimension() + ": " + s.action())
+                            .collect(java.util.stream.Collectors.joining("；"))));
+            verdict = Outcome.Verdict.PASS_WITH_WARNINGS;
+        }
 
         boolean seg1Pass = seg1Issues.isEmpty();
         boolean seg2Pass = seg2Issues.isEmpty();
@@ -348,6 +378,21 @@ public class RuleReviewService {
         issues.addAll(seg2Issues);
         issues.addAll(seg3Issues);
 
+        if (qualityLow && !previousQualityAttempt) {
+            String qualityIssue = "[QUALITY_BELOW_THRESHOLD] 确定性质量评分 " + quality.total()
+                    + "/100；" + warnings.getLast().suggestion();
+            issues.add(qualityIssue);
+            ReviewReport.ReviewScores scores = new ReviewReport.ReviewScores(
+                    completeness, feasibility, timeConflict, costBudget, poiReasonableness);
+            taskWorkspace.writeReviewReport(userId, sessionId, new ReviewReport(
+                    List.of(new ReviewReport.ReviewSegment(1, true, List.of()),
+                            new ReviewReport.ReviewSegment(2, false, List.of(qualityIssue)),
+                            new ReviewReport.ReviewSegment(3, true, List.of())), scores, total,
+                    Map.of("2", List.of(qualityIssue)), now));
+            return new Outcome(Outcome.Verdict.FAIL, issues, warnings,
+                    buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft),
+                    "QUALITY_BELOW_THRESHOLD", true);
+        }
         if (verdict != Outcome.Verdict.FAIL) {
             // PASS / PASS_WITH_WARNINGS 均写 review_passed（「存在即通过」不变量），后者带软提示
             taskWorkspace.writeReviewPassed(userId, sessionId,
@@ -378,9 +423,12 @@ public class RuleReviewService {
                     scores, total, suggestions, now));
             log.info("规则质检未通过: 用户={}, 会话={}, 总分={}, 问题数={}", userId, sessionId, total, issues.size());
         }
+        String gateReason = gateFailures.isEmpty() ? "NONE" : gateFailures.getFirst().reasonCode();
         return new Outcome(verdict, issues, warnings,
                 verdict == Outcome.Verdict.FAIL
-                        ? buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft) : null);
+                        ? buildRevisionTask(userId, sessionId, issues, intakeOpt.orElse(null), draft) : null,
+                verdict == Outcome.Verdict.FAIL ? (gateReason.equals("NONE") ? "RULE_VIOLATION" : gateReason) : "NONE",
+                verdict == Outcome.Verdict.FAIL);
     }
 
     /** 规则失败时给 reviewer 的定向修订任务文本（内联 intake/草案正文，首轮免 read_file） */
