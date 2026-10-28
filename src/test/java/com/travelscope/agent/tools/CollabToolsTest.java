@@ -504,9 +504,10 @@ class CollabToolsTest {
         stubCopyWriters(
                 (java.util.function.BiFunction<String, String, CollabTools.DayCopy>) (dayView, intakeView) ->
                         dayView.contains("\"day\":1")
-                                ? new CollabTools.DayCopy("园林禅意日",
-                                        List.of("环湖漫步", "千年古刹"), List.of("免费", "¥30"))
-                                : new CollabTools.DayCopy("登塔远眺", List.of("俯瞰西湖"), List.of("¥40")),
+                                ? new CollabTools.DayCopy(null, List.of("不得合并"), List.of("¥999"), List.of(
+                                        new com.travelscope.collab.ItineraryDraft.ActionAdvice("东门进入", List.of("湖景"),
+                                                "轻量", "提前预约", "室内展馆", "步行转场", "湿滑")))
+                                : new CollabTools.DayCopy(null, List.of(), List.of(), List.of()),
                 (java.util.function.BiFunction<String, String, CollabTools.GlobalCopy>) (d, i) ->
                         new CollabTools.GlobalCopy(
                                 new com.travelscope.collab.ItineraryDraft.Budget("CNY", "约 1000 元",
@@ -519,20 +520,19 @@ class CollabToolsTest {
         assertThat(result).startsWith("已组装并写入");
         var draft = workspace.readItineraryDraft("u1", "conv-1").orElseThrow();
         var day1 = draft.days().get(0);
-        assertThat(day1.theme()).isEqualTo("园林禅意日");
-        // P3 护栏：time/location/activity 由 route_plan 结构直出，LLM 文案只进 theme/note/cost
+        // H1 护栏：事实字段全部由 route_plan/预算代码直出，LLM 只进 ActionAdvice。
         assertThat(day1.items().get(0).time()).isEqualTo("09:00-11:00");
         assertThat(day1.items().get(0).activity()).isEqualTo("📍 景点：西湖");
         assertThat(day1.items().get(0).location()).isEqualTo("西湖");
-        assertThat(day1.items().get(0).note()).isEqualTo("环湖漫步");
-        assertThat(day1.items().get(0).cost()).isEqualTo("免费");
-        assertThat(day1.items().get(1).cost()).isEqualTo("¥30");
-        assertThat(draft.days().get(1).theme()).isEqualTo("登塔远眺");
+        assertThat(day1.items().get(0).note()).isNull();
+        assertThat(day1.items().get(0).cost()).isNotEqualTo("¥999");
+        assertThat(day1.items().get(0).actionAdvice().entryAdvice()).isEqualTo("东门进入（建议确认）");
+        assertThat(day1.items().get(0).actionAdvice().highlights()).containsExactly("湖景（建议确认）");
         assertThat(draft.budget().totalEstimate()).isEqualTo("0.00");
         assertThat(draft.pendingConfirm()).anyMatch(p -> p.contains("缺失价格"));
-        assertThat(draft.notes()).contains("注意防晒");
-        assertThat(draft.pendingConfirm()).contains("预算为估算待确认");
-        assertThat(draft.markdownBody()).contains("## Day 1").contains("园林禅意日").contains("环湖漫步");
+        assertThat(draft.notes()).doesNotContain("注意防晒");
+        assertThat(draft.pendingConfirm()).doesNotContain("预算为估算待确认");
+        assertThat(draft.markdownBody()).contains("## Day 1").contains("行动建议").contains("东门进入");
     }
 
     @Test
@@ -597,7 +597,8 @@ class CollabToolsTest {
 
         String result = tools.assemble_itinerary("conv-1", ctx);
 
-        assertThat(result).startsWith("ERROR").contains("草案结构字段生成失败").contains("已自动重试 1 次");
+        assertThat(result).startsWith("已组装并写入");
+        assertThat(workspace.readItineraryDraft("u1", "conv-1")).isPresent();
     }
 
     // ==================== plan_route 无 unplaced 自动链 ====================
@@ -627,7 +628,7 @@ class CollabToolsTest {
         // 无 unplaced → 自动链触发；全部文案降级 → 组装 ERROR → 优雅降级：
         // 成功级结果内嵌的失败原因必须剥掉 ERROR 前缀（防下游误判失败），并提示手动组装。
         assertThat(result).contains("NN+2opt");
-        assertThat(result).contains("自动组装未完成").contains("assemble_itinerary");
+        assertThat(result).contains(CollabTools.AUTO_ASSEMBLED_MARKER);
         assertThat(result).doesNotContain("ERROR");
     }
 
@@ -678,7 +679,7 @@ class CollabToolsTest {
         String result = tools.revise_poi_selection("conv-1", "灵隐寺", null, ctx);
 
         // LLM 骨架（mock 模型）增量/全量两级都失败 → 优雅降级 ERROR 文案
-        assertThat(result).startsWith("ERROR").contains("重组装失败");
+        assertThat(result).contains("已重组装 itinerary_draft.json");
         // 路线走了增量入口；全量入口未被触碰
         verify(routePlanner).planAndWriteIncremental(
                 eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"), any(RoutePlan.class));
@@ -711,7 +712,7 @@ class CollabToolsTest {
         verify(routePlanner).planAndWrite(eq("u1"), eq("conv-1"), anyList(), any(), eq("杭州"));
         verify(routePlanner, never()).planAndWriteIncremental(
                 anyString(), anyString(), anyList(), any(), anyString(), any(RoutePlan.class));
-        assertThat(result).startsWith("ERROR").contains("重组装失败");  // mock 模型组装失败照旧降级
+        assertThat(result).contains("已重组装 itinerary_draft.json");
     }
 
     @Test

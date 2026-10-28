@@ -69,7 +69,8 @@ public record ItineraryDraft(
             String location,
             String cost,
             String note,
-            String imageUrl) {
+            String imageUrl,
+            ActionAdvice actionAdvice) {
 
         public DraftItem {
             Objects.requireNonNull(time, "time");
@@ -79,7 +80,26 @@ public record ItineraryDraft(
 
         /** 旧调用便捷构造：无图片（v5-F2 前存量语义，imageUrl=null） */
         public DraftItem(String time, String activity, String location, String cost, String note) {
-            this(time, activity, location, cost, note, null);
+            this(time, activity, location, cost, note, null, null);
+        }
+
+        public DraftItem(String time, String activity, String location, String cost, String note,
+                         String imageUrl) {
+            this(time, activity, location, cost, note, imageUrl, null);
+        }
+    }
+
+    /** 非事实行动建议；不得承载或覆盖 POI、时间、价格、坐标。 */
+    public record ActionAdvice(
+            String entryAdvice,
+            List<String> highlights,
+            String walkingLevel,
+            String reservation,
+            String rainAlternative,
+            String nextTransferAdvice,
+            String risk) {
+        public ActionAdvice {
+            highlights = highlights == null ? List.of() : List.copyOf(highlights);
         }
     }
 

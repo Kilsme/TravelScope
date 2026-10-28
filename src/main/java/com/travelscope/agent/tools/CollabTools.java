@@ -778,8 +778,8 @@ public class CollabTools {
             }
             days.add(mergeDayCopy(skeletonDays.get(i), copy));
         }
-        // 全局段（全部天视图进 prompt，预算覆盖未变天）
-        GlobalCopy global = invokeGlobalWithRetry(routePlan, intakeView);
+        // H2 全局事实解释全部由代码渲染；不再让 LLM 概括 notes/pending/预算。
+        GlobalCopy global = null;
         boolean allDegraded = copies.stream().allMatch(java.util.Objects::isNull);
         if (allDegraded && global == null) {
             log.info("P3 增量骨架产出失败（全部变化天降级且全局段降级）: 用户={}, 会话={}", userId, sessionId);
@@ -1093,11 +1093,16 @@ public class CollabTools {
                     .additionalBodyParam("thinking", Map.of("type", "disabled"))
                     .build();
 
-    /** P3 每日文案：theme 进 Day 标题；notes/costs 与该天 POI 顺序一一对应（null=该条无说明/无价） */
-    public record DayCopy(String theme, List<String> notes, List<String> costs) {
+    /** H1 每日建议：只允许为既有条目补 ActionAdvice；notes/costs 保留旧响应兼容但不再合并。 */
+    public record DayCopy(String theme, List<String> notes, List<String> costs,
+                          List<com.travelscope.collab.ItineraryDraft.ActionAdvice> actionAdvices) {
         public DayCopy {
             notes = notes == null ? List.of() : List.copyOf(notes);
             costs = costs == null ? List.of() : List.copyOf(costs);
+            actionAdvices = actionAdvices == null ? List.of() : List.copyOf(actionAdvices);
+        }
+        public DayCopy(String theme, List<String> notes, List<String> costs) {
+            this(theme, notes, costs, List.of());
         }
     }
 
@@ -1128,15 +1133,29 @@ public class CollabTools {
         List<com.travelscope.collab.ItineraryDraft.DraftItem> items = new ArrayList<>();
         for (int i = 0; i < skeleton.items().size(); i++) {
             var it = skeleton.items().get(i);
-            String note = i < copy.notes().size() ? copy.notes().get(i) : null;
-            String cost = i < copy.costs().size() ? copy.costs().get(i) : null;
+            var advice = i < copy.actionAdvices().size() ? sanitizeAdvice(copy.actionAdvices().get(i)) : null;
+            // H1 事实字段全部取 skeleton；LLM 的旧 notes/costs 即使返回也明确丢弃。
             items.add(new com.travelscope.collab.ItineraryDraft.DraftItem(
-                    it.time(), it.activity(), it.location(),
-                    cost == null || cost.isBlank() || "null".equals(cost) ? it.cost() : cost,
-                    note == null || note.isBlank() ? it.note() : note));
+                    it.time(), it.activity(), it.location(), it.cost(), it.note(), it.imageUrl(), advice));
         }
         String theme = copy.theme() == null || copy.theme().isBlank() ? skeleton.theme() : copy.theme();
         return new com.travelscope.collab.ItineraryDraft.DraftDay(skeleton.day(), skeleton.date(), theme, items);
+    }
+
+    private static com.travelscope.collab.ItineraryDraft.ActionAdvice sanitizeAdvice(
+            com.travelscope.collab.ItineraryDraft.ActionAdvice a) {
+        if (a == null) return null;
+        return new com.travelscope.collab.ItineraryDraft.ActionAdvice(
+                evidenceSafe(a.entryAdvice()), a.highlights().stream().map(CollabTools::evidenceSafe).toList(),
+                evidenceSafe(a.walkingLevel()), evidenceSafe(a.reservation()), evidenceSafe(a.rainAlternative()),
+                evidenceSafe(a.nextTransferAdvice()), evidenceSafe(a.risk()));
+    }
+
+    /** 未带确认口径的推测性建议统一标记，且截断套话。 */
+    private static String evidenceSafe(String value) {
+        if (value == null || value.isBlank()) return value;
+        String concise = value.length() > 60 ? value.substring(0, 60) : value;
+        return concise.contains("建议确认") ? concise : concise + "（建议确认）";
     }
 
     /**
@@ -1191,16 +1210,17 @@ public class CollabTools {
 
     /** P3② 真实调用：单天文案（关思考）；结构化失败回退纯文本 JSON 解析 */
     private DayCopy callDayCopyLlm(String dayView, String intakeView) {
-        String prompt = "为以下一天的行程生成展示文案：theme（当日主题，≤12 字）、notes（与 POI 顺序一一对应的"
-                + "一句话游玩说明，每条 ≤40 字）、costs（与 POI 顺序一一对应的参考花费，如「¥60」「免费」，"
-                + "不确定填 null）。说明将作为备注行展示，不得编造新地点，不重复罗列时间。\n\n当日行程：\n"
-                + dayView + "\n\n用户需求：\n" + intakeView;
+        String prompt = "只为以下既有行程条目填写 actionAdvices，顺序和数量必须与条目一致。每项结构为"
+                + "entryAdvice/highlights/walkingLevel/reservation/rainAlternative/nextTransferAdvice/risk。"
+                + "不得输出或改写 POI、时间、价格、坐标；theme/notes/costs 必须为 null 或空。"
+                + "每个字符串不超过 40 字，highlights 最多 3 条；输入未提供证据的信息必须明确写‘建议确认’，"
+                + "禁止宣传式套话。\n\n当日行程：\n" + dayView + "\n\n用户需求：\n" + intakeView;
         RuntimeContext callCtx = RuntimeContext.builder()
                 .userId("itinerary-assembler").sessionId("itinerary-daycopy").build();
         try {
             var agent = io.agentscope.core.ReActAgent.builder()
                     .name("itinerary-daycopy")
-                    .sysPrompt("你是行程文案撰写器。只输出给定结构（theme/notes/costs），说明简短自然，不编造。")
+                    .sysPrompt("你是行动建议填写器。只输出 actionAdvices 建议字段，绝不复制或修改事实字段；无证据内容写建议确认，简短可执行。")
                     .model(chatModel)
                     .maxIters(1)
                     .generateOptions(ASSEMBLER_NO_THINKING)
@@ -1296,21 +1316,11 @@ public class CollabTools {
             }
             days.add(mergeDayCopy(skeletonDays.get(i), copy));
         }
-        // ③ 全局段（budget/notes/pendingConfirm）
-        GlobalCopy global = invokeGlobalWithRetry(routePlan, intakeView);
-        boolean allDaysDegraded = copies.stream().allMatch(java.util.Objects::isNull);
-        if (allDaysDegraded && global == null) {
-            log.info("P3 骨架产出失败（全部文案降级且全局段降级）: 用户={}, 会话={}", userId, sessionId);
-            return null;
-        }
-        List<String> notes = new ArrayList<>(global == null ? List.of() : global.notes());
-        notes.addAll(degradeNotes);
-        log.info("P3 骨架产出: 用户={}, 会话={}, {} 天文案并行, 降级 {} 天, 全局段{}, 耗时 {}ms",
-                userId, sessionId, days.size(), degradeNotes.size(), global == null ? "(降级)" : "",
+        // H2：全局事实、取舍、来源和待确认均由 ItineraryAssembler 从契约代码渲染。
+        log.info("H2 骨架产出: 用户={}, 会话={}, {} 天建议并行, 降级 {} 天, 耗时 {}ms",
+                userId, sessionId, days.size(), degradeNotes.size(),
                 (System.nanoTime() - t0) / 1_000_000);
-        return new com.travelscope.collab.ItineraryDraft(days,
-                global == null ? null : global.budget(), notes,
-                global == null ? List.of() : global.pendingConfirm(), "组装中");
+        return new com.travelscope.collab.ItineraryDraft(days, null, degradeNotes, List.of(), "组装中");
     }
 
     /**

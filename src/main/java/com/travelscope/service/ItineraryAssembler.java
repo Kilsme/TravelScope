@@ -92,6 +92,7 @@ public class ItineraryAssembler {
         StringBuilder sb = new StringBuilder();
         sb.append("# ").append("en".equals(locale) ? "Itinerary (" + cleaned.days().size() + " days)" : cleaned.days().isEmpty() ? "行程方案"
                 : "行程方案（" + cleaned.days().size() + " 天）").append("\n\n");
+        sb.append(renderPlanExplanation(cleaned, routePlan, shortlist, preferences));
         for (DraftDay day : cleaned.days()) {
             sb.append(renderDaySection(day,locale));
         }
@@ -307,6 +308,7 @@ public class ItineraryAssembler {
             if (item.note() != null && !item.note().isBlank()) {
                 sb.append("| | ↳ ").append(item.note()).append(" | | |\n");
             }
+            if (item.actionAdvice() != null) renderActionAdvice(sb, item.actionAdvice());
         }
         // v5-F2 图集行：该天带图 POI 横排缩略图（代码组装，模型不参与；无图天不输出）
         List<DraftItem> withImages = new ArrayList<>();
@@ -324,6 +326,20 @@ public class ItineraryAssembler {
         }
         sb.append("\n");
         return sb.toString();
+    }
+
+    private static void renderActionAdvice(StringBuilder sb, ItineraryDraft.ActionAdvice a) {
+        List<String> parts = new ArrayList<>();
+        addAdvice(parts, "入场", a.entryAdvice());
+        if (!a.highlights().isEmpty()) addAdvice(parts, "重点", String.join("、", a.highlights()));
+        addAdvice(parts, "步行", a.walkingLevel()); addAdvice(parts, "预约", a.reservation());
+        addAdvice(parts, "雨天", a.rainAlternative()); addAdvice(parts, "转场", a.nextTransferAdvice());
+        addAdvice(parts, "风险", a.risk());
+        if (!parts.isEmpty()) sb.append("| | ↳ 行动建议：").append(String.join("；", parts)).append(" | | |\n");
+    }
+
+    private static void addAdvice(List<String> parts, String label, String value) {
+        if (value != null && !value.isBlank()) parts.add(label + "=" + value);
     }
 
     /**
@@ -386,6 +402,52 @@ public class ItineraryAssembler {
     private static String galleryAlt(DraftItem item) {
         String alt = nvl(item.location()).replace("[", "（").replace("]", "）");
         return alt.isBlank() ? "图片" : alt;
+    }
+
+    /** H2：仅从结构化契约生成事实解释；缺字段使用明确降级口径。 */
+    private static String renderPlanExplanation(ItineraryDraft draft, RoutePlan routePlan,
+                                                 com.travelscope.collab.PoiShortlist shortlist,
+                                                 List<String> preferences) {
+        StringBuilder sb = new StringBuilder("## 方案设计思路\n\n");
+        sb.append("- 以 ").append(draft.days().size()).append(" 天结构化路线为骨架");
+        if (routePlan != null) sb.append("，采用 ").append(routePlan.solverMeta().algorithm())
+                .append(" 排序，并以通勤矩阵约束分日");
+        else sb.append("；路线求解产物缺失，建议确认日程可行性");
+        sb.append("。\n\n## 必去与偏好覆盖\n\n");
+        if (preferences == null || preferences.isEmpty()) sb.append("- 未提供结构化偏好，建议确认。\n");
+        else for (String p : preferences) sb.append("- ").append(p).append("：")
+                .append(preferenceCovered(p, draft.days().stream().flatMap(d -> d.items().stream())
+                        .map(i -> i.activity() + " " + i.location()).collect(java.util.stream.Collectors.joining(" "))) ? "已覆盖" : "未覆盖，建议确认").append("\n");
+        sb.append("\n## 未采纳项及原因\n\n");
+        if (routePlan == null || routePlan.solverMeta().unplaced().isEmpty()) sb.append("- 无结构化未采纳项。\n");
+        else routePlan.solverMeta().unplaced().forEach(u -> sb.append("- ").append(u.name())
+                .append("：").append(u.reason().name()).append("\n"));
+        sb.append("\n## 数据来源与抓取时间\n\n");
+        if (shortlist == null || shortlist.pois().isEmpty()) sb.append("- POI 来源缺失，建议确认。\n");
+        else shortlist.pois().stream().map(com.travelscope.collab.PoiShortlist.PoiItem::source).distinct()
+                .forEach(s -> sb.append("- POI：").append(s).append("；抓取时间未记录，建议确认。\n"));
+        java.util.List<com.travelscope.price.PriceFact> facts = shortlist == null ? List.of()
+                : shortlist.pois().stream().map(com.travelscope.collab.PoiShortlist.PoiItem::ticketPrice)
+                .filter(java.util.Objects::nonNull).toList();
+        facts.forEach(f -> sb.append("- 价格：").append(f.source()).append("；抓取于 ")
+                .append(f.fetchedAt()).append("\n"));
+        sb.append("\n## 价格可信度\n\n");
+        if (facts.isEmpty()) sb.append("- 缺少结构化价格事实，预算为待确认估算。\n");
+        else for (var f : facts) sb.append("- ").append(f.source()).append("：")
+                .append(f.estimated() ? "估算价格，建议确认" : "来源明确的抓取价格")
+                .append("（").append(f.fetchedAt()).append("）\n");
+        sb.append("\n## 雨天/闭馆备选\n\n");
+        var alternatives = draft.days().stream().flatMap(d -> d.items().stream())
+                .filter(i -> i.actionAdvice() != null && i.actionAdvice().rainAlternative() != null
+                        && !i.actionAdvice().rainAlternative().isBlank()).toList();
+        if (alternatives.isEmpty()) sb.append("- 暂无结构化备选，遇雨或闭馆时建议确认当日替代点。\n");
+        else alternatives.forEach(i -> sb.append("- ").append(i.location()).append("：")
+                .append(i.actionAdvice().rainAlternative()).append("\n"));
+        sb.append("\n## 待确认事项\n\n");
+        if (draft.pendingConfirm().isEmpty()) sb.append("- 暂无结构化待确认项。\n\n");
+        else draft.pendingConfirm().forEach(p -> sb.append("- ").append(p).append("\n"));
+        sb.append("\n");
+        return sb.toString();
     }
 
     /**

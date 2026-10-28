@@ -43,6 +43,36 @@ class ItineraryAssemblerTest {
     }
 
     @Test
+    void planExplanationRendersStructuredFactsAndMissingFieldFallbacks() {
+        var input = skeleton(List.of(new DraftItem("09:00-10:00", "西湖", "西湖", "免费", null)), List.of());
+        var result = assembler.assemble(input, null, null, null, null, null, List.of("湖景"));
+        assertThat(result.markdownBody())
+                .contains("## 方案设计思路")
+                .contains("路线求解产物缺失，建议确认")
+                .contains("## 必去与偏好覆盖")
+                .contains("湖景：未覆盖，建议确认")
+                .contains("## 未采纳项及原因")
+                .contains("## 数据来源与抓取时间")
+                .contains("POI 来源缺失，建议确认")
+                .contains("## 价格可信度")
+                .contains("## 雨天/闭馆备选")
+                .contains("## 待确认事项");
+    }
+
+    @Test
+    void actionAdviceRendersAsConciseSnapshot() {
+        var advice = new com.travelscope.collab.ItineraryDraft.ActionAdvice(
+                "东门进入（建议确认）", List.of("湖景（建议确认）"), "轻量（建议确认）",
+                "预约（建议确认）", "室内展馆（建议确认）", "步行（建议确认）", "湿滑（建议确认）");
+        var item = new DraftItem("09:00-10:00", "西湖", "西湖", "免费", null, null, advice);
+        var input = skeleton(List.of(item), List.of());
+        var result = assembler.assemble(input, null, null, null, null);
+        assertThat(result.markdownBody()).contains("行动建议：入场=东门进入（建议确认）")
+                .contains("风险=湿滑（建议确认）");
+        assertThat(result.markdownBody().length()).isLessThan(700);
+    }
+
+    @Test
     @DisplayName("渲染：结构字段生成完整 markdownBody（含天数/条目/预算/待确认/天气块）")
     void assembleRendersFullMarkdown() {
         ItineraryDraft skeleton = skeleton(List.of(
