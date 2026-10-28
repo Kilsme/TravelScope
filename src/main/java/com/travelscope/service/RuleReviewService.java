@@ -278,13 +278,16 @@ public class RuleReviewService {
             if (unplaced == 0) {
                 verified.add("路线求解无溢出（全部 POI 排入）");
             } else {
-                seg1Issues.add("路线求解有 " + unplaced + " 个 POI 未排入（unplaced 溢出）");
+                String unplacedDetails = unplacedList.stream()
+                        .map(p -> p.name() + "（" + p.reason().name() + "）")
+                        .collect(java.util.stream.Collectors.joining("、"));
+                seg1Issues.add("路线求解有 " + unplaced + " 个 POI 未排入：" + unplacedDetails);
                 if (unplaced >= 2) {
                     violations.add(new Violation(RULE_UNPLACED_OVERFLOW, 1, Severity.HARD,
-                            unplaced + " 个 POI 未排入路线，容量硬伤", null));
+                            unplaced + " 个 POI 未排入路线：" + unplacedDetails, null));
                 } else {
                     RoutePlan.UnplacedPoi p = unplacedList.get(0);
-                    String reason = p.reason() == null || p.reason().isBlank() ? "未说明" : p.reason();
+                    String reason = p.reason() == null ? "未说明" : p.reason().name();
                     violations.add(new Violation(RULE_UNPLACED_TRADEOFF, 1, Severity.SOFT,
                             "「" + p.name() + "」未排入路线（" + reason + "），按取舍交付",
                             "如需纳入可让规划调整候选或延长行程"));

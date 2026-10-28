@@ -142,7 +142,8 @@ public record RoutePlan(
             String algorithm,
             String matrixSource,
             long durationMs,
-            List<UnplacedPoi> unplaced) {
+            List<UnplacedPoi> unplaced,
+            List<CandidateSummary> candidateSummaries) {
 
         public SolverMeta {
             Objects.requireNonNull(algorithm, "algorithm");
@@ -151,15 +152,36 @@ public record RoutePlan(
                 throw new IllegalArgumentException("durationMs 不能为负: " + durationMs);
             }
             unplaced = unplaced == null ? List.of() : List.copyOf(unplaced);
+            candidateSummaries = candidateSummaries == null ? List.of() : List.copyOf(candidateSummaries);
+            if (candidateSummaries.size() > 3) throw new IllegalArgumentException("候选摘要最多 3 个");
+        }
+
+        public SolverMeta(String algorithm, String matrixSource, long durationMs, List<UnplacedPoi> unplaced) {
+            this(algorithm, matrixSource, durationMs, unplaced, List.of());
+        }
+    }
+
+    public record CandidateSummary(String strategy, double score, boolean selected,
+                                   String rejectionReason) {
+        public CandidateSummary {
+            Objects.requireNonNull(strategy, "strategy");
+            if (score < 0 || score > 100) throw new IllegalArgumentException("候选分数须为 0..100");
+            if (!selected && (rejectionReason == null || rejectionReason.isBlank()))
+                throw new IllegalArgumentException("淘汰候选必须有原因");
         }
     }
 
     /** 未能排入的 POI。reason 取值 COMMUTE_OVERFLOW / TIME_WINDOW_MISS / MATRIX_MISSING。 */
-    public record UnplacedPoi(String name, String reason) {
+    public record UnplacedPoi(String name, UnplacedReason reason) {
 
         public UnplacedPoi {
             Objects.requireNonNull(name, "name");
             Objects.requireNonNull(reason, "reason");
+        }
+
+        /** 旧生产代码和旧原因文本兼容，并归一到六类稳定枚举。 */
+        public UnplacedPoi(String name, String reason) {
+            this(name, UnplacedReason.normalize(reason));
         }
     }
 }

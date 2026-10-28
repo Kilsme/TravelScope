@@ -365,7 +365,7 @@ class RuleReviewServiceTest {
         workspace.writeRoutePlan("u1", "conv-r", new RoutePlan(List.of(),
                 new RoutePlan.SolverMeta("NN+2opt", "amap", 27, List.of(
                         new RoutePlan.UnplacedPoi("周庄古镇", "COMMUTE_OVERFLOW"),
-                        new RoutePlan.UnplacedPoi("同里古镇", "TIME_WINDOW_MISS")))));
+                        new RoutePlan.UnplacedPoi("同里古镇", "OPENING_WINDOW_CONFLICT")))));
 
         RuleReviewService.Outcome outcome = ruleReviewService.check("u1", "conv-r");
 

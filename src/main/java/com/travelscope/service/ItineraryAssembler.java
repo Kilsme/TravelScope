@@ -74,6 +74,14 @@ public class ItineraryAssembler {
         cleanedDays = attachPoiImages(cleanedDays, shortlist);
         // 校验 2（偏好硬约束）：每个偏好关键词必须在 days 实际排程中有覆盖
         List<String> pending = new ArrayList<>(skeleton.pendingConfirm());
+        List<String> routeTradeoffs = new ArrayList<>();
+        if (routePlan != null && routePlan.solverMeta().unplaced() != null) {
+            for (RoutePlan.UnplacedPoi item : routePlan.solverMeta().unplaced()) {
+                String detail = "路线取舍：" + item.name() + " 未排入（" + item.reason().name() + "）";
+                pending.add(detail);
+                routeTradeoffs.add(detail);
+            }
+        }
         if (preferences != null && !preferences.isEmpty()) {
             appendUncoveredPreferences(cleanedDays, preferences, pending);
         }
@@ -91,6 +99,7 @@ public class ItineraryAssembler {
         String markdown = sb.toString();
 
         List<String> notes = new ArrayList<>(cleaned.notes());
+        notes.addAll(routeTradeoffs);
         for (String h : hallucinations) {
             notes.add("已剔除未核验项: " + h);
         }

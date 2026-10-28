@@ -97,7 +97,7 @@ class RoutePlannerServiceTest {
                 .containsExactly(RoutePlan.NodeType.INTERCITY_TRANSPORT,
                         RoutePlan.NodeType.INTERCITY_TRANSPORT);
         assertThat(plan.solverMeta().unplaced()).singleElement().satisfies(item ->
-                assertThat(item.reason()).isEqualTo("TRANSPORT_WINDOW_CONFLICT"));
+                assertThat(item.reason()).isEqualTo(com.travelscope.collab.UnplacedReason.TRANSPORT_WINDOW_CONFLICT));
     }
 
     private static TransportSelection.TransportOption transport(String no, String dep, String arr) {
@@ -208,7 +208,7 @@ class RoutePlannerServiceTest {
         assertThat(plan.solverMeta().unplaced())
                 .anySatisfy(u -> {
                     assertThat(u.name()).isEqualTo("未知遗迹");
-                    assertThat(u.reason()).isEqualTo("MATRIX_MISSING");
+                    assertThat(u.reason()).isEqualTo(com.travelscope.collab.UnplacedReason.MISSING_COORDINATE);
                 });
         List<String> placed = plan.days().stream()
                 .flatMap(d -> d.pois().stream()).map(RoutePlan.RoutePoi::name).toList();

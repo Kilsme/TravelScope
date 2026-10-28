@@ -29,6 +29,20 @@ class ItineraryAssemblerTest {
     }
 
     @Test
+    void unplacedPoiIsVisibleInDraftNotesAndPending() {
+        ItineraryDraft input = skeleton(List.of(
+                new DraftItem("09:00-10:00", "西湖", "西湖", "免费", null)), List.of());
+        var plan = new com.travelscope.collab.RoutePlan(List.of(),
+                new com.travelscope.collab.RoutePlan.SolverMeta("NN+2opt", "fixture", 1,
+                        List.of(new com.travelscope.collab.RoutePlan.UnplacedPoi("灵隐寺", "DAILY_CAPACITY"))));
+
+        ItineraryDraft result = assembler.assemble(input, plan, null, null, null, null, List.of());
+
+        assertThat(result.notes()).contains("路线取舍：灵隐寺 未排入（DAILY_CAPACITY）");
+        assertThat(result.pendingConfirm()).contains("路线取舍：灵隐寺 未排入（DAILY_CAPACITY）");
+    }
+
+    @Test
     @DisplayName("渲染：结构字段生成完整 markdownBody（含天数/条目/预算/待确认/天气块）")
     void assembleRendersFullMarkdown() {
         ItineraryDraft skeleton = skeleton(List.of(

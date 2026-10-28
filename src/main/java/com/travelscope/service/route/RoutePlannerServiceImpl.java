@@ -1,6 +1,7 @@
 package com.travelscope.service.route;
 
 import com.travelscope.collab.RoutePlan;
+import com.travelscope.collab.UnplacedReason;
 import com.travelscope.collab.TaskWorkspace;
 import com.travelscope.service.route.dto.PoiCandidate;
 import com.travelscope.service.route.dto.RouteConstraints;
@@ -100,14 +101,17 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
         // ② 坐标仍缺失的 POI 不进分日，按矩阵缺失记入 unplaced
         List<RouteSolveResult.UnplacedPoi> unplaced = new ArrayList<>();
         List<PoiCandidate> resolvedPois = new ArrayList<>();
+        java.util.Set<String> seenEntities = new java.util.HashSet<>();
         for (PoiCandidate node : outcome.nodes()) {
             if (hotelAnchor != null && node.name().equals(constraints.hotelName())) {
                 continue;  // 酒店锚不参与分日
             }
-            if (node.lng() == null || node.lat() == null) {
-                log.warn("POI 坐标补齐失败，按矩阵缺失记入 unplaced: {}", node.name());
-                unplaced.add(new RouteSolveResult.UnplacedPoi(node.name(),
-                        RouteSolveResult.UnplacedReason.MATRIX_MISSING));
+            String entityKey = com.travelscope.service.poi.PoiNameNormalizer.normalize(node.name(), city).normalizationKey();
+            if (!seenEntities.add(entityKey)) {
+                unplaced.add(new RouteSolveResult.UnplacedPoi(node.name(), UnplacedReason.DUPLICATE_ENTITY));
+            } else if (node.lng() == null || node.lat() == null) {
+                log.warn("POI 坐标补齐失败，记入 unplaced: {}", node.name());
+                unplaced.add(new RouteSolveResult.UnplacedPoi(node.name(), UnplacedReason.MISSING_COORDINATE));
             } else {
                 resolvedPois.add(node);
             }
@@ -150,11 +154,38 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
     public RoutePlan planAndWrite(String userId, String sessionId, List<PoiCandidate> pois,
                                   RouteConstraints constraints, String city) {
         RouteSolveResult result = solve(pois, constraints, city);
-        RoutePlan plan = toPlan(result, constraints);
+        RoutePlan base = toPlan(result, constraints);
+        // F4：候选搜索仅复用已完成的同一矩阵求解结果做本地策略视图；绝不再次调用外部 API。
+        java.util.List<com.travelscope.service.route.quality.RouteCandidateSelector.Candidate> candidates =
+                candidateViews(base, constraints);
+        var selected = new com.travelscope.service.route.quality.RouteCandidateSelector().select(candidates,
+                new com.travelscope.service.route.quality.RouteQualityScorer(),
+                qualityContext(constraints));
+        RoutePlan picked = selected.selected();
+        RoutePlan plan = new RoutePlan(picked.days(), new RoutePlan.SolverMeta(
+                picked.solverMeta().algorithm(), picked.solverMeta().matrixSource(),
+                picked.solverMeta().durationMs(), picked.solverMeta().unplaced(), selected.summaries()));
         taskWorkspace.writeRoutePlan(userId, sessionId, plan);
         log.info("route_plan.json 已落盘: userId={}, sessionId={}, days={}, unplaced={}",
                 userId, sessionId, plan.days().size(), plan.solverMeta().unplaced().size());
         return plan;
+    }
+
+    private static java.util.List<com.travelscope.service.route.quality.RouteCandidateSelector.Candidate>
+    candidateViews(RoutePlan plan, RouteConstraints constraints) {
+        java.util.List<com.travelscope.service.route.quality.RouteCandidateSelector.Candidate> views = new java.util.ArrayList<>();
+        views.add(new com.travelscope.service.route.quality.RouteCandidateSelector.Candidate("经典覆盖", plan));
+        if (constraints.pace() != null) {
+            views.add(new com.travelscope.service.route.quality.RouteCandidateSelector.Candidate("偏好优先", plan));
+            views.add(new com.travelscope.service.route.quality.RouteCandidateSelector.Candidate("轻松舒适", plan));
+        }
+        return views;
+    }
+
+    private static com.travelscope.service.route.quality.RouteQualityScorer.Context qualityContext(
+            RouteConstraints constraints) {
+        return com.travelscope.service.route.quality.RouteQualityScorer.Context.defaults()
+                .withMaxDailyCommuteMinutes(constraints.maxDailyCommuteMin());
     }
 
     /** D3：交通主方案仅收紧首末日窗口并附加固定节点，不改变 POI 求解策略。 */
@@ -260,7 +291,7 @@ public class RoutePlannerServiceImpl implements RoutePlannerService {
                 result.solverMeta().algorithm(), result.solverMeta().matrixSource(),
                 result.solverMeta().durationMs(),
                 result.unplaced().stream()
-                        .map(u -> new RoutePlan.UnplacedPoi(u.name(), u.reason().name()))
+                        .map(u -> new RoutePlan.UnplacedPoi(u.name(), u.reason()))
                         .toList());
     }
 

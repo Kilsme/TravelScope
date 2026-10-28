@@ -34,6 +34,38 @@ class DaySplitterTest {
     }
 
     @Test
+    void fixedMatrixBalancesEffectiveVisitMinutesAcrossDays() {
+        List<PoiCandidate> pois = List.of(poi("A", 180), poi("B", 180), poi("C", 180),
+                poi("D", 180), poi("E", 180), poi("F", 180));
+        var outcome = new DaySplitter().split(pois,
+                uniformMatrix(List.of("A", "B", "C", "D", "E", "F"), 5 * 60),
+                RouteConstraints.ofDays(3).withPace("MODERATE"));
+
+        assertThat(outcome.days()).extracting(d -> d.effectiveVisitMinutes())
+                .containsExactly(360, 360, 360);
+        assertThat(outcome.days().get(0).endMinute()).isLessThanOrEqualTo(19 * 60);
+        assertThat(outcome.days().get(2).effectiveVisitMinutes()).isGreaterThanOrEqualTo(300);
+    }
+
+    @Test
+    void lunchAndDinnerWindowsAreReserved() {
+        List<PoiCandidate> pois = List.of(poi("上午", 150), poi("下午", 240), poi("晚上", 120));
+        var outcome = new DaySplitter().split(pois,
+                uniformMatrix(List.of("上午", "下午", "晚上"), 0),
+                RouteConstraints.ofDays(1).withPace("INTENSIVE"));
+
+        assertThat(outcome.days().getFirst().mealBreakMinutes()).isGreaterThanOrEqualTo(60);
+        assertThat(outcome.days().getFirst().endMinute()).isEqualTo(15 * 60 + 30);
+    }
+
+    @Test
+    void paceProfilesUseDifferentDailyVisitCaps() {
+        assertThat(RouteConstraints.ofDays(1).withPace("RELAXED").maxEffectiveVisitMinutes()).isEqualTo(360);
+        assertThat(RouteConstraints.ofDays(1).withPace("MODERATE").maxEffectiveVisitMinutes()).isEqualTo(480);
+        assertThat(RouteConstraints.ofDays(1).withPace("INTENSIVE").maxEffectiveVisitMinutes()).isEqualTo(600);
+    }
+
+    @Test
     void transportBoundariesConstrainFirstAndLastDayWithoutShrinkingBuffers() {
         List<PoiCandidate> pois = List.of(poi("首日景点", 120), poi("末日景点", 120));
         TimeMatrix matrix = uniformMatrix(List.of("首日景点", "末日景点"), 10 * 60);
@@ -56,7 +88,7 @@ class DaySplitterTest {
                 uniformMatrix(List.of("长时景点"), 0), constraints);
 
         assertThat(outcome.unplaced()).singleElement().satisfies(item ->
-                assertThat(item.reason()).isEqualTo(RouteSolveResult.UnplacedReason.TRANSPORT_WINDOW_CONFLICT));
+                assertThat(item.reason()).isEqualTo(com.travelscope.collab.UnplacedReason.TRANSPORT_WINDOW_CONFLICT));
     }
 
     // ---------- 用例 1：就近分日 + 不变式 ----------
@@ -96,7 +128,7 @@ class DaySplitterTest {
         assertThat(outcome.unplaced()).extracting(RouteSolveResult.UnplacedPoi::name)
                 .containsExactly("C");
         assertThat(outcome.unplaced().get(0).reason())
-                .isEqualTo(RouteSolveResult.UnplacedReason.COMMUTE_OVERFLOW);
+                .isEqualTo(com.travelscope.collab.UnplacedReason.COMMUTE_OVERFLOW);
         // A、B 正常落位
         List<String> placed = outcome.days().get(0).sequence().stream()
                 .map(PoiCandidate::name).toList();
@@ -113,7 +145,7 @@ class DaySplitterTest {
 
         assertThat(outcome.unplaced()).hasSize(1);
         assertThat(outcome.unplaced().get(0).reason())
-                .isEqualTo(RouteSolveResult.UnplacedReason.TIME_WINDOW_MISS);
+                .isEqualTo(com.travelscope.collab.UnplacedReason.OPENING_WINDOW_CONFLICT);
     }
 
     // ---------- 用例 4：矩阵全 -1 → 孤岛点独处一天（不可达语义），多天时落 MATRIX_MISSING ----------
@@ -142,7 +174,7 @@ class DaySplitterTest {
         assertThat(single.unplaced()).extracting(RouteSolveResult.UnplacedPoi::name)
                 .containsExactly("孤岛");
         assertThat(single.unplaced().get(0).reason())
-                .isEqualTo(RouteSolveResult.UnplacedReason.MATRIX_MISSING);
+                .isEqualTo(com.travelscope.collab.UnplacedReason.MISSING_COORDINATE);
     }
 
     // ---------- 用例 5：多日均衡（余量降序键生效） ----------

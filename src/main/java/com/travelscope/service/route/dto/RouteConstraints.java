@@ -93,7 +93,27 @@ public record RouteConstraints(
                 pace, walkingTolerance, firstDayStart, lastDayEnd);
     }
 
-    /** 从需求契约透传节奏约束；当前求解器只使用时间窗，pace/walking 仅保留在请求 DTO。 */
+    /** 复制并设置节奏档位。 */
+    public RouteConstraints withPace(String value) {
+        return new RouteConstraints(days, dailyStart, dailyEnd, lunchStart, lunchEnd,
+                maxDailyCommuteMin, transferBufferMin, hotelName, hotelLng, hotelLat,
+                preferTransit, value, walkingTolerance, firstDayStart, lastDayEnd);
+    }
+
+    /** 每日有效游览时长上限：宽松 6h、适中 8h、紧凑 10h。 */
+    public int maxEffectiveVisitMinutes() {
+        if (pace == null) return Integer.MAX_VALUE; // 旧调用保持原求解容量
+        return switch (pace) {
+            case "RELAXED" -> 360;
+            case "INTENSIVE" -> 600;
+            default -> 480;
+        };
+    }
+
+    public String dinnerStart() { return pace == null ? null : "18:00"; }
+    public String dinnerEnd() { return pace == null ? null : "19:00"; }
+
+    /** 从需求契约透传节奏约束。 */
     public RouteConstraints withTravelPreference(String start, String end,
                                                  String pace, String walkingTolerance) {
         return new RouteConstraints(days, start, end, lunchStart, lunchEnd,

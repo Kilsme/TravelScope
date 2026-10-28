@@ -1,5 +1,6 @@
 package com.travelscope.service.route;
 
+import com.travelscope.collab.UnplacedReason;
 import com.travelscope.service.route.dto.PoiCandidate;
 import com.travelscope.service.route.dto.RouteConstraints;
 import com.travelscope.service.route.dto.RouteSolveResult;
@@ -41,6 +42,10 @@ public class DaySplitter {
      *         不变式——POI 在 days 与 unplaced 合集中恰好出现一次
      */
     public SplitOutcome split(List<PoiCandidate> pois, TimeMatrix matrix, RouteConstraints c) {
+        return split(pois, matrix, c, Strategy.CLASSIC_COVERAGE);
+    }
+
+    public SplitOutcome split(List<PoiCandidate> pois, TimeMatrix matrix, RouteConstraints c, Strategy strategy) {
         boolean hasHotel = c.hotelName() != null && c.hotelLng() != null && c.hotelLat() != null;
         PoiCandidate hotel = hasHotel
                 ? new PoiCandidate(c.hotelName(), c.hotelLng(), c.hotelLat(),
@@ -67,7 +72,7 @@ public class DaySplitter {
 
         // 轮外硬拒：游玩时长超开窗（永远不可能）直接落 unplaced
         pending.removeIf(idx -> {
-            RouteSolveResult.UnplacedReason reject = hardReject(nodes.get(idx));
+            UnplacedReason reject = hardReject(nodes.get(idx));
             if (reject != null) {
                 unplaced.add(new RouteSolveResult.UnplacedPoi(nodes.get(idx).name(), reject));
                 return true;
@@ -83,11 +88,19 @@ public class DaySplitter {
                     if (ins == null) {
                         continue;
                     }
-                    if (best == null
+                    boolean qualityBetter = c.pace() != null && (best == null
+                            || ins.projectedVisitMin < best.projectedVisitMin
+                            || (ins.projectedVisitMin == best.projectedVisitMin && ins.commuteSec < best.commuteSec)
+                            || (ins.projectedVisitMin == best.projectedVisitMin && ins.commuteSec == best.commuteSec
+                                && ins.slackMin > best.slackMin));
+                    boolean legacyBetter = c.pace() == null && (best == null
                             || ins.commuteSec < best.commuteSec
-                            || (ins.commuteSec == best.commuteSec && ins.slackMin > best.slackMin)
-                            || (ins.commuteSec == best.commuteSec && ins.slackMin == best.slackMin
-                                && closeMinute(nodes.get(ins.poiIndex)) < closeMinute(nodes.get(best.poiIndex)))) {
+                            || (ins.commuteSec == best.commuteSec && ins.slackMin > best.slackMin));
+                    boolean closeBetter = best != null && ins.commuteSec == best.commuteSec
+                            && ins.slackMin == best.slackMin
+                            && (c.pace() == null || ins.projectedVisitMin == best.projectedVisitMin)
+                            && closeMinute(nodes.get(ins.poiIndex)) < closeMinute(nodes.get(best.poiIndex));
+                    if (qualityBetter || legacyBetter || closeBetter) {
                         best = ins;
                     }
                 }
@@ -111,9 +124,10 @@ public class DaySplitter {
             boolean transportConflict = !matrixMissing && hasTransportBoundary(c)
                     && !fitsAnyTransportDay(nodes.get(idx), c);
             unplaced.add(new RouteSolveResult.UnplacedPoi(nodes.get(idx).name(),
-                    matrixMissing ? RouteSolveResult.UnplacedReason.MATRIX_MISSING
-                            : transportConflict ? RouteSolveResult.UnplacedReason.TRANSPORT_WINDOW_CONFLICT
-                            : RouteSolveResult.UnplacedReason.COMMUTE_OVERFLOW));
+                    matrixMissing ? UnplacedReason.MISSING_COORDINATE
+                            : transportConflict ? UnplacedReason.TRANSPORT_WINDOW_CONFLICT
+                            : c.pace() != null ? UnplacedReason.DAILY_CAPACITY
+                            : UnplacedReason.COMMUTE_OVERFLOW));
         }
 
         return new SplitOutcome(days, List.copyOf(unplaced));
@@ -135,11 +149,11 @@ public class DaySplitter {
     }
 
     /** 轮外硬拒：只保留开放窗本身不可行（永远不可能，无歧义） */
-    private RouteSolveResult.UnplacedReason hardReject(PoiCandidate p) {
+    private UnplacedReason hardReject(PoiCandidate p) {
         if (p.openStart() != null && p.openClose() != null && p.suggestedDurationMin() != null) {
             int window = minutesOf(p.openClose()) - minutesOf(p.openStart());
             if (p.suggestedDurationMin() > window) {
-                return RouteSolveResult.UnplacedReason.TIME_WINDOW_MISS;
+                return UnplacedReason.OPENING_WINDOW_CONFLICT;
             }
         }
         return null;
@@ -154,6 +168,8 @@ public class DaySplitter {
         private final PoiCandidate hotel;
         private int commuteSecTotal;
         private int endMinute;
+        private int effectiveVisitMinutes;
+        private int mealBreakMinutes;
 
         DayAcc(int dayNumber, PoiCandidate hotel, RouteConstraints c) {
             this.dayNumber = dayNumber;
@@ -187,6 +203,9 @@ public class DaySplitter {
         public int endMinute() {
             return endMinute;
         }
+
+        public int effectiveVisitMinutes() { return effectiveVisitMinutes; }
+        public int mealBreakMinutes() { return mealBreakMinutes; }
 
         /** 当日已落位节点的矩阵下标（供未排入点分类） */
         List<Integer> nodeIndices() {
@@ -237,18 +256,39 @@ public class DaySplitter {
             if (!windowCompatible(candidate, arriveMinute, duration)) {
                 return null;
             }
-            // 硬约束 3：当日链路不超 dailyEnd
-            if (arriveMinute + duration > minutesOf(c.endForDay(dayNumber))) {
+            // 质量约束：每日有效游览时长按节奏设上限。
+            if (effectiveVisitMinutes + duration > c.maxEffectiveVisitMinutes()) return null;
+            int adjustedArrival = c.pace() == null ? arriveMinute : reserveMealWindows(arriveMinute, duration, c);
+            int addedBreak = adjustedArrival - arriveMinute;
+            arriveMinute = adjustedArrival;
+            // 硬约束 3：餐窗预留后仍不得超 dailyEnd；开放窗也重新核验。
+            if ((c.pace() != null && !windowCompatible(candidate, arriveMinute, duration))
+                    || arriveMinute + duration > minutesOf(c.endForDay(dayNumber))) {
                 return null;
             }
-            return new Insertion(this, idx, commuteSec, slackMinutes(c), arriveMinute, duration);
+            return new Insertion(this, idx, commuteSec, slackMinutes(c), arriveMinute, duration,
+                    effectiveVisitMinutes + duration, addedBreak);
         }
 
         void commit(Insertion ins, PoiCandidate poi, RouteConstraints c) {
             sequence.add(poi);
             nodeIndices.add(ins.poiIndex);
             commuteSecTotal += ins.commuteSec;
+            effectiveVisitMinutes = ins.projectedVisitMin;
+            mealBreakMinutes += ins.addedMealBreakMin;
             endMinute = ins.arriveMinute + ins.durationMin;
+        }
+
+        private static int reserveMealWindows(int arrival, int duration, RouteConstraints c) {
+            int adjusted = arrival;
+            if (c.lunchStart() != null) adjusted = afterWindowIfOverlaps(adjusted, duration,
+                    minutesOf(c.lunchStart()), minutesOf(c.lunchEnd()));
+            return c.dinnerStart() == null ? adjusted : afterWindowIfOverlaps(adjusted, duration,
+                    minutesOf(c.dinnerStart()), minutesOf(c.dinnerEnd()));
+        }
+
+        private static int afterWindowIfOverlaps(int start, int duration, int windowStart, int windowEnd) {
+            return start < windowEnd && start + duration > windowStart ? windowEnd : start;
         }
 
         private static int indexOf(PoiCandidate node, List<PoiCandidate> nodes) {
@@ -263,8 +303,11 @@ public class DaySplitter {
 
     /** 一次可行插入方案 */
     private record Insertion(DayAcc day, int poiIndex, long commuteSec, int slackMin,
-                             int arriveMinute, int durationMin) {
+                             int arriveMinute, int durationMin, int projectedVisitMin,
+                             int addedMealBreakMin) {
     }
+
+    public enum Strategy { CLASSIC_COVERAGE, PREFERENCE_FIRST, RELAXED_COMFORT }
 
     /** 分日结果：日组 + 未排入 */
     public record SplitOutcome(List<DayAcc> days, List<RouteSolveResult.UnplacedPoi> unplaced) {

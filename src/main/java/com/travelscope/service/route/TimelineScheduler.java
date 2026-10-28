@@ -100,9 +100,12 @@ public class TimelineScheduler {
                     ? endMinute
                     : endMinute + (int) Math.round(legSec / 60.0) + constraints.transferBufferMin();
             arrive = DaySplitter.serviceStart(node, arrive);
-            // 午餐窗硬规则：区间相交（端点相接不算）→ 顺延至 lunchEnd
-            if (lunchStart >= 0 && arrive < lunchEnd && arrive + duration > lunchStart) {
-                arrive = lunchEnd;
+            // F2 开启节奏档位后同时预留午餐/晚餐；旧调用维持原午餐兼容行为。
+            if (lunchStart >= 0 && arrive < lunchEnd && arrive + duration > lunchStart) arrive = lunchEnd;
+            if (constraints.dinnerStart() != null) {
+                int dinnerStart = DaySplitter.minutesOf(constraints.dinnerStart());
+                int dinnerEnd = DaySplitter.minutesOf(constraints.dinnerEnd());
+                if (arrive < dinnerEnd && arrive + duration > dinnerStart) arrive = dinnerEnd;
             }
             items.add(new RouteSolveResult.ScheduledPoi(node, hhmm(arrive),
                     hhmm(arrive + duration), transitFromPrev, commuteFromPrev));
